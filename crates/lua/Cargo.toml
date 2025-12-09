@@ -1,6 +1,14 @@
 [package]
-name = "syslua-lua"
+name = "sys-lua"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Lua-specific dependencies
+
+# Workspace dependencies
+mlua = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

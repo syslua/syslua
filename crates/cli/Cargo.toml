@@ -3,4 +3,25 @@ name = "sys-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "sys"
+path = "src/main.rs"
+
 [dependencies]
+# CLI-specific dependencies
+clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+clap_complete = "4.5"
+console = "0.16"
+indicatif = "0.18"
+dialoguer = "0.12"
+atty = "0.2"
+
+# Workspace dependencies
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+
+# Internal workspace crates
+sys-core = { workspace = true }
+sys-platform = { workspace = true }
