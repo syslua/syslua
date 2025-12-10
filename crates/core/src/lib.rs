@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! sys-core: Core logic for sys.lua
+//!
+//! This crate provides the manifest, plan, and apply functionality for sys.lua.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod env;
+mod error;
+mod manifest;
+mod plan;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use env::{generate_env_script, source_command, write_env_scripts};
+pub use error::CoreError;
+pub use manifest::Manifest;
+pub use plan::{ApplyOptions, FileChange, FileChangeKind, Plan, apply, compute_plan};
+
+// Re-export types from sys-lua for convenience
+pub use sys_lua::{EnvDecl, EnvMergeStrategy, EnvValue, FileDecl};
+// Re-export Shell from sys-platform
+pub use sys_platform::Shell;
+
+/// Result type for core operations
+pub type Result<T> = std::result::Result<T, CoreError>;
