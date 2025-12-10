@@ -1,16 +1,12 @@
-//! sys-platform: OS abstraction layer for sys.lua
+//! Platform detection and system abstractions for sys.lua
 //!
-//! Provides platform detection, path resolution, and OS-specific functionality.
+//! This crate provides cross-platform abstractions for:
+//! - OS and architecture detection
+//! - Path resolution (store, config, cache)
+//! - User information
 
-mod error;
 mod paths;
 mod platform;
-mod shell;
 
-pub use error::PlatformError;
-pub use paths::{expand_path, expand_path_with_base};
-pub use platform::{Arch, Os, Platform};
-pub use shell::Shell;
-
-/// Result type for platform operations
-pub type Result<T> = std::result::Result<T, PlatformError>;
+pub use paths::{StorePaths, SysluaPaths};
+pub use platform::{Arch, Os, Platform, PlatformInfo};

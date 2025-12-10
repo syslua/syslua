@@ -19,15 +19,24 @@ The apply command is fully declarative - it makes the current state match the co
 ## Apply Flow Diagram
 
 ```
-sys apply sys.lua
+sys apply init.lua
     │
-    ├─► PHASE 1: EVALUATION
-    │   ├─► Parse sys.lua with Lua runtime
+    ├─► PHASE 1: INPUT RESOLUTION
+    │   ├─► Load init.lua, extract M.inputs table
+    │   ├─► For each input in M.inputs:
+    │   │   ├─► Check syslua.lock for pinned revision
+    │   │   ├─► If locked: use pinned rev
+    │   │   └─► If not locked: resolve latest, update lock
+    │   ├─► Fetch/clone all inputs to cache
+    │   └─► Configure require("inputs.*") paths
+    │
+    ├─► PHASE 2: CONFIGURATION EVALUATION
+    │   ├─► Call M.setup(inputs) with resolved inputs
     │   ├─► Execute all require().setup(), file{}, env{}, user{} declarations
     │   ├─► Collect all declarations with their priorities
     │   └─► Resolve fetch helpers (fetchUrl, fetchGit, etc.)
     │
-    ├─► PHASE 2: MERGE & CONFLICT RESOLUTION
+    ├─► PHASE 3: MERGE & CONFLICT RESOLUTION
     │   ├─► Group declarations by key (package name, file path, env var)
     │   ├─► For each group:
     │   │   ├─► Singular values: lowest priority wins
@@ -35,83 +44,139 @@ sys apply sys.lua
     │   │   └─► Same priority + different values: ERROR
     │   └─► Produce resolved Manifest
     │
-    ├─► PHASE 3: PLANNING
-    │   ├─► Load registry from effective path
+    ├─► PHASE 4: PLANNING
     │   ├─► Get current installed state from store
     │   ├─► Compute diff: desired (manifest) vs current
-    │   │   ├─► to_install = desired - current
-    │   │   └─► to_remove = current - desired
+    │   │   ├─► to_realize = derivations not in store
+    │   │   └─► to_deactivate = current activations not in manifest
     │   ├─► Build execution DAG from manifest
-    │   │   ├─► Nodes: packages, files, env vars
-    │   │   └─► Edges: depends_on relationships
+    │   │   ├─► Nodes: derivations and activations
+    │   │   └─► Edges: derivation dependencies (from opts)
     │   └─► Topologically sort DAG for execution order
     │
-    ├─► PHASE 4: EXECUTION
+    ├─► PHASE 5: EXECUTION
     │   ├─► Display plan (always shown)
     │   ├─► If no changes: exit early
     │   ├─► Create pre-apply snapshot (with config content)
     │   ├─► Execute DAG in topological order:
     │   │   ├─► Parallel execution for independent nodes
-    │   │   ├─► Download/verify/extract packages
-    │   │   ├─► Create/update files
-    │   │   └─► Update environment
+    │   │   ├─► Realize derivations (download/build to store)
+    │   │   ├─► Execute activations (symlinks, PATH, services)
+    │   │   └─► Deactivate removed activations
     │   ├─► On failure: rollback completed nodes, abort
     │   ├─► Create post-apply snapshot (with config content)
-    │   └─► Generate env scripts (env.sh, env.fish)
+    │   └─► Generate env scripts (env.sh, env.fish, env.ps1)
     │
     └─► Print summary and shell setup instructions
 ```
 
+## Two-Phase Evaluation
+
+sys.lua uses a two-phase evaluation model that separates input resolution from configuration:
+
+### Phase 1: Input Resolution
+
+Before any configuration runs, syslua:
+
+1. Loads `init.lua` and reads the `M.inputs` table
+2. Resolves each input (checking lock file, fetching from git, etc.)
+3. Configures the Lua `require` path so `require("inputs.<name>")` works
+
+```lua
+-- init.lua
+local M = {}
+
+-- Phase 1 reads this table BEFORE calling setup
+M.inputs = {
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+    private = "git:git@github.com:myorg/dotfiles.git",
+}
+
+-- Phase 2 calls this AFTER inputs are resolved
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
+    pkgs.cli.ripgrep.setup()
+end
+
+return M
+```
+
+### Why Two Phases?
+
+- **Deterministic resolution**: All inputs resolved before config runs—no ordering issues
+- **Lock file accuracy**: syslua knows all inputs upfront to check/update the lock
+- **Clear errors**: Input fetch failures happen before any configuration side effects
+- **Parallel fetching**: All inputs can be fetched concurrently
+
+### Phase 2: Configuration Evaluation
+
+Once inputs are resolved, syslua calls `M.setup(inputs)`:
+
+1. The `inputs` parameter contains metadata about resolved inputs
+2. `require("inputs.<name>")` loads modules from the resolved input
+3. All declarations (`file{}`, `env{}`, `user{}`, `setup()` calls) are collected
+4. Priorities are tracked for conflict resolution
+
 ## Manifest Structure
 
-The manifest is the intermediate representation between Lua config and system state:
+The manifest is the intermediate representation between Lua config and system state. It contains only the two core primitives:
 
 ```rust
+/// The complete manifest produced by evaluating a Lua configuration
 pub struct Manifest {
-    pub packages: Vec<PackageSpec>,
-    pub files: Vec<FileSpec>,
-    pub env: EnvConfig,
-    pub users: Vec<UserConfig>,
-}
-
-pub struct PackageSpec {
-    pub name: String,
-    pub version: String,
-    pub source: Source,           // Resolved from fetch helpers
-    pub bin: Vec<String>,
-    pub depends_on: Vec<String>,  // Package dependencies
-}
-
-pub enum Source {
-    Url { url: String, sha256: String },
-    Git { url: String, rev: String, sha256: String },
-    GitHub { owner: String, repo: String, tag: String, asset: String, sha256: String },
+    /// All derivations (build recipes producing store content)
+    pub derivations: Vec<Derivation>,
+    /// All activations (making derivations visible to the system)
+    pub activations: Vec<Activation>,
 }
 ```
 
+**Key insight:** There are no separate types for packages, files, or environment variables. The Lua helpers `file{}`, `env{}`, `user{}`, and package `setup()` all create derivations and activations internally:
+
+| Lua Declaration | Creates |
+|-----------------|---------|
+| `require("pkgs.cli.ripgrep").setup()` | Derivation (fetch/build) + Activation (add to PATH) |
+| `file { path, source }` | Derivation (copy to store) + Activation (symlink) |
+| `env { EDITOR = "nvim" }` | Derivation (generate shell scripts) + Activation (source in shell) |
+| `user { name, setup }` | Scoping only (derivations/activations created inside `setup`) |
+
+This unified model provides:
+
+- **Simpler implementation**: Only two types to handle, not N
+- **Consistent caching**: All content goes through the derivation system
+- **Clean rollback**: Snapshots store derivation hashes + activations
+- **Composability**: Everything uses the same primitives
+
+See [Derivations](./01-derivations.md) and [Activations](./02-activations.md) for the full type definitions.
+
 ## Execution DAG
 
-The DAG ensures correct ordering regardless of config declaration order:
+The DAG ensures correct ordering regardless of config declaration order. Nodes are derivations and activations; edges represent dependencies.
 
 ```
 Example: User declares in any order:
   require("pkgs.cli.neovim").setup()
   require("pkgs.cli.ripgrep").setup()
-  file { path = "~/.config/nvim/init.lua", ... }  -- depends on neovim
+  file { path = "~/.config/nvim/init.lua", source = "./nvim-config" }
 
-DAG constructed:
-  ┌──────────┐     ┌──────────┐
-  │ ripgrep  │     │  neovim  │
-  └──────────┘     └────┬─────┘
-                        │ depends_on
-                        ▼
-                  ┌───────────────┐
-                  │ nvim/init.lua │
-                  └───────────────┘
+Internally creates:
+  - ripgrep derivation + activation
+  - neovim derivation + activation
+  - file derivation (copy content) + activation (symlink)
+
+DAG constructed (derivations must complete before their activations):
+  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+  │ ripgrep (deriv) │     │ neovim (deriv)  │     │ nvim-cfg (deriv)│
+  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+           │                       │                       │
+           ▼                       ▼                       ▼
+  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+  │ ripgrep (activ) │     │ neovim (activ)  │     │ nvim-cfg (activ)│
+  └─────────────────┘     └─────────────────┘     └─────────────────┘
 
 Execution order (determined by system, not user):
-  1. ripgrep, neovim (parallel - no dependencies between them)
-  2. nvim/init.lua (after neovim completes)
+  Wave 1: ripgrep, neovim, nvim-cfg derivations (parallel - independent)
+  Wave 2: ripgrep, neovim, nvim-cfg activations (parallel - derivations done)
 ```
 
 ### DAG Execution Example
@@ -119,16 +184,20 @@ Execution order (determined by system, not user):
 ```
 $ sys plan init.lua
 
-Changes:
-  + ripgrep@15.1.0
-  + neovim@0.10.0
-  + postgresql@16.1.0 (package)
-  + postgresql@16.1.0 (service)
-  + ~/.config/nvim/init.lua
+Derivations to realize:
+  + ripgrep-15.1.0-abc123 (not in store)
+  + neovim-0.10.0-def456 (not in store)
+  = postgresql-16.1.0-ghi789 (cached)
+
+Activations to apply:
+  + AddToPath: ripgrep/bin
+  + AddToPath: neovim/bin
+  + AddToPath: postgresql/bin
+  + Symlink: ~/.config/nvim/init.lua
 
 Execution order:
-  [Wave 1] ripgrep, neovim, postgresql (package) - parallel
-  [Wave 2] nvim/init.lua, postgresql (service) - parallel (after wave 1)
+  [Wave 1] Realize: ripgrep, neovim (parallel)
+  [Wave 2] Activate: all activations (parallel, derivations done)
 ```
 
 ## Atomic Apply (All-or-Nothing)
@@ -197,13 +266,13 @@ Run 'sys plan' to review the execution plan.
 
 ### What Gets Rolled Back
 
-| Component       | Rollback Action                                        |
-| --------------- | ------------------------------------------------------ |
-| **Packages**    | Remove from `pkg/` symlinks (objects remain in `obj/`) |
-| **Files**       | Restore from pre-apply snapshot backup                 |
-| **Symlinks**    | Restore original target or remove                      |
-| **Environment** | Regenerate env scripts from previous state             |
-| **Services**    | Stop newly started services, restart stopped services  |
+| Component        | Rollback Action                                         |
+| ---------------- | ------------------------------------------------------- |
+| **Derivations**  | Objects remain in store (immutable, may be GC'd later)  |
+| **Activations**  | Deactivate: remove symlinks, PATH entries, stop services|
+| **Symlinks**     | Restore original target or remove                       |
+| **Environment**  | Regenerate env scripts from previous snapshot           |
+| **Services**     | Stop newly started services, restart stopped services   |
 
 ### Edge Cases
 
@@ -222,17 +291,22 @@ $ sys plan sys.lua
 Evaluating sys.lua...
 Building execution plan...
 
-Install:
-  + fd@9.0.0
-  + bat@0.24.0
-Remove:
-  - ripgrep@14.1.1
-Unchanged:
-  = jq@1.7.1
+Derivations:
+  + fd-9.0.0-abc123 (to realize)
+  + bat-0.24.0-def456 (to realize)
+  = jq-1.7.1-ghi789 (cached)
+  - ripgrep-14.1.1-old123 (unreferenced, will be GC'd)
+
+Activations:
+  + AddToPath: fd/bin
+  + AddToPath: bat/bin
+  = AddToPath: jq/bin (unchanged)
+  - AddToPath: ripgrep/bin (to remove)
 
 Execution order:
-  1. [parallel] fd@9.0.0, bat@0.24.0
-  2. [remove] ripgrep@14.1.1
+  1. [realize] fd, bat (parallel)
+  2. [activate] fd, bat activations (parallel)
+  3. [deactivate] ripgrep activation
 ```
 
 ## Priority-Based Conflict Resolution
@@ -289,6 +363,8 @@ Use lib.mkForce() to override, or lib.mkDefault() to provide a fallback.
 
 ## See Also
 
+- [Lua API](./04-lua-api.md) - Entry point pattern (`M.inputs`/`M.setup`)
+- [Inputs](./06-inputs.md) - Input sources and authentication
 - [Derivations](./01-derivations.md) - Build recipes
 - [Activations](./02-activations.md) - Making derivations visible
 - [Snapshots](./05-snapshots.md) - State capture and rollback

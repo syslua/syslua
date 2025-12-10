@@ -1,60 +1,66 @@
 -- Development environment configuration with sys.lua
 -- This example shows environment variable management for development
 
--- Basic editor and pager settings
-env({
-	EDITOR = "nvim",
-	VISUAL = "nvim",
-	PAGER = "less",
-	LESS = "-R", -- Enable ANSI colors in less
-})
+local M = {}
 
--- Language-specific environment
-env({
-	-- Rust
-	CARGO_HOME = "~/.cargo",
-	RUSTUP_HOME = "~/.rustup",
+-- No external inputs needed for this example
+-- M.inputs can be omitted when you don't have external dependencies
 
-	-- Go
-	GOPATH = "~/go",
+function M.setup()
+    -- Basic editor and pager settings
+    env {
+        EDITOR = "nvim",
+        VISUAL = "nvim",
+        PAGER = "less",
+        LESS = "-R", -- Enable ANSI colors in less
+    }
 
-	-- Node.js
-	NODE_ENV = "development",
-})
+    -- Language-specific environment
+    env {
+        -- Rust
+        CARGO_HOME = "~/.cargo",
+        RUSTUP_HOME = "~/.rustup",
 
--- PATH additions (arrays prepend to existing PATH)
-env({
-	PATH = {
-		"~/.local/bin", -- User binaries
-		"~/.cargo/bin", -- Rust binaries
-		"~/go/bin", -- Go binaries
-		"~/.npm-global/bin", -- Global npm packages
-	},
-})
+        -- Go
+        GOPATH = "~/go",
 
--- XDG Base Directory specification
-env({
-	XDG_CONFIG_HOME = "~/.config",
-	XDG_DATA_HOME = "~/.local/share",
-	XDG_CACHE_HOME = "~/.cache",
-	XDG_STATE_HOME = "~/.local/state",
-})
+        -- Node.js
+        NODE_ENV = "development",
+    }
 
--- Git settings via environment
-env({
-	GIT_PAGER = "delta", -- Use delta for git diffs (if installed)
-})
+    -- PATH additions (arrays prepend to existing PATH)
+    env {
+        PATH = {
+            "~/.local/bin",     -- User binaries
+            "~/.cargo/bin",     -- Rust binaries
+            "~/go/bin",         -- Go binaries
+            "~/.npm-global/bin", -- Global npm packages
+        },
+    }
 
--- Colorful terminal output
-env({
-	CLICOLOR = "1",
-	COLORTERM = "truecolor",
-})
+    -- XDG Base Directory specification
+    env {
+        XDG_CONFIG_HOME = "~/.config",
+        XDG_DATA_HOME = "~/.local/share",
+        XDG_CACHE_HOME = "~/.cache",
+        XDG_STATE_HOME = "~/.local/state",
+    }
 
--- Create a shell aliases file
-file({
-	path = "~/.config/shell/aliases.sh",
-	content = [[
+    -- Git settings via environment
+    env {
+        GIT_PAGER = "delta", -- Use delta for git diffs (if installed)
+    }
+
+    -- Colorful terminal output
+    env {
+        CLICOLOR = "1",
+        COLORTERM = "truecolor",
+    }
+
+    -- Create a shell aliases file
+    file {
+        path = "~/.config/shell/aliases.sh",
+        content = [[
 # Shell aliases managed by sys.lua
 
 # Git shortcuts
@@ -81,12 +87,12 @@ alias rm='rm -i'
 alias mv='mv -i'
 alias cp='cp -i'
 ]],
-})
+    }
 
--- Create a useful dev tools check script
-file({
-	path = "~/.local/bin/check-dev-tools",
-	content = [[
+    -- Create a useful dev tools check script
+    file {
+        path = "~/.local/bin/check-dev-tools",
+        content = [[
 #!/usr/bin/env bash
 # Check for common development tools
 
@@ -114,5 +120,8 @@ check_tool docker
 echo
 echo "Done!"
 ]],
-	mode = "0755", -- Make executable
-})
+        mode = "0755", -- Make executable
+    }
+end
+
+return M

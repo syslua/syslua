@@ -13,33 +13,40 @@ sys.lua reimagines system configuration management by combining three powerful i
 3. **Simplicity** - No PhD required. Just Lua and straightforward concepts
 
 ```lua
-local lib = require("syslua.lib")
+local M = {}
 
--- Declare your desired system state
-local inputs = {
-    pkgs = input "github:sys-lua/pkgs"
+-- Declare your inputs (external dependencies)
+M.inputs = {
+    pkgs = "git:https://github.com/syslua/pkgs.git",
 }
 
--- Install packages
-pkg(inputs.pkgs.ripgrep)
-pkg(inputs.pkgs.neovim)
-pkg(inputs.pkgs.nodejs, "20.10.0")
+-- Configure your system
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
+    local lib = require("syslua.lib")
 
--- Configure your environment
-env {
-    EDITOR = "nvim",
-    PATH = lib.mkBefore({ "$HOME/.local/bin" }),
-}
+    -- Install packages
+    pkgs.cli.ripgrep.setup()
+    pkgs.cli.neovim.setup({ version = "0.10.0" })
 
--- Manage dotfiles
-file {
-    path = "~/.gitconfig",
-    content = [[
+    -- Configure your environment
+    env {
+        EDITOR = "nvim",
+        PATH = lib.mkBefore({ "$HOME/.local/bin" }),
+    }
+
+    -- Manage dotfiles
+    file {
+        path = "~/.gitconfig",
+        content = [[
 [user]
     name = Your Name
     email = you@example.com
 ]],
-}
+    }
+end
+
+return M
 ```
 
 **Apply it:**
@@ -79,20 +86,26 @@ Your system now matches your declaration. Packages installed, environment config
 Packages are fetched from registries (like GitHub repos) and installed to an immutable store:
 
 ```lua
--- Official registry
-local inputs = {
-    pkgs = input "github:sys-lua/pkgs"
+local M = {}
+
+M.inputs = {
+    -- Official registry (public)
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+    -- Private registry (SSH - uses ~/.ssh/ keys)
+    company = "git:git@github.com:mycompany/internal-pkgs.git",
 }
 
--- Use latest stable version
-pkg(inputs.pkgs.ripgrep)
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
 
--- Pin specific version
-pkg(inputs.pkgs.nodejs, "18.20.0")
+    -- Use latest stable version
+    pkgs.cli.ripgrep.setup()
 
--- Multiple versions coexist peacefully
-pkg(inputs.pkgs.python, "3.11.7")
-pkg(inputs.pkgs.python, "3.12.0")
+    -- Pin specific version
+    pkgs.cli.nodejs.setup({ version = "18.20.0" })
+end
+
+return M
 ```
 
 ### 2. User-Scoped Configuration
@@ -100,43 +113,56 @@ pkg(inputs.pkgs.python, "3.12.0")
 System-level and user-level configurations coexist seamlessly. Each user gets their own isolated environment while sharing system packages:
 
 ```lua
--- System-level packages (available to all users)
-pkg("git")
-pkg("curl")
+local M = {}
 
--- Per-user configuration
-user {
-    name = "ian",
-    config = function()
-        -- User-scoped packages (only in ian's PATH)
-        pkg("neovim")
-        pkg("ripgrep")
+M.inputs = {
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+}
 
-        -- User-scoped dotfiles
-        file {
-            path = "~/.gitconfig",
-            content = [[
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
+    local lib = require("syslua.lib")
+
+    -- System-level packages (available to all users)
+    pkgs.cli.git.setup()
+    pkgs.cli.curl.setup()
+
+    -- Per-user configuration
+    user {
+        name = "ian",
+        config = function()
+            -- User-scoped packages (only in ian's PATH)
+            pkgs.cli.neovim.setup()
+            pkgs.cli.ripgrep.setup()
+
+            -- User-scoped dotfiles
+            file {
+                path = "~/.gitconfig",
+                content = [[
 [user]
     name = Ian
     email = ian@example.com
 ]],
-        }
+            }
 
-        -- User-scoped environment
-        env {
-            EDITOR = "nvim",
-            PATH = lib.mkBefore({ "$HOME/.local/bin" }),
-        }
-    end,
-}
+            -- User-scoped environment
+            env {
+                EDITOR = "nvim",
+                PATH = lib.mkBefore({ "$HOME/.local/bin" }),
+            }
+        end,
+    }
 
-user {
-    name = "admin",
-    config = function()
-        pkg("htop")
-        pkg("docker")
-    end,
-}
+    user {
+        name = "admin",
+        config = function()
+            pkgs.cli.htop.setup()
+            pkgs.cli.docker.setup()
+        end,
+    }
+end
+
+return M
 ```
 
 **Each user sources their own environment:**
@@ -153,46 +179,71 @@ Lock files ensure your team uses identical package versions:
 
 ```bash
 # Developer A: Add packages and commit lock file
-$ sudo sys apply  # Creates syslua.lock
+$ sudo sys apply # Creates syslua.lock
 $ git add . && git commit
 
 # Developer B: Get exact same versions
 $ git pull
-$ sudo sys apply  # Uses pinned versions from syslua.lock
+$ sudo sys apply # Uses pinned versions from syslua.lock
 ```
 
 ### 4. NixOS-Style Modules
 
-Reusable, composable configuration modules:
+Reusable, composable configuration modules following standard Lua patterns:
 
 ```lua
--- modules/docker.lua
-return module "docker" {
-    options = {
-        enable = lib.mkOption { type = "bool", default = false },
-        rootless = lib.mkOption { type = "bool", default = true },
-    },
+-- modules/services/docker.lua
+local M = {}
 
-    config = function(opts)
-        if not opts.enable then return end
-
-        pkg("docker")
-        pkg("docker-compose")
-
-        service "docker" {
-            enable = true,
-            rootless = opts.rootless,
-        }
-    end,
+M.options = {
+	rootless = true,
 }
+
+function M.setup(opts)
+	opts = opts or {}
+	for k, v in pairs(M.options) do
+		if opts[k] == nil then
+			opts[k] = v
+		end
+	end
+
+	require("pkgs.cli.docker").setup()
+	require("pkgs.cli.docker-compose").setup()
+
+	-- Service configuration via derive/activate
+	local service_drv = derive({
+		name = "docker-service",
+		opts = function(sys)
+			return { rootless = opts.rootless, sys = sys }
+		end,
+		config = function(o, ctx)
+			if o.sys.os == "linux" then
+				ctx.write(ctx.out .. "/docker.service", generate_systemd_unit(o))
+			end
+		end,
+	})
+
+	activate({
+		opts = function(sys)
+			return { drv = service_drv, sys = sys }
+		end,
+		config = function(o, ctx)
+			if o.sys.os == "linux" then
+				ctx.symlink(o.drv.out .. "/docker.service", "/etc/systemd/system/docker.service")
+				ctx.enable_service("docker")
+			end
+		end,
+	})
+
+	return M
+end
+
+return M
 ```
 
 ```lua
--- sys.lua
-local docker = require("./modules/docker")
-
-docker.options.enable = true
-docker.options.rootless = false
+-- init.lua
+require("modules.services.docker").setup({ rootless = false })
 ```
 
 ### 5. Priority-Based Conflict Resolution
@@ -201,30 +252,42 @@ When multiple declarations conflict, priorities determine the winner:
 
 ```lua
 -- Default value (can be overridden)
-env { EDITOR = lib.mkDefault("vim") }
+env({ EDITOR = lib.mkDefault("vim") })
 
 -- User override (higher priority)
-env { EDITOR = lib.mkForce("nvim") }
+env({ EDITOR = lib.mkForce("nvim") })
 
 -- Mergeable values combine instead of conflict
-env { PATH = lib.mkBefore({ "$HOME/.cargo/bin" }) }
-env { PATH = lib.mkAfter({ "/usr/local/games" }) }
+env({ PATH = lib.mkBefore({ "$HOME/.cargo/bin" }) })
+env({ PATH = lib.mkAfter({ "/usr/local/games" }) })
 -- Result: $HOME/.cargo/bin:$PATH:/usr/local/games
 ```
 
 ### 6. Built-in Secrets Management
 
-SOPS integration keeps credentials secure:
+For private repositories, **SSH is recommended** (uses existing `~/.ssh/` keys):
 
 ```lua
--- secrets.yaml (encrypted with age/GPG)
-github_token: ENC[AES256_GCM,data:...,tag:...]
+M.inputs = {
+    -- SSH URLs - no secrets to manage
+    company = "git:git@github.com:mycompany/private-pkgs.git",
+}
+```
 
--- sys.lua
+For HTTPS-only environments, SOPS integration keeps credentials secure:
+
+```yaml
+# secrets.yaml (encrypted with age/GPG)
+github_token: ENC[AES256_GCM,data:...,tag:...]
+```
+
+```lua
 local secrets = sops.load("./secrets.yaml")
 
-local inputs = {
-    company = input "github:mycompany/private-pkgs" {
+M.inputs = {
+    -- HTTPS with token (fallback for CI/restricted networks)
+    company = {
+        url = "git:https://github.com/mycompany/private-pkgs.git",
         auth = secrets.github_token,
     },
 }
@@ -237,11 +300,11 @@ Every `sys apply` creates a snapshot. Rollback instantly if something breaks:
 ```bash
 $ sys history
 Snapshots:
-  #5  2024-12-08 14:23  Added Docker and PostgreSQL
-  #4  2024-12-07 09:15  Updated neovim to 0.10.0
-  #3  2024-12-06 18:42  Initial system config
+#5  2024-12-08 14:23  Added Docker and PostgreSQL
+#4  2024-12-07 09:15  Updated neovim to 0.10.0
+#3  2024-12-06 18:42  Initial system config
 
-$ sudo sys rollback 4  # Instant rollback to snapshot #4
+$ sudo sys rollback 4 # Instant rollback to snapshot #4
 ```
 
 ### 8. Cross-Platform
@@ -249,43 +312,53 @@ $ sudo sys rollback 4  # Instant rollback to snapshot #4
 First-class support for Linux, macOS, and Windows:
 
 ```lua
--- Platform-specific behavior
-if lib.platform.isLinux then
-    pkg("xclip")
-elseif lib.platform.isMacOS then
-    pkg("pbcopy")
-elseif lib.platform.isWindows then
-    pkg("clip")
+-- Platform-specific behavior using syslua globals
+if syslua.is_linux then
+    require("pkgs.cli.xclip").setup()
+elseif syslua.is_darwin then
+    -- pbcopy is built-in on macOS
+elseif syslua.is_windows then
+    -- clip is built-in on Windows
 end
 
--- Or let packages handle it
-pkg "ripgrep" {
-    version = "15.1.0",
-    src = lib.fetchFromGitHub {
-        owner = "BurntSushi",
-        repo = "ripgrep",
-        tag = "15.1.0",
-        asset = "ripgrep-{version}-{platform}.tar.gz",
-        sha256 = {
-            ["x86_64-linux"] = "abc123...",
-            ["aarch64-darwin"] = "def456...",
-            ["x86_64-windows"] = "789xyz...",
-        },
-    },
-}
+-- Packages handle platform differences internally
+require("pkgs.cli.ripgrep").setup({ version = "15.1.0" })
+-- The package module uses syslua.platform to fetch the correct binary
 ```
 
 ## Architecture Highlights
 
+### The Two Primitives
+
+Everything in sys.lua builds on two fundamental concepts:
+
+```
+Derivation (derive {})          Activation (activate {})
+━━━━━━━━━━━━━━━━━━━━━━━━       ━━━━━━━━━━━━━━━━━━━━━━━━━━
+Describes HOW to produce        Describes WHAT TO DO with
+content for the store.          derivation output.
+
+- Fetch from URL                - Add to PATH
+- Clone git repo                - Create symlink
+- Build from source             - Source in shell
+- Generate config file          - Enable service
+
+Output: immutable store object  Output: system side effects
+```
+
+All user-facing APIs (`file {}`, `env {}`, package `setup()`) internally create derivations and activations.
+
 ### Content-Addressed Store
 
-Packages are stored immutably with human-readable symlinks:
+Packages are stored immutably with human-readable naming:
 
 ```
 /syslua/store/
-├── obj/<sha256>/              # Immutable content
+├── obj/<name>-<version>-<hash>/  # Immutable content (e.g., ripgrep-15.1.0-abc123def/)
 │   └── bin/rg
-└── pkg/ripgrep/15.1.0/x86_64-linux/  # Symlink → obj/<hash>
+├── pkg/ripgrep/15.1.0/x86_64-linux/  # Human-readable symlink → obj/
+├── drv/<hash>.drv                    # Serialized derivation descriptions
+└── drv-out/<hash>                    # Maps derivation hash → output hash
 ```
 
 ### Dependency Graph (DAG)
@@ -305,32 +378,45 @@ sys.lua builds an execution graph to parallelize operations and handle dependenc
 
 ### Flakes-Style Inputs
 
-No centralized registry to sync. Declare your package sources right in config:
+No centralized registry to sync. Declare your package sources in `M.inputs`:
 
 ```lua
-local inputs = {
-    -- Official registry
-    pkgs = input "github:sys-lua/pkgs",
+local M = {}
+
+M.inputs = {
+    -- Official registry (HTTPS - public)
+    pkgs = "git:https://github.com/syslua/pkgs.git",
 
     -- Unstable channel
-    unstable = input "github:sys-lua/pkgs" { branch = "unstable" },
+    unstable = "git:https://github.com/syslua/pkgs.git#unstable",
 
-    -- Private corporate registry
-    company = input "github:mycompany/pkgs" { auth = secrets.token },
+    -- Private corporate registry (SSH - recommended)
+    company = "git:git@github.com:mycompany/pkgs.git",
 
     -- Local development
-    local = input "path:./my-packages",
+    local_pkgs = "path:./my-packages",
 }
+
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
+    local company = require("inputs.company")
+
+    pkgs.cli.ripgrep.setup()
+    company.internal_tool.setup()
+end
+
+return M
 ```
 
 ## Project Status
 
 **sys.lua is currently in the design and architecture phase.** We have:
 
-✅ Comprehensive architecture document (see [ARCHITECTURE.md](./ARCHITECTURE.md))  
-✅ Crate structure defined (`cli`, `core`, `lua`, `platform`, `sops`)  
-✅ Clear design philosophy and feature roadmap  
-⏳ Implementation in progress
+- Comprehensive architecture documentation (see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md))
+- Split architecture docs covering [derivations](./docs/architecture/01-derivations.md), [activations](./docs/architecture/02-activations.md), [store](./docs/architecture/03-store.md), [Lua API](./docs/architecture/04-lua-api.md), and more
+- Crate structure defined (`sys-cli`, `sys-core`, `sys-lua`, `sys-platform`, `sys-sops`)
+- Clear design philosophy and feature roadmap
+- Implementation in progress
 
 ## Getting Involved
 
@@ -345,7 +431,7 @@ We're actively seeking contributors to help build sys.lua. Here's how you can he
 
 ### For Early Adopters
 
-- **Feedback**: Review the [ARCHITECTURE.md](./ARCHITECTURE.md) and share thoughts
+- **Feedback**: Review the [architecture docs](./docs/ARCHITECTURE.md) and share thoughts
 - **Use cases**: Tell us about your workflow and how sys.lua could help
 - **Testing**: Try early releases and report issues
 
@@ -360,7 +446,7 @@ $ cd sys.lua
 $ cargo build --release
 
 # Read the architecture
-$ cat ARCHITECTURE.md
+$ cat docs/ARCHITECTURE.md
 
 # Check contributor guidelines
 $ cat AGENTS.md
@@ -413,7 +499,7 @@ We're taking the best ideas from these projects and making them accessible to ev
 
 ## Roadmap
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the complete technical roadmap.
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the complete technical roadmap.
 
 **Phase 1 - Foundation** (Current)
 

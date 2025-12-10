@@ -1,110 +1,132 @@
-//! Path expansion utilities
+//! Path resolution for syslua directories
+//!
+//! Handles the distinction between root (system-wide) and user installations:
+//! - Root: `/syslua/store/`
+//! - User: `~/.local/share/syslua/store/`
 
-use crate::error::PlatformError;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Expand a path, resolving `~` to the user's home directory
-///
-/// # Examples
-///
-/// ```
-/// use sys_platform::expand_path;
-///
-/// let path = expand_path("~/.config/syslua/init.lua").unwrap();
-/// assert!(path.starts_with(dirs::home_dir().unwrap()));
-/// ```
-pub fn expand_path<P: AsRef<Path>>(path: P) -> Result<PathBuf, PlatformError> {
-    let path = path.as_ref();
-    let path_str = path.to_string_lossy();
-
-    if path_str.starts_with("~/") {
-        let home = dirs::home_dir().ok_or(PlatformError::NoHomeDirectory)?;
-        Ok(home.join(&path_str[2..]))
-    } else if path_str == "~" {
-        dirs::home_dir().ok_or(PlatformError::NoHomeDirectory)
-    } else {
-        Ok(path.to_path_buf())
-    }
+/// Paths within the syslua store
+#[derive(Debug, Clone)]
+pub struct StorePaths {
+    /// Root of the store (e.g., `/syslua/store/` or `~/.local/share/syslua/store/`)
+    pub root: PathBuf,
+    /// Object storage: `<store>/obj/<name>-<version>-<hash>/`
+    pub obj: PathBuf,
+    /// Package symlinks: `<store>/pkg/<name>/<version>/<platform>/`
+    pub pkg: PathBuf,
+    /// Derivation descriptions: `<store>/drv/`
+    pub drv: PathBuf,
+    /// Derivation output mappings: `<store>/drv-out/`
+    pub drv_out: PathBuf,
 }
 
-/// Expand a path relative to a base directory
-///
-/// - `~` is expanded to home directory
-/// - Relative paths (not starting with `/` or `~`) are resolved relative to `base`
-/// - Absolute paths are returned as-is
-///
-/// # Examples
-///
-/// ```
-/// use sys_platform::expand_path_with_base;
-/// use std::path::Path;
-///
-/// // Relative path resolved against base
-/// let path = expand_path_with_base("./dotfiles/gitconfig", "/home/user/config").unwrap();
-/// assert_eq!(path.to_string_lossy(), "/home/user/config/dotfiles/gitconfig");
-///
-/// // ~ is expanded regardless of base
-/// let path = expand_path_with_base("~/.gitconfig", "/some/base").unwrap();
-/// assert!(path.starts_with(dirs::home_dir().unwrap()));
-///
-/// // Absolute paths ignore base
-/// let path = expand_path_with_base("/etc/hosts", "/some/base").unwrap();
-/// assert_eq!(path.to_string_lossy(), "/etc/hosts");
-/// ```
-pub fn expand_path_with_base<P: AsRef<Path>, B: AsRef<Path>>(
-    path: P,
-    base: B,
-) -> Result<PathBuf, PlatformError> {
-    let path = path.as_ref();
-    let path_str = path.to_string_lossy();
-
-    // Handle ~ expansion first
-    if path_str.starts_with('~') {
-        return expand_path(path);
-    }
-
-    // Handle absolute paths
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-
-    // Windows: check for drive letter
-    #[cfg(windows)]
-    if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
-        return Ok(path.to_path_buf());
-    }
-
-    // Relative path - resolve against base
-    let base = base.as_ref();
-    let full_path = base.join(path);
-
-    // Canonicalize to resolve . and .. components
-    // But don't require the path to exist (use normalize instead)
-    Ok(normalize_path(&full_path))
-}
-
-/// Normalize a path by resolving `.` and `..` components without requiring the path to exist
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = Vec::new();
-
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                // Pop the last component if possible
-                if !components.is_empty() {
-                    components.pop();
-                }
-            }
-            std::path::Component::CurDir => {
-                // Skip . components
-            }
-            other => {
-                components.push(other);
-            }
+impl StorePaths {
+    /// Create store paths from a root directory
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            obj: root.join("obj"),
+            pkg: root.join("pkg"),
+            drv: root.join("drv"),
+            drv_out: root.join("drv-out"),
+            root,
         }
     }
 
-    components.iter().collect()
+    /// Get the path for a specific object
+    pub fn object_path(&self, name: &str, version: &str, hash: &str) -> PathBuf {
+        self.obj.join(format!("{}-{}-{}", name, version, hash))
+    }
+
+    /// Get the symlink path for a package
+    pub fn package_path(&self, name: &str, version: &str, platform: &str) -> PathBuf {
+        self.pkg.join(name).join(version).join(platform)
+    }
+}
+
+/// All syslua-related paths for a given installation
+#[derive(Debug, Clone)]
+pub struct SysluaPaths {
+    /// Store paths
+    pub store: StorePaths,
+    /// Config directory (e.g., `~/.config/syslua/` or `/etc/syslua/`)
+    pub config: PathBuf,
+    /// Cache directory (e.g., `~/.cache/syslua/`)
+    pub cache: PathBuf,
+    /// Environment script location
+    pub env_script: PathBuf,
+    /// Whether this is a root (system-wide) installation
+    pub is_root: bool,
+}
+
+impl SysluaPaths {
+    /// Create paths for a user installation
+    pub fn user() -> Self {
+        let data_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+            .join("syslua");
+
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("syslua");
+
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.cache"))
+            .join("syslua");
+
+        Self {
+            store: StorePaths::new(data_dir.join("store")),
+            env_script: data_dir.join("env.sh"),
+            config: config_dir,
+            cache: cache_dir,
+            is_root: false,
+        }
+    }
+
+    /// Create paths for a root (system-wide) installation
+    pub fn root() -> Self {
+        let root = PathBuf::from("/syslua");
+
+        Self {
+            store: StorePaths::new(root.join("store")),
+            env_script: root.join("env.sh"),
+            config: PathBuf::from("/etc/syslua"),
+            cache: root.join("cache"),
+            is_root: true,
+        }
+    }
+
+    /// Detect whether we're running as root and return appropriate paths
+    pub fn detect() -> Self {
+        if is_root_user() {
+            Self::root()
+        } else {
+            Self::user()
+        }
+    }
+
+    /// Get the inputs cache directory
+    pub fn inputs_cache(&self) -> PathBuf {
+        self.cache.join("inputs")
+    }
+
+    /// Get the downloads cache directory
+    pub fn downloads_cache(&self) -> PathBuf {
+        self.cache.join("downloads")
+    }
+}
+
+/// Check if the current process is running as root/administrator
+#[cfg(unix)]
+fn is_root_user() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(windows)]
+fn is_root_user() -> bool {
+    // On Windows, we could check for administrator privileges
+    // For now, always return false (user mode)
+    false
 }
 
 #[cfg(test)]
@@ -112,71 +134,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_expand_tilde() {
-        let home = dirs::home_dir().expect("No home directory");
-
-        let expanded = expand_path("~/.config").unwrap();
-        assert_eq!(expanded, home.join(".config"));
-
-        let expanded = expand_path("~/").unwrap();
-        assert_eq!(expanded, home.join(""));
-
-        let expanded = expand_path("~").unwrap();
-        assert_eq!(expanded, home);
+    fn test_user_paths() {
+        let paths = SysluaPaths::user();
+        assert!(!paths.is_root);
+        assert!(paths.store.root.to_string_lossy().contains("syslua"));
     }
 
     #[test]
-    fn test_expand_absolute() {
-        let path = expand_path("/etc/hosts").unwrap();
-        assert_eq!(path, PathBuf::from("/etc/hosts"));
+    fn test_root_paths() {
+        let paths = SysluaPaths::root();
+        assert!(paths.is_root);
+        assert_eq!(paths.store.root, PathBuf::from("/syslua/store"));
     }
 
     #[test]
-    fn test_expand_relative() {
-        let path = expand_path("./foo/bar").unwrap();
-        assert_eq!(path, PathBuf::from("./foo/bar"));
-    }
-
-    #[test]
-    fn test_expand_with_base_relative() {
-        let path = expand_path_with_base("./dotfiles/gitconfig", "/home/user/config").unwrap();
-        assert_eq!(path, PathBuf::from("/home/user/config/dotfiles/gitconfig"));
-    }
-
-    #[test]
-    fn test_expand_with_base_tilde() {
-        let home = dirs::home_dir().expect("No home directory");
-        let path = expand_path_with_base("~/.gitconfig", "/some/base").unwrap();
-        assert_eq!(path, home.join(".gitconfig"));
-    }
-
-    #[test]
-    fn test_expand_with_base_absolute() {
-        let path = expand_path_with_base("/etc/hosts", "/some/base").unwrap();
-        assert_eq!(path, PathBuf::from("/etc/hosts"));
-    }
-
-    #[test]
-    fn test_expand_with_base_parent_dir() {
-        let path = expand_path_with_base("../other/file", "/home/user/config").unwrap();
-        assert_eq!(path, PathBuf::from("/home/user/other/file"));
-    }
-
-    #[test]
-    fn test_normalize_path() {
+    fn test_object_path() {
+        let store = StorePaths::new(PathBuf::from("/syslua/store"));
+        let path = store.object_path("ripgrep", "15.1.0", "abc123");
         assert_eq!(
-            normalize_path(Path::new("/foo/bar/../baz")),
-            PathBuf::from("/foo/baz")
+            path,
+            PathBuf::from("/syslua/store/obj/ripgrep-15.1.0-abc123")
         );
+    }
 
+    #[test]
+    fn test_package_path() {
+        let store = StorePaths::new(PathBuf::from("/syslua/store"));
+        let path = store.package_path("ripgrep", "15.1.0", "aarch64-darwin");
         assert_eq!(
-            normalize_path(Path::new("/foo/./bar")),
-            PathBuf::from("/foo/bar")
-        );
-
-        assert_eq!(
-            normalize_path(Path::new("/foo/bar/../../baz")),
-            PathBuf::from("/baz")
+            path,
+            PathBuf::from("/syslua/store/pkg/ripgrep/15.1.0/aarch64-darwin")
         );
     }
 }

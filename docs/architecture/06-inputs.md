@@ -6,49 +6,53 @@ This document covers input sources, registry structure, lock files, and authenti
 
 ## Overview
 
-Instead of a separate registry sync mechanism, sys.lua uses declarative inputs defined in the config file itself, similar to Nix Flakes.
+sys.lua uses declarative inputs defined in the entry point's `M.inputs` table. Inputs are resolved in a separate phase before configuration evaluation, ensuring all external dependencies are available when `M.setup(inputs)` runs.
 
 ## Input Declaration
 
+Inputs are declared in the `M.inputs` table of your entry point (`init.lua`):
+
 ```lua
--- sys.lua
-local lib = require("syslua.lib")
-local secrets = sops.load("./secrets.yaml")  -- For private input auth
+-- ~/.config/syslua/init.lua
+local M = {}
 
-local inputs = {
-    -- Official package registry (public, no auth)
-    pkgs = input "github:sys-lua/pkgs" {
-        rev = "a1b2c3d4...",  -- pinned commit (optional, defaults to latest)
-    },
-
-    -- Additional package sets
-    unstable = input "github:sys-lua/pkgs" {
-        branch = "unstable",
-    },
-
-    -- Private/corporate registry (authenticated via SOPS)
-    company = input "github:mycompany/sys-pkgs" {
-        rev = "...",
-        auth = secrets.github_token,  -- GitHub PAT from secrets
-    },
-
+M.inputs = {
+    -- Public registry (HTTPS, no auth needed)
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+    
+    -- Private repos (SSH recommended - uses ~/.ssh/ keys)
+    private = "git:git@github.com:myorg/my-dotfiles.git",
+    company = "git:git@github.com:mycompany/internal-pkgs.git",
+    
     -- Local path (for development)
-    local_pkgs = input "path:./my-packages",
-
-    -- Git URL
-    custom = input "git:https://git.example.com/pkgs.git" {
-        rev = "v1.0.0",
-    },
+    local_pkgs = "path:~/code/my-packages",
 }
 
--- Use packages from inputs (latest version in registry)
-require("inputs.pkgs.cli.ripgrep").setup()
-require("inputs.unstable.cli.neovim").setup()
-require("inputs.company.internal_tool").setup()
+function M.setup(inputs)
+    -- Access input modules via require
+    local pkgs = require("inputs.pkgs")
+    local private = require("inputs.private")
+    
+    -- Use packages from inputs
+    pkgs.cli.ripgrep.setup()
+    pkgs.cli.neovim.setup()
+    private.my_module.setup()
+    
+    -- Pin to specific version
+    pkgs.cli.ripgrep.setup({ version = "14_1_0" })
+end
 
--- Pin to specific version
-require("inputs.pkgs.cli.ripgrep").setup({ version = "14_1_0" })
+return M
 ```
+
+## Input URL Formats
+
+| Format | Example | Auth Method |
+|--------|---------|-------------|
+| Git SSH | `git:git@github.com:org/repo.git` | SSH keys (~/.ssh/) |
+| Git HTTPS | `git:https://github.com/org/repo.git` | None (public) or SOPS token |
+| Local path | `path:~/code/my-packages` | None |
+| Local path | `path:./relative/path` | None |
 
 ## Registry Structure
 
@@ -266,53 +270,63 @@ sys update --dry-run          # Show what would change
 
 ## Input Authentication
 
-Private inputs (corporate registries, private GitHub repos) require authentication. sys.lua uses **SOPS-encrypted secrets** for secure credential storage:
+### SSH-First (Recommended)
+
+For private repositories, **SSH URLs are recommended**. They use your existing `~/.ssh/` keys with no additional configuration:
+
+```lua
+M.inputs = {
+    -- Public (HTTPS, no auth)
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+    
+    -- Private (SSH - uses ~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
+    company = "git:git@github.com:mycompany/internal-pkgs.git",
+    private = "git:git@gitlab.com:myorg/dotfiles.git",
+}
+```
+
+**Why SSH-first?**
+
+- No token management - uses existing SSH keys
+- Works with any Git host (GitHub, GitLab, Bitbucket, self-hosted)
+- Keys already configured for `git clone` workflows
+- No secrets to encrypt or rotate
+
+### SOPS Fallback (HTTPS with Tokens)
+
+If SSH is not available (CI environments, restricted networks), use SOPS-encrypted tokens for HTTPS authentication:
 
 ```yaml
 # secrets.yaml (encrypted with SOPS)
 github_token: ENC[AES256_GCM,data:...,tag:...]
-gitlab_token: ENC[AES256_GCM,data:...,tag:...]
 ```
 
 ```lua
--- sys.lua
 local secrets = sops.load("./secrets.yaml")
 
-local inputs = {
-    -- Public input (no auth)
-    pkgs = input "github:sys-lua/pkgs",
-
-    -- Private GitHub input
-    company = input "github:mycompany/private-pkgs" {
+M.inputs = {
+    -- HTTPS with token auth
+    company = {
+        url = "git:https://github.com/mycompany/private-pkgs.git",
         auth = secrets.github_token,
-    },
-
-    -- Private GitLab input
-    internal = input "gitlab:internal.company.com/pkgs" {
-        auth = secrets.gitlab_token,
-    },
-
-    -- SSH-based input (uses system SSH keys)
-    private = input "git:git@github.com:mycompany/pkgs.git" {
-        -- No auth needed, uses ~/.ssh/id_* keys
     },
 }
 ```
 
 ### Authentication Methods
 
-| Input Type          | Auth Method                  |
-| ------------------- | ---------------------------- |
-| `github:` (public)  | None required                |
-| `github:` (private) | `auth = "<PAT>"` from SOPS   |
-| `gitlab:`           | `auth = "<token>"` from SOPS |
-| `git:` (HTTPS)      | `auth = "<token>"` from SOPS |
-| `git:` (SSH)        | System SSH keys (~/.ssh/)    |
+| URL Format | Auth Method | Use Case |
+|------------|-------------|----------|
+| `git:git@github.com:...` | SSH keys (~/.ssh/) | **Recommended** for private repos |
+| `git:https://...` (public) | None | Public repositories |
+| `git:https://...` (private) | SOPS token | CI/CD, restricted environments |
+| `path:...` | None | Local development |
 
 ### Security Notes
 
-- Never commit plaintext tokens to `sys.lua`
-- Use SOPS to encrypt credentials in `secrets.yaml`
+- Prefer SSH URLs - no secrets to manage
+- Never commit plaintext tokens
+- Use SOPS only when SSH is not viable
 - The `auth` field is never written to `syslua.lock`
 
 ## Input Resolution Algorithm
@@ -409,43 +423,57 @@ FETCH_INPUT(input_decl, rev):
 
 ## Custom Package Definitions
 
-Users can define custom derivations directly in their `sys.lua`:
+Users can define custom derivations directly in their entry point:
 
 ```lua
--- Custom derivation from GitHub release (prebuilt binaries)
-local hashes = {
-    ["x86_64-linux"] = "abc123...",
-    ["aarch64-darwin"] = "def456...",
+local M = {}
+
+M.inputs = {
+    pkgs = "git:https://github.com/syslua/pkgs.git",
 }
 
-local internal_tool_drv = derive {
-    name = "my-internal-tool",
-    version = "2.1.0",
+function M.setup(inputs)
+    -- Use registry packages
+    require("inputs.pkgs.cli.ripgrep").setup()
+    
+    -- Custom derivation from GitHub release (prebuilt binaries)
+    local hashes = {
+        ["x86_64-linux"] = "abc123...",
+        ["aarch64-darwin"] = "def456...",
+    }
+    
+    local internal_tool_drv = derive {
+        name = "my-internal-tool",
+        version = "2.1.0",
+        
+        opts = function(sys)
+            return {
+                url = "https://github.com/mycompany/internal-tool/releases/download/v2.1.0/internal-tool-2.1.0-" .. sys.platform .. ".tar.gz",
+                sha256 = hashes[sys.platform],
+            }
+        end,
+        
+        config = function(opts, ctx)
+            local archive = ctx.fetch_url(opts.url, opts.sha256)
+            ctx.unpack(archive, ctx.out)
+        end,
+    }
+    
+    -- Install it with activation
+    activate {
+        opts = { drv = internal_tool_drv },
+        config = function(opts, ctx)
+            ctx.add_to_path(opts.drv.out .. "/bin")
+        end,
+    }
+end
 
-    opts = function(sys)
-        return {
-            url = "https://github.com/mycompany/internal-tool/releases/download/v2.1.0/internal-tool-2.1.0-" .. sys.platform .. ".tar.gz",
-            sha256 = hashes[sys.platform],
-        }
-    end,
-
-    config = function(opts, ctx)
-        local archive = ctx.fetch_url(opts.url, opts.sha256)
-        ctx.unpack(archive, ctx.out)
-    end,
-}
-
--- Install it with activation
-activate {
-    opts = { drv = internal_tool_drv },
-    config = function(opts, ctx)
-        ctx.add_to_path(opts.drv.out .. "/bin")
-    end,
-}
+return M
 ```
 
 ## See Also
 
+- [Lua API](./04-lua-api.md) - Entry point pattern (`M.inputs`/`M.setup`)
 - [Derivations](./01-derivations.md) - How derivations work
 - [Activations](./02-activations.md) - How activations work
 - [Modules](./07-modules.md) - Module system

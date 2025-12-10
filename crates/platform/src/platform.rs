@@ -1,9 +1,11 @@
-//! Platform detection and system information
+//! Platform and architecture detection
 
-use crate::error::PlatformError;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
-/// Operating system identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Operating system
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Os {
     Linux,
     Darwin,
@@ -11,23 +13,24 @@ pub enum Os {
 }
 
 impl Os {
-    /// Detect the current operating system
-    pub fn current() -> Self {
-        #[cfg(target_os = "linux")]
-        return Os::Linux;
-
-        #[cfg(target_os = "macos")]
-        return Os::Darwin;
-
-        #[cfg(target_os = "windows")]
-        return Os::Windows;
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        compile_error!("Unsupported operating system");
+    /// Detect the current operating system at compile time
+    #[cfg(target_os = "linux")]
+    pub const fn current() -> Self {
+        Os::Linux
     }
 
-    /// Get the OS as a string identifier
-    pub fn as_str(&self) -> &'static str {
+    #[cfg(target_os = "macos")]
+    pub const fn current() -> Self {
+        Os::Darwin
+    }
+
+    #[cfg(target_os = "windows")]
+    pub const fn current() -> Self {
+        Os::Windows
+    }
+
+    /// Returns the OS name as used in platform strings
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Os::Linux => "linux",
             Os::Darwin => "darwin",
@@ -36,8 +39,15 @@ impl Os {
     }
 }
 
-/// CPU architecture identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl fmt::Display for Os {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// CPU architecture
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Arch {
     X86_64,
     Aarch64,
@@ -45,23 +55,24 @@ pub enum Arch {
 }
 
 impl Arch {
-    /// Detect the current CPU architecture
-    pub fn current() -> Self {
-        #[cfg(target_arch = "x86_64")]
-        return Arch::X86_64;
-
-        #[cfg(target_arch = "aarch64")]
-        return Arch::Aarch64;
-
-        #[cfg(target_arch = "arm")]
-        return Arch::Arm;
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
-        compile_error!("Unsupported architecture");
+    /// Detect the current architecture at compile time
+    #[cfg(target_arch = "x86_64")]
+    pub const fn current() -> Self {
+        Arch::X86_64
     }
 
-    /// Get the architecture as a string identifier
-    pub fn as_str(&self) -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    pub const fn current() -> Self {
+        Arch::Aarch64
+    }
+
+    #[cfg(target_arch = "arm")]
+    pub const fn current() -> Self {
+        Arch::Arm
+    }
+
+    /// Returns the architecture name as used in platform strings
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Arch::X86_64 => "x86_64",
             Arch::Aarch64 => "aarch64",
@@ -70,47 +81,66 @@ impl Arch {
     }
 }
 
-/// Platform information container
-///
-/// Provides access to all platform-specific information needed by sys.lua,
-/// including OS, architecture, user info, and standard paths.
-#[derive(Debug, Clone)]
+impl fmt::Display for Arch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Combined platform identifier (e.g., "aarch64-darwin")
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Platform {
-    /// Operating system
-    pub os: Os,
-    /// CPU architecture
     pub arch: Arch,
-    /// Combined platform identifier (e.g., "aarch64-darwin")
-    pub platform: String,
-    /// Current username
-    pub username: String,
-    /// Machine hostname
-    pub hostname: String,
-    /// User's home directory
-    pub home_dir: std::path::PathBuf,
+    pub os: Os,
 }
 
 impl Platform {
-    /// Detect and create platform information for the current system
-    pub fn detect() -> Result<Self, PlatformError> {
-        let os = Os::current();
-        let arch = Arch::current();
-        let platform = format!("{}-{}", arch.as_str(), os.as_str());
+    /// Create a new platform identifier
+    pub const fn new(arch: Arch, os: Os) -> Self {
+        Self { arch, os }
+    }
 
-        let username = whoami::username();
-        let hostname =
-            whoami::fallible::hostname().map_err(|e| PlatformError::Hostname(e.to_string()))?;
+    /// Detect the current platform at compile time
+    pub const fn current() -> Self {
+        Self {
+            arch: Arch::current(),
+            os: Os::current(),
+        }
+    }
 
-        let home_dir = dirs::home_dir().ok_or(PlatformError::NoHomeDirectory)?;
+    /// Returns the platform string (e.g., "aarch64-darwin")
+    pub fn as_string(&self) -> String {
+        format!("{}-{}", self.arch, self.os)
+    }
+}
 
-        Ok(Self {
-            os,
-            arch,
+impl fmt::Display for Platform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}-{}", self.arch, self.os)
+    }
+}
+
+/// Complete platform information including user details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformInfo {
+    pub platform: Platform,
+    pub os: Os,
+    pub arch: Arch,
+    pub hostname: String,
+    pub username: String,
+}
+
+impl PlatformInfo {
+    /// Gather current platform information
+    pub fn current() -> Self {
+        let platform = Platform::current();
+        Self {
             platform,
-            username,
-            hostname,
-            home_dir,
-        })
+            os: platform.os,
+            arch: platform.arch,
+            hostname: whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
+            username: whoami::username(),
+        }
     }
 
     /// Check if running on Linux
@@ -127,103 +157,6 @@ impl Platform {
     pub fn is_windows(&self) -> bool {
         self.os == Os::Windows
     }
-
-    /// Get the user store path
-    ///
-    /// - Linux: `~/.local/share/syslua/store`
-    /// - macOS: `~/Library/Application Support/syslua/store`
-    /// - Windows: `%LOCALAPPDATA%\syslua\store`
-    pub fn user_store_path(&self) -> std::path::PathBuf {
-        match self.os {
-            Os::Linux => self.home_dir.join(".local/share/syslua/store"),
-            Os::Darwin => self
-                .home_dir
-                .join("Library/Application Support/syslua/store"),
-            Os::Windows => dirs::data_local_dir()
-                .unwrap_or_else(|| self.home_dir.clone())
-                .join("syslua")
-                .join("store"),
-        }
-    }
-
-    /// Get the system store path
-    ///
-    /// - Linux/macOS: `/syslua/store`
-    /// - Windows: `C:\syslua\store`
-    pub fn system_store_path(&self) -> std::path::PathBuf {
-        match self.os {
-            Os::Linux | Os::Darwin => std::path::PathBuf::from("/syslua/store"),
-            Os::Windows => std::path::PathBuf::from(r"C:\syslua\store"),
-        }
-    }
-
-    /// Get the user config directory
-    ///
-    /// - Linux: `~/.config/syslua`
-    /// - macOS: `~/.config/syslua` (or `~/Library/Application Support/syslua`)
-    /// - Windows: `%APPDATA%\syslua`
-    pub fn user_config_dir(&self) -> std::path::PathBuf {
-        match self.os {
-            Os::Linux | Os::Darwin => self.home_dir.join(".config/syslua"),
-            Os::Windows => dirs::config_dir()
-                .unwrap_or_else(|| self.home_dir.clone())
-                .join("syslua"),
-        }
-    }
-
-    /// Get the path where environment scripts are stored
-    ///
-    /// - Linux/macOS: `~/.config/syslua/env`
-    /// - Windows: `%APPDATA%\syslua\env`
-    pub fn env_script_dir(&self) -> std::path::PathBuf {
-        self.user_config_dir().join("env")
-    }
-
-    /// Get the path for a specific shell's environment script
-    pub fn env_script_path(&self, shell: &crate::Shell) -> std::path::PathBuf {
-        let filename = format!("env.{}", shell.script_extension());
-        self.env_script_dir().join(filename)
-    }
-
-    /// Get the path for profile scripts (derivation-based env)
-    ///
-    /// - Linux: `~/.local/share/syslua/`
-    /// - macOS: `~/Library/Application Support/syslua/`
-    /// - Windows: `%LOCALAPPDATA%\syslua\`
-    pub fn profile_dir(&self) -> std::path::PathBuf {
-        match self.os {
-            Os::Linux => self.home_dir.join(".local/share/syslua"),
-            Os::Darwin => self.home_dir.join("Library/Application Support/syslua"),
-            Os::Windows => dirs::data_local_dir()
-                .unwrap_or_else(|| self.home_dir.clone())
-                .join("syslua"),
-        }
-    }
-
-    /// Get the path for input caching
-    ///
-    /// - Linux: `~/.local/share/syslua/inputs`
-    /// - macOS: `~/Library/Caches/syslua/inputs`
-    /// - Windows: `%LOCALAPPDATA%\syslua\inputs`
-    pub fn input_cache_dir(&self) -> std::path::PathBuf {
-        match self.os {
-            Os::Linux => self.home_dir.join(".local/share/syslua/inputs"),
-            Os::Darwin => self.home_dir.join("Library/Caches/syslua/inputs"),
-            Os::Windows => dirs::cache_dir()
-                .unwrap_or_else(|| self.home_dir.clone())
-                .join("syslua")
-                .join("inputs"),
-        }
-    }
-
-    /// Get the path for snapshots storage
-    ///
-    /// - Linux: `~/.local/share/syslua/snapshots`
-    /// - macOS: `~/Library/Application Support/syslua/snapshots`
-    /// - Windows: `%LOCALAPPDATA%\syslua\snapshots`
-    pub fn snapshots_dir(&self) -> std::path::PathBuf {
-        self.profile_dir().join("snapshots")
-    }
 }
 
 #[cfg(test)]
@@ -231,40 +164,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_platform_detect() {
-        let platform = Platform::detect().expect("Failed to detect platform");
+    fn test_platform_detection() {
+        let info = PlatformInfo::current();
 
-        // Basic sanity checks
-        assert!(!platform.username.is_empty());
-        assert!(!platform.hostname.is_empty());
-        assert!(platform.home_dir.exists());
-        assert!(!platform.platform.is_empty());
+        // Should detect something
+        assert!(!info.hostname.is_empty());
+        assert!(!info.username.is_empty());
+
+        // Platform string should be non-empty
+        let platform_str = info.platform.to_string();
+        assert!(platform_str.contains('-'));
     }
 
     #[test]
-    fn test_os_as_str() {
-        assert_eq!(Os::Linux.as_str(), "linux");
-        assert_eq!(Os::Darwin.as_str(), "darwin");
-        assert_eq!(Os::Windows.as_str(), "windows");
-    }
+    fn test_platform_string_format() {
+        let platform = Platform::new(Arch::Aarch64, Os::Darwin);
+        assert_eq!(platform.to_string(), "aarch64-darwin");
 
-    #[test]
-    fn test_arch_as_str() {
-        assert_eq!(Arch::X86_64.as_str(), "x86_64");
-        assert_eq!(Arch::Aarch64.as_str(), "aarch64");
-        assert_eq!(Arch::Arm.as_str(), "arm");
-    }
-
-    #[test]
-    fn test_platform_checks() {
-        let platform = Platform::detect().expect("Failed to detect platform");
-
-        // Only one of these should be true
-        let checks = [
-            platform.is_linux(),
-            platform.is_darwin(),
-            platform.is_windows(),
-        ];
-        assert_eq!(checks.iter().filter(|&&x| x).count(), 1);
+        let platform = Platform::new(Arch::X86_64, Os::Linux);
+        assert_eq!(platform.to_string(), "x86_64-linux");
     }
 }

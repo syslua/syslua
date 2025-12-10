@@ -1,76 +1,32 @@
 //! Error types for sys-core
 
+use std::path::PathBuf;
 use thiserror::Error;
 
-/// Errors that can occur in core operations
-#[derive(Debug, Error)]
-pub enum CoreError {
-    #[error("Lua evaluation error: {0}")]
-    Lua(#[from] sys_lua::LuaError),
+/// Result type for sys-core operations
+pub type Result<T> = std::result::Result<T, Error>;
 
-    #[error("Platform error: {0}")]
-    Platform(#[from] sys_platform::PlatformError),
-
+/// Errors that can occur during sys-core operations
+#[derive(Error, Debug)]
+pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("File operation failed for '{path}': {message}")]
-    FileOperation { path: String, message: String },
-
-    #[error("Symlink target does not exist: {0}")]
-    SymlinkTargetMissing(String),
-
-    #[error("Cannot overwrite existing file without --force: {0}")]
-    FileExists(String),
-
-    // Store errors
-    #[error("Store not initialized: {0}")]
-    StoreNotInitialized(String),
-
-    #[error("Store object not found: {0}")]
-    ObjectNotFound(String),
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
 
     #[error("Hash mismatch: expected {expected}, got {actual}")]
     HashMismatch { expected: String, actual: String },
 
-    // Derivation errors
-    #[error("Derivation build failed for '{name}': {message}")]
-    BuildFailed { name: String, message: String },
+    #[error("Store error: {0}")]
+    Store(String),
 
-    #[error("Missing required input '{input}' for derivation '{name}'")]
-    MissingInput { name: String, input: String },
+    #[error("Path not found: {0}")]
+    PathNotFound(PathBuf),
 
-    #[error("Invalid derivation spec: {0}")]
-    InvalidDerivationSpec(String),
+    #[error("Unsupported archive format: {0}")]
+    UnsupportedArchive(String),
 
-    // Fetch errors
-    #[error("Fetch failed for URL '{url}': {message}")]
-    FetchFailed { url: String, message: String },
-
-    #[error("Archive extraction failed: {0}")]
-    ExtractionFailed(String),
-
-    // Input errors
-    #[error("Invalid input: {0}")]
-    InvalidInput(String),
-
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    // JSON/serialization errors
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    // Snapshot errors
-    #[error("Snapshot not found: {0}")]
-    SnapshotNotFound(String),
-
-    #[error("No snapshots available")]
-    NoSnapshots,
-
-    #[error("Snapshot operation failed: {0}")]
-    SnapshotError(String),
-
-    #[error("Rollback failed: {0}")]
-    RollbackFailed(String),
+    #[error("Derivation error: {0}")]
+    Derivation(String),
 }

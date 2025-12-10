@@ -1,1395 +1,817 @@
-//! Global Lua functions and the syslua table
+//! Global functions and types exposed to Lua
+//!
+//! Core primitives only:
+//! - derive{} - Create derivations (build recipes)
+//! - activate{} - Create activations (make derivations visible)
+//!
+//! Note: file{}, env{}, user{} are Lua-level helpers that create
+//! derivations/activations - they are NOT separate manifest entries.
 
-use crate::types::{
-    DerivationDecl, DerivationInput, EnvDecl, EnvMergeStrategy, EnvValue, FileDecl, InputDecl,
-    PkgDecl,
-};
-use mlua::{Lua, Result as LuaResult, Table, Value};
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use sys_platform::Platform;
+use mlua::{Function, Lua, RegistryKey, Result, Table, UserData, UserDataMethods, Value};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tracing::debug;
 
-/// Shared state for collecting declarations during Lua evaluation
-pub struct Declarations {
-    pub files: Vec<FileDecl>,
-    pub envs: Vec<EnvDecl>,
-    pub derivations: Vec<DerivationDecl>,
-    pub pkgs: Vec<PkgDecl>,
-    pub inputs: Vec<InputDecl>,
+/// A derivation specification collected from Lua
+///
+/// This stores the derivation metadata and a reference to the config function.
+/// The config function is stored separately in the runtime and called during
+/// realization with a DerivationCtx.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Derivation {
+    pub name: String,
+    pub version: Option<String>,
+    pub outputs: Vec<String>,
+    /// Computed hash of the derivation (name + version + opts + config)
+    pub hash: String,
+    /// Resolved opts (after calling opts function if dynamic)
+    pub opts: HashMap<String, OptsValue>,
+    /// Index into the config function registry (not serialized)
+    #[serde(skip)]
+    pub config_index: usize,
 }
 
-impl Default for Declarations {
-    fn default() -> Self {
-        Self::new()
+/// Values that can appear in opts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OptsValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    Array(Vec<OptsValue>),
+    Table(HashMap<String, OptsValue>),
+}
+
+/// An activation specification collected from Lua
+///
+/// Activations describe what to do with derivation outputs:
+/// - Add to PATH
+/// - Create symlinks
+/// - Source shell scripts
+/// - Run commands
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Activation {
+    /// Computed hash of the activation
+    pub hash: String,
+    /// Resolved opts (after calling opts function if dynamic)
+    pub opts: HashMap<String, OptsValue>,
+    /// Index into the config function registry (not serialized)
+    #[serde(skip)]
+    pub config_index: usize,
+}
+
+/// Actions collected during activation config execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ActivationAction {
+    /// Add a directory to PATH
+    AddToPath { bin_path: String },
+    /// Create a symlink
+    Symlink {
+        source: String,
+        target: String,
+        mutable: bool,
+    },
+    /// Source a script in shell initialization
+    SourceInShell { script: String, shells: Vec<String> },
+    /// Run a command (escape hatch)
+    Run { cmd: String },
+}
+
+/// Shell types for source_in_shell
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+}
+
+/// Collector for all declarations made during Lua evaluation
+#[derive(Default)]
+pub struct Collector {
+    pub derivations: Vec<Derivation>,
+    pub activations: Vec<Activation>,
+    /// Store derivation config functions via registry keys (mlua Functions can't be serialized)
+    pub derivation_config_functions: Vec<RegistryKey>,
+    /// Store activation config functions via registry keys
+    pub activation_config_functions: Vec<RegistryKey>,
+}
+
+impl std::fmt::Debug for Collector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Collector")
+            .field("derivations", &self.derivations)
+            .field("activations", &self.activations)
+            .field(
+                "derivation_config_count",
+                &self.derivation_config_functions.len(),
+            )
+            .field(
+                "activation_config_count",
+                &self.activation_config_functions.len(),
+            )
+            .finish()
     }
 }
 
-impl Declarations {
+impl Collector {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Callback type for fetch_url operation
+pub type FetchUrlFn =
+    Box<dyn Fn(&str, &PathBuf, Option<&str>) -> std::result::Result<(), String> + Send + Sync>;
+
+/// Callback type for unpack_archive operation
+pub type UnpackArchiveFn =
+    Box<dyn Fn(&PathBuf, &PathBuf) -> std::result::Result<(), String> + Send + Sync>;
+
+/// DerivationCtx - passed to config function during realization
+///
+/// Provides:
+/// - ctx.out - output directory path
+/// - ctx.sys - system information table (added separately)
+/// - ctx.fetch_url(url, sha256) - download and verify file
+/// - ctx.unpack(archive, dest?) - extract archive
+/// - ctx.mkdir(path) - create directory
+/// - ctx.copy(src, dst) - copy file/directory
+/// - ctx.write(path, content) - write string to file
+pub struct DerivationCtx {
+    /// Output directory for this derivation
+    pub out: PathBuf,
+    /// Download cache directory
+    pub cache_dir: PathBuf,
+    /// Platform information
+    pub platform: sys_platform::Platform,
+    pub hostname: String,
+    pub username: String,
+    /// Callback for fetching URLs
+    fetch_url_fn: Arc<FetchUrlFn>,
+    /// Callback for unpacking archives
+    unpack_archive_fn: Arc<UnpackArchiveFn>,
+}
+
+impl DerivationCtx {
+    pub fn new(
+        out: PathBuf,
+        cache_dir: PathBuf,
+        fetch_url_fn: FetchUrlFn,
+        unpack_archive_fn: UnpackArchiveFn,
+    ) -> Self {
+        let platform_info = sys_platform::PlatformInfo::current();
         Self {
-            files: Vec::new(),
-            envs: Vec::new(),
-            derivations: Vec::new(),
-            pkgs: Vec::new(),
-            inputs: Vec::new(),
+            out,
+            cache_dir,
+            platform: platform_info.platform,
+            hostname: platform_info.hostname,
+            username: platform_info.username,
+            fetch_url_fn: Arc::new(fetch_url_fn),
+            unpack_archive_fn: Arc::new(unpack_archive_fn),
         }
     }
 }
 
-/// Set up the syslua global table with platform information
-pub fn setup_syslua_global(lua: &Lua, platform: &Platform) -> LuaResult<()> {
-    let syslua = lua.create_table()?;
-
-    // Platform information
-    syslua.set("platform", platform.platform.as_str())?;
-    syslua.set("os", platform.os.as_str())?;
-    syslua.set("arch", platform.arch.as_str())?;
-    syslua.set("hostname", platform.hostname.as_str())?;
-    syslua.set("username", platform.username.as_str())?;
-
-    // Boolean helpers
-    syslua.set("is_linux", platform.is_linux())?;
-    syslua.set("is_darwin", platform.is_darwin())?;
-    syslua.set("is_windows", platform.is_windows())?;
-
-    // Version
-    syslua.set("version", env!("CARGO_PKG_VERSION"))?;
-
-    lua.globals().set("syslua", syslua)?;
-
-    Ok(())
-}
-
-/// Set up the file{} global function
-///
-/// ```lua
-/// file { path = "~/.gitconfig", source = "./dotfiles/gitconfig" }
-/// file { path = "~/.gitconfig", source = "./dotfiles/gitconfig", mutable = true }
-/// file { path = "~/.config/init.lua", content = [[require("config")]] }
-/// ```
-pub fn setup_file_function(
-    lua: &Lua,
-    declarations: Rc<RefCell<Declarations>>,
-    config_dir: PathBuf,
-) -> LuaResult<()> {
-    let file_fn = lua.create_function(move |_, spec: Table| {
-        let path_str: String = spec
-            .get::<String>("path")
-            .map_err(|_| mlua::Error::runtime("file{} requires 'path' field"))?;
-
-        // Expand ~ in path
-        let path = sys_platform::expand_path(&path_str)
-            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-
-        // Get optional fields
-        let source: Option<String> = spec.get("source").ok();
-        let content: Option<String> = spec.get("content").ok();
-        let mutable: bool = spec.get("mutable").unwrap_or(false);
-        let mode: Option<u32> = spec.get("mode").ok();
-
-        // Expand paths for source, resolving relative paths against config dir
-        let source = source
-            .map(|s| sys_platform::expand_path_with_base(&s, &config_dir))
-            .transpose()
-            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-
-        let decl = FileDecl {
-            path,
-            source,
-            content,
-            mutable,
-            mode,
-        };
-
-        // Validate the declaration
-        decl.validate()
-            .map_err(|e| mlua::Error::runtime(e.to_string()))?;
-
-        // Add to declarations
-        declarations.borrow_mut().files.push(decl);
-
-        Ok(())
-    })?;
-
-    lua.globals().set("file", file_fn)?;
-
-    Ok(())
-}
-
-/// Set up the env{} global function
-///
-/// Usage from Lua:
-/// ```lua
-/// env {
-///     EDITOR = "nvim",              -- simple value (replaces existing)
-///     PATH = { "~/.local/bin" },    -- array = prepend to PATH
-///     MANPATH = { append = "/usr/share/man" },  -- explicit append
-/// }
-/// ```
-pub fn setup_env_function(lua: &Lua, declarations: Rc<RefCell<Declarations>>) -> LuaResult<()> {
-    let env_fn = lua.create_function(move |_, spec: Table| {
-        for pair in spec.pairs::<String, Value>() {
-            let (name, value) = pair?;
-
-            let env_decl = parse_env_value(&name, value)?;
-            declarations.borrow_mut().envs.push(env_decl);
+impl Clone for DerivationCtx {
+    fn clone(&self) -> Self {
+        Self {
+            out: self.out.clone(),
+            cache_dir: self.cache_dir.clone(),
+            platform: self.platform,
+            hostname: self.hostname.clone(),
+            username: self.username.clone(),
+            fetch_url_fn: Arc::clone(&self.fetch_url_fn),
+            unpack_archive_fn: Arc::clone(&self.unpack_archive_fn),
         }
-
-        Ok(())
-    })?;
-
-    lua.globals().set("env", env_fn)?;
-
-    Ok(())
-}
-
-/// Parse a Lua value into an EnvDecl
-fn parse_env_value(name: &str, value: Value) -> Result<EnvDecl, mlua::Error> {
-    match value {
-        // Simple string value: EDITOR = "nvim"
-        Value::String(s) => {
-            let value_str = s.to_str()?.to_string();
-            // Expand ~ in the value
-            let expanded = expand_env_path(&value_str);
-            Ok(EnvDecl::new(name, expanded))
-        }
-
-        // Array of strings: PATH = { "~/.local/bin", "~/.cargo/bin" }
-        // This means prepend these paths
-        Value::Table(t) => {
-            // Check if it's a table with explicit strategy keys
-            // Use raw_get to check for nil explicitly
-            let prepend_val: Value = t.get("prepend")?;
-            if !matches!(prepend_val, Value::Nil) {
-                return parse_strategy_value(name, prepend_val, EnvMergeStrategy::Prepend);
-            }
-
-            let append_val: Value = t.get("append")?;
-            if !matches!(append_val, Value::Nil) {
-                return parse_strategy_value(name, append_val, EnvMergeStrategy::Append);
-            }
-
-            // Otherwise treat as array of prepend values
-            let mut values = Vec::new();
-            for item in t.sequence_values::<String>() {
-                let path = item?;
-                let expanded = expand_env_path(&path);
-                values.push(EnvValue::prepend(expanded));
-            }
-
-            if values.is_empty() {
-                return Err(mlua::Error::runtime(format!(
-                    "env var '{}' has empty array value",
-                    name
-                )));
-            }
-
-            Ok(EnvDecl {
-                name: name.to_string(),
-                values,
-            })
-        }
-
-        _ => Err(mlua::Error::runtime(format!(
-            "env var '{}' must be a string or table, got {:?}",
-            name,
-            value.type_name()
-        ))),
     }
 }
 
-/// Parse a value with an explicit merge strategy
-fn parse_strategy_value(
-    name: &str,
-    value: Value,
-    strategy: EnvMergeStrategy,
-) -> Result<EnvDecl, mlua::Error> {
-    match value {
-        Value::String(s) => {
-            let value_str = s.to_str()?.to_string();
-            let expanded = expand_env_path(&value_str);
-            Ok(EnvDecl {
-                name: name.to_string(),
-                values: vec![EnvValue {
-                    value: expanded,
-                    strategy,
-                }],
-            })
+impl UserData for DerivationCtx {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        // ctx.out - the output directory
+        fields.add_field_method_get("out", |_, this| Ok(this.out.to_string_lossy().to_string()));
+
+        // ctx.sys - system information table
+        fields.add_field_method_get("sys", |lua, this| {
+            let sys = lua.create_table()?;
+            sys.set("platform", this.platform.to_string())?;
+            sys.set("os", this.platform.os.to_string())?;
+            sys.set("arch", this.platform.arch.to_string())?;
+            sys.set("hostname", this.hostname.clone())?;
+            sys.set("username", this.username.clone())?;
+            sys.set("is_darwin", this.platform.os == sys_platform::Os::Darwin)?;
+            sys.set("is_linux", this.platform.os == sys_platform::Os::Linux)?;
+            sys.set("is_windows", this.platform.os == sys_platform::Os::Windows)?;
+            Ok(sys)
+        });
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // ctx.fetch_url(url, sha256) -> path
+        methods.add_method("fetch_url", |_, this, (url, sha256): (String, String)| {
+            let filename = url.rsplit('/').next().unwrap_or("download");
+            let dest = this.cache_dir.join(filename);
+
+            // Skip if already cached
+            if !dest.exists() {
+                debug!("Fetching {} -> {}", url, dest.display());
+                (this.fetch_url_fn)(&url, &dest, Some(&sha256))
+                    .map_err(|e| mlua::Error::RuntimeError(format!("fetch_url failed: {}", e)))?;
+            }
+
+            Ok(dest.to_string_lossy().to_string())
+        });
+
+        // ctx.unpack(archive, dest?) - dest defaults to ctx.out
+        methods.add_method(
+            "unpack",
+            |_, this, (archive, dest): (String, Option<String>)| {
+                let archive_path = PathBuf::from(&archive);
+                let dest_path = dest.map(PathBuf::from).unwrap_or_else(|| this.out.clone());
+
+                debug!("Unpacking {} -> {}", archive, dest_path.display());
+                (this.unpack_archive_fn)(&archive_path, &dest_path)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("unpack failed: {}", e)))?;
+
+                Ok(())
+            },
+        );
+
+        // ctx.mkdir(path)
+        methods.add_method("mkdir", |_, _, path: String| {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| mlua::Error::RuntimeError(format!("mkdir failed: {}", e)))?;
+            Ok(())
+        });
+
+        // ctx.copy(src, dst)
+        methods.add_method("copy", |_, _, (src, dst): (String, String)| {
+            let src_path = PathBuf::from(&src);
+            let dst_path = PathBuf::from(&dst);
+
+            if src_path.is_dir() {
+                copy_dir_recursive(&src_path, &dst_path)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("copy failed: {}", e)))?;
+            } else {
+                if let Some(parent) = dst_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("copy failed: {}", e)))?;
+                }
+                std::fs::copy(&src_path, &dst_path)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("copy failed: {}", e)))?;
+            }
+            Ok(())
+        });
+
+        // ctx.write(path, content)
+        methods.add_method("write", |_, _, (path, content): (String, String)| {
+            let path = PathBuf::from(&path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("write failed: {}", e)))?;
+            }
+            std::fs::write(&path, content)
+                .map_err(|e| mlua::Error::RuntimeError(format!("write failed: {}", e)))?;
+            Ok(())
+        });
+
+        // ctx.symlink(target, link)
+        #[cfg(unix)]
+        methods.add_method("symlink", |_, _, (target, link): (String, String)| {
+            let link_path = PathBuf::from(&link);
+            if let Some(parent) = link_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("symlink failed: {}", e)))?;
+            }
+            // Remove existing symlink if present
+            if link_path.exists() || link_path.is_symlink() {
+                std::fs::remove_file(&link_path).ok();
+            }
+            std::os::unix::fs::symlink(&target, &link_path)
+                .map_err(|e| mlua::Error::RuntimeError(format!("symlink failed: {}", e)))?;
+            Ok(())
+        });
+
+        // ctx.chmod(path, mode) - Unix only
+        #[cfg(unix)]
+        methods.add_method("chmod", |_, _, (path, mode): (String, u32)| {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(&path, perms)
+                .map_err(|e| mlua::Error::RuntimeError(format!("chmod failed: {}", e)))?;
+            Ok(())
+        });
+    }
+}
+
+/// Helper to recursively copy a directory
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
         }
-        Value::Table(t) => {
-            let mut values = Vec::new();
-            for item in t.sequence_values::<String>() {
-                let path = item?;
-                let expanded = expand_env_path(&path);
-                values.push(EnvValue {
-                    value: expanded,
-                    strategy: strategy.clone(),
+    }
+    Ok(())
+}
+
+/// ActivationCtx - passed to activation config function during apply
+///
+/// Provides:
+/// - ctx.sys - system information table
+/// - ctx:add_to_path(bin_path) - add directory to PATH
+/// - ctx:symlink(source, target, opts?) - create symlink
+/// - ctx:source_in_shell(script, opts?) - source script in shell init
+/// - ctx:run(cmd) - escape hatch for arbitrary commands
+pub struct ActivationCtx {
+    /// Platform information
+    pub platform: sys_platform::Platform,
+    pub hostname: String,
+    pub username: String,
+    /// Collected actions (filled during config execution)
+    pub actions: Arc<Mutex<Vec<ActivationAction>>>,
+    /// Store root for resolving paths
+    pub store_root: PathBuf,
+}
+
+impl ActivationCtx {
+    pub fn new(store_root: PathBuf) -> Self {
+        let platform_info = sys_platform::PlatformInfo::current();
+        Self {
+            platform: platform_info.platform,
+            hostname: platform_info.hostname,
+            username: platform_info.username,
+            actions: Arc::new(Mutex::new(Vec::new())),
+            store_root,
+        }
+    }
+
+    /// Get the collected actions after config function execution
+    pub fn take_actions(&self) -> Vec<ActivationAction> {
+        let mut actions = self.actions.lock().unwrap();
+        std::mem::take(&mut *actions)
+    }
+}
+
+impl Clone for ActivationCtx {
+    fn clone(&self) -> Self {
+        Self {
+            platform: self.platform,
+            hostname: self.hostname.clone(),
+            username: self.username.clone(),
+            actions: Arc::clone(&self.actions),
+            store_root: self.store_root.clone(),
+        }
+    }
+}
+
+impl UserData for ActivationCtx {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        // ctx.sys - system information table
+        fields.add_field_method_get("sys", |lua, this| {
+            let sys = lua.create_table()?;
+            sys.set("platform", this.platform.to_string())?;
+            sys.set("os", this.platform.os.to_string())?;
+            sys.set("arch", this.platform.arch.to_string())?;
+            sys.set("hostname", this.hostname.clone())?;
+            sys.set("username", this.username.clone())?;
+            sys.set("is_darwin", this.platform.os == sys_platform::Os::Darwin)?;
+            sys.set("is_linux", this.platform.os == sys_platform::Os::Linux)?;
+            sys.set("is_windows", this.platform.os == sys_platform::Os::Windows)?;
+            Ok(sys)
+        });
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // ctx:add_to_path(bin_path)
+        methods.add_method("add_to_path", |_, this, bin_path: String| {
+            debug!("add_to_path: {}", bin_path);
+            let mut actions = this.actions.lock().unwrap();
+            actions.push(ActivationAction::AddToPath { bin_path });
+            Ok(())
+        });
+
+        // ctx:symlink(source, target, opts?)
+        methods.add_method(
+            "symlink",
+            |_, this, (source, target, opts): (String, String, Option<Table>)| {
+                let mutable = opts
+                    .and_then(|t| t.get::<bool>("mutable").ok())
+                    .unwrap_or(false);
+                debug!("symlink: {} -> {} (mutable={})", source, target, mutable);
+                let mut actions = this.actions.lock().unwrap();
+                actions.push(ActivationAction::Symlink {
+                    source,
+                    target,
+                    mutable,
                 });
-            }
-            Ok(EnvDecl {
-                name: name.to_string(),
-                values,
-            })
-        }
-        _ => Err(mlua::Error::runtime(format!(
-            "env var '{}' strategy value must be a string or array",
-            name
-        ))),
+                Ok(())
+            },
+        );
+
+        // ctx:source_in_shell(script, opts?)
+        methods.add_method(
+            "source_in_shell",
+            |_, this, (script, opts): (String, Option<Table>)| {
+                let shells = if let Some(opts_table) = opts {
+                    if let Ok(shells_table) = opts_table.get::<Table>("shells") {
+                        shells_table
+                            .pairs::<i64, String>()
+                            .filter_map(|pair| pair.ok().map(|(_, shell)| shell))
+                            .collect()
+                    } else {
+                        vec!["bash".to_string(), "zsh".to_string(), "fish".to_string()]
+                    }
+                } else {
+                    vec!["bash".to_string(), "zsh".to_string(), "fish".to_string()]
+                };
+                debug!("source_in_shell: {} for {:?}", script, shells);
+                let mut actions = this.actions.lock().unwrap();
+                actions.push(ActivationAction::SourceInShell { script, shells });
+                Ok(())
+            },
+        );
+
+        // ctx:run(cmd) - escape hatch
+        methods.add_method("run", |_, this, cmd: String| {
+            debug!("run: {}", cmd);
+            let mut actions = this.actions.lock().unwrap();
+            actions.push(ActivationAction::Run { cmd });
+            Ok(())
+        });
     }
 }
 
-/// Expand ~ in environment variable paths
-fn expand_env_path(value: &str) -> String {
-    if let Some(stripped) = value.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return format!("{}/{}", home.display(), stripped);
-        }
-    }
-    value.to_string()
+/// Compute a short hash (first 12 characters) for use in paths
+fn short_hash(full_hash: &str) -> &str {
+    &full_hash[..12.min(full_hash.len())]
 }
 
-/// Set up the derivation{} global function
+/// Register all global functions in the Lua state
 ///
-/// Usage from Lua:
-/// ```lua
-/// local rg = derivation {
-///     name = "ripgrep",
-///     version = "15.1.0",
-///     inputs = {
-///         url = "https://github.com/.../ripgrep.tar.gz",
-///         sha256 = "abc123...",
-///     },
-///     build = function(ctx)
-///         local archive = ctx.fetch_url(ctx.inputs.url, ctx.inputs.sha256)
-///         ctx.unpack(archive, ctx.out)
-///     end,
-/// }
-/// ```
-///
-/// Returns a table with the derivation name and a placeholder hash that will be
-/// computed when the derivation is actually built.
-pub fn setup_derivation_function(
+/// The store_root is used to compute derivation output paths (.out).
+/// If not provided, a default user-level path is used.
+pub fn register_globals(
     lua: &Lua,
-    declarations: Rc<RefCell<Declarations>>,
-) -> LuaResult<()> {
-    let derivation_fn = lua.create_function(move |lua, spec: Table| {
-        // Required: name
-        let name: String = spec
-            .get::<String>("name")
-            .map_err(|_| mlua::Error::runtime("derivation{} requires 'name' field"))?;
+    collector: Arc<Mutex<Collector>>,
+    store_root: Option<PathBuf>,
+) -> Result<()> {
+    let globals = lua.globals();
 
-        // Optional: version
-        let version: Option<String> = spec.get("version").ok();
+    // Determine store root - use provided or detect
+    let store_root = store_root.unwrap_or_else(|| sys_platform::SysluaPaths::detect().store.root);
 
-        // Optional: outputs (defaults to ["out"])
-        let outputs: Vec<String> = spec
-            .get::<Table>("outputs")
-            .map(|t| {
-                t.sequence_values::<String>()
-                    .filter_map(|r| r.ok())
-                    .collect()
-            })
-            .unwrap_or_else(|_| vec!["out".to_string()]);
+    // derive {} - Create a derivation
+    let derive_collector = Arc::clone(&collector);
+    let derive_store_root = store_root.clone();
+    let derive_fn = lua.create_function(move |lua, spec: Table| {
+        let deriv = parse_derivation(lua, &spec, &derive_collector)?;
+        debug!(
+            "derive: {} v{:?} hash={}",
+            deriv.name, deriv.version, deriv.hash
+        );
 
-        // Required: inputs (table of key-value pairs)
-        let inputs_table: Table = spec
-            .get("inputs")
-            .map_err(|_| mlua::Error::runtime("derivation{} requires 'inputs' field"))?;
+        // Compute the store path for .out
+        let version = deriv.version.as_deref().unwrap_or("latest");
+        let short = short_hash(&deriv.hash);
+        let out_path = derive_store_root
+            .join("obj")
+            .join(format!("{}-{}-{}", deriv.name, version, short));
+        let out_str = out_path.to_string_lossy().to_string();
 
-        let inputs = parse_inputs_table(&inputs_table)?;
-
-        // Required: build (function) - we store a hash of the function source
-        let build_value: Value = spec
-            .get("build")
-            .map_err(|_| mlua::Error::runtime("derivation{} requires 'build' field"))?;
-
-        let build_hash = match &build_value {
-            Value::Function(f) => {
-                // Get function info for hashing
-                let info = f.info();
-                let source = info.source.unwrap_or_else(|| "unknown".to_string());
-                let line = info.line_defined.unwrap_or(0);
-                format!("{}:{}", source, line)
-            }
-            _ => {
-                return Err(mlua::Error::runtime(
-                    "derivation{} 'build' must be a function",
-                ));
-            }
-        };
-
-        let decl = DerivationDecl {
-            name: name.clone(),
-            version: version.clone(),
-            inputs,
-            build_hash,
-            outputs,
-        };
-
-        // Add to declarations
-        declarations.borrow_mut().derivations.push(decl);
-
-        // Return a table representing this derivation (can be passed to pkg())
+        // Return a table representing the derivation (can be passed to activate)
         let result = lua.create_table()?;
-        result.set("name", name.clone())?;
-        if let Some(v) = &version {
+        result.set("name", deriv.name.clone())?;
+        if let Some(v) = &deriv.version {
             result.set("version", v.clone())?;
         }
-        result.set("_type", "derivation")?;
+        result.set("hash", deriv.hash.clone())?;
+        result.set("out", out_str.clone())?;
+
+        // outputs table: { out = "<path>" }
+        let outputs_table = lua.create_table()?;
+        outputs_table.set("out", out_str)?;
+        result.set("outputs", outputs_table)?;
+
+        // Store the derivation
+        let mut collector = derive_collector.lock().unwrap();
+        collector.derivations.push(deriv);
 
         Ok(result)
     })?;
+    globals.set("derive", derive_fn)?;
 
-    lua.globals().set("derivation", derivation_fn)?;
+    // activate {} - Create an activation
+    let activate_collector = Arc::clone(&collector);
+    let activate_fn = lua.create_function(move |lua, spec: Table| {
+        let activation = parse_activation(lua, &spec, &activate_collector)?;
+        debug!("activate: hash={}", activation.hash);
 
-    Ok(())
-}
-
-/// Parse a Lua table into a BTreeMap of DerivationInput values
-fn parse_inputs_table(table: &Table) -> Result<BTreeMap<String, DerivationInput>, mlua::Error> {
-    let mut inputs = BTreeMap::new();
-
-    for pair in table.pairs::<String, Value>() {
-        let (key, value) = pair?;
-        let input = lua_value_to_input(value)?;
-        inputs.insert(key, input);
-    }
-
-    Ok(inputs)
-}
-
-/// Convert a Lua value to a DerivationInput
-fn lua_value_to_input(value: Value) -> Result<DerivationInput, mlua::Error> {
-    match value {
-        Value::String(s) => Ok(DerivationInput::String(s.to_str()?.to_string())),
-        Value::Number(n) => Ok(DerivationInput::Number(n)),
-        Value::Integer(n) => Ok(DerivationInput::Number(n as f64)),
-        Value::Boolean(b) => Ok(DerivationInput::Bool(b)),
-        Value::Table(t) => {
-            // Check if it's an array (has integer key 1)
-            // In Lua, arrays start at index 1
-            let has_index_one: bool = t.contains_key(1i64).unwrap_or(false);
-
-            if has_index_one {
-                // Treat as array - iterate over sequence values
-                let mut array = Vec::new();
-                for item in t.sequence_values::<Value>() {
-                    array.push(lua_value_to_input(item?)?);
-                }
-                Ok(DerivationInput::Array(array))
-            } else {
-                // Treat as table/map
-                let mut map = BTreeMap::new();
-                for pair in t.pairs::<String, Value>() {
-                    let (k, v) = pair?;
-                    map.insert(k, lua_value_to_input(v)?);
-                }
-                Ok(DerivationInput::Table(map))
-            }
-        }
-        Value::Nil => Ok(DerivationInput::String(String::new())),
-        _ => Err(mlua::Error::runtime(format!(
-            "Unsupported input type: {:?}",
-            value.type_name()
-        ))),
-    }
-}
-
-/// Set up the pkg() global function
-///
-/// Usage from Lua:
-/// ```lua
-/// local rg = derivation { ... }
-/// pkg(rg)  -- Register for PATH
-/// ```
-pub fn setup_pkg_function(lua: &Lua, declarations: Rc<RefCell<Declarations>>) -> LuaResult<()> {
-    let pkg_fn = lua.create_function(move |_, drv: Table| {
-        // Verify this is a derivation table
-        let type_marker: Option<String> = drv.get("_type").ok();
-        if type_marker.as_deref() != Some("derivation") {
-            return Err(mlua::Error::runtime(
-                "pkg() requires a derivation table (created by derivation{})",
-            ));
-        }
-
-        let name: String = drv
-            .get("name")
-            .map_err(|_| mlua::Error::runtime("Invalid derivation table: missing 'name'"))?;
-
-        let decl = PkgDecl::new(name);
-
-        // Add to declarations
-        declarations.borrow_mut().pkgs.push(decl);
-
+        let mut collector = activate_collector.lock().unwrap();
+        collector.activations.push(activation);
         Ok(())
     })?;
-
-    lua.globals().set("pkg", pkg_fn)?;
+    globals.set("activate", activate_fn)?;
 
     Ok(())
 }
 
-/// Set up the input{} global function
-///
-/// Usage from Lua:
-/// ```lua
-/// -- inputs.lua
-/// local M = {}
-///
-/// M.pkgs = input { source = "sys-lua/pkgs" }           -- GitHub: owner/repo (main branch)
-/// M.pkgs_v2 = input { source = "sys-lua/pkgs/v2.0.0" } -- GitHub: owner/repo/ref
-/// M.local_dev = input { source = "path:./my-packages" }
-///
-/// return M
-///
-/// -- init.lua
-/// local inputs = require("inputs")
-/// pkg(inputs.pkgs.ripgrep)  -- loads ripgrep.lua or ripgrep/init.lua from the input
-/// ```
-///
-/// Input source formats (Nix-like):
-/// - GitHub: "owner/repo" (defaults to main) or "owner/repo/ref"
-/// - Local: "path:./relative" or "path:/absolute"
-///
-/// The input{} function:
-/// 1. Records the input declaration for later resolution by InputManager
-/// 2. Returns a table with __index metatable for lazy module loading
-///
-/// During evaluation, the input paths are not yet resolved. The returned table
-/// stores the input ID and will be resolved before actual require() calls.
-/// For now, we create a placeholder that will error if accessed before resolution.
-pub fn setup_input_function(
+fn parse_derivation(
     lua: &Lua,
-    declarations: Rc<RefCell<Declarations>>,
-    config_dir: PathBuf,
-) -> LuaResult<()> {
-    // Counter for generating unique input IDs
-    let counter = Rc::new(RefCell::new(0u32));
-    let config_dir = Rc::new(config_dir);
+    spec: &Table,
+    collector: &Arc<Mutex<Collector>>,
+) -> Result<Derivation> {
+    let name: String = spec
+        .get("name")
+        .map_err(|_| mlua::Error::RuntimeError("derive: 'name' is required".to_string()))?;
 
-    let input_fn = lua.create_function(move |lua, spec: Table| {
-        // Get required source field
-        let source: String = spec
-            .get::<String>("source")
-            .map_err(|_| mlua::Error::runtime("input{} requires 'source' field"))?;
+    let version: Option<String> = spec.get("version").ok();
 
-        // Generate a unique ID for this input
-        let mut count = counter.borrow_mut();
-        *count += 1;
-        let input_id = format!("input_{}", *count);
-
-        // Build the input declaration
-        let decl = InputDecl::new(input_id.clone(), source.clone());
-
-        // For path: inputs, resolve immediately relative to config dir
-        if let Some(path_str) = source.strip_prefix("path:") {
-            let path = PathBuf::from(path_str);
-            let resolved = if path.is_absolute() {
-                path
-            } else {
-                config_dir.join(&path)
-            };
-
-            // Canonicalize to get absolute path
-            let resolved = resolved.canonicalize().map_err(|e| {
-                mlua::Error::runtime(format!(
-                    "Failed to resolve path input '{}': {}",
-                    path_str, e
-                ))
-            })?;
-
-            let decl = decl.with_resolved_path(resolved.clone());
-
-            // Record the declaration
-            declarations.borrow_mut().inputs.push(decl);
-
-            // Create a module loader table for the resolved path
-            return create_input_loader(lua, &input_id, &resolved);
-        }
-
-        // For GitHub inputs (owner/repo or owner/repo/ref), we can't resolve during evaluation
-        // Record the declaration and return a placeholder table
-        declarations.borrow_mut().inputs.push(decl);
-
-        // Create a placeholder table that will error on access
-        // This will be replaced with a real loader after InputManager resolves it
-        create_unresolved_input_placeholder(lua, &input_id, &source)
-    })?;
-
-    lua.globals().set("input", input_fn)?;
-
-    Ok(())
-}
-
-/// Set up the input{} global function with pre-resolved inputs
-///
-/// This version is used when inputs have already been resolved (e.g., from a lock file).
-/// The `resolved_inputs` map contains source URI -> local path mappings.
-///
-/// For GitHub inputs that are in the resolved map, the local path is used directly.
-/// For inputs not in the map, an error placeholder is returned (same as the non-resolved version).
-pub fn setup_input_function_with_resolved(
-    lua: &Lua,
-    declarations: Rc<RefCell<Declarations>>,
-    config_dir: PathBuf,
-    resolved_inputs: HashMap<String, PathBuf>,
-) -> LuaResult<()> {
-    // Counter for generating unique input IDs
-    let counter = Rc::new(RefCell::new(0u32));
-    let config_dir = Rc::new(config_dir);
-    let resolved_inputs = Rc::new(resolved_inputs);
-
-    let input_fn = lua.create_function(move |lua, spec: Table| {
-        // Get required source field
-        let source: String = spec
-            .get::<String>("source")
-            .map_err(|_| mlua::Error::runtime("input{} requires 'source' field"))?;
-
-        // Generate a unique ID for this input
-        let mut count = counter.borrow_mut();
-        *count += 1;
-        let input_id = format!("input_{}", *count);
-
-        // Build the input declaration
-        let decl = InputDecl::new(input_id.clone(), source.clone());
-
-        // For path: inputs, resolve immediately relative to config dir
-        if let Some(path_str) = source.strip_prefix("path:") {
-            let path = PathBuf::from(path_str);
-            let resolved = if path.is_absolute() {
-                path
-            } else {
-                config_dir.join(&path)
-            };
-
-            // Canonicalize to get absolute path
-            let resolved = resolved.canonicalize().map_err(|e| {
-                mlua::Error::runtime(format!(
-                    "Failed to resolve path input '{}': {}",
-                    path_str, e
-                ))
-            })?;
-
-            let decl = decl.with_resolved_path(resolved.clone());
-
-            // Record the declaration
-            declarations.borrow_mut().inputs.push(decl);
-
-            // Create a module loader table for the resolved path
-            return create_input_loader(lua, &input_id, &resolved);
-        }
-
-        // For GitHub inputs, check if we have a resolved path
-        if let Some(resolved_path) = resolved_inputs.get(&source) {
-            let decl = decl.with_resolved_path(resolved_path.clone());
-
-            // Record the declaration
-            declarations.borrow_mut().inputs.push(decl);
-
-            // Create a module loader table for the resolved path
-            return create_input_loader(lua, &input_id, resolved_path);
-        }
-
-        // Not resolved - record the declaration and return a placeholder
-        declarations.borrow_mut().inputs.push(decl);
-
-        // Create a placeholder table that will error on access
-        create_unresolved_input_placeholder(lua, &input_id, &source)
-    })?;
-
-    lua.globals().set("input", input_fn)?;
-
-    Ok(())
-}
-
-/// Create a module loader table for a resolved input path.
-///
-/// If the input directory has an `init.lua` at its root, that file is loaded
-/// and its return value is returned directly. This supports inputs that export
-/// a single module table.
-///
-/// Otherwise, returns a lazy loader table with an __index metamethod that:
-/// 1. Takes the key being accessed (e.g., "ripgrep")
-/// 2. Attempts to load it as a Lua module from the input directory
-/// 3. Returns the loaded module (which can itself be a table with more __index)
-fn create_input_loader(lua: &Lua, input_id: &str, base_path: &Path) -> LuaResult<Table> {
-    // Check if there's an init.lua at the root - if so, load it directly
-    let init_path = base_path.join("init.lua");
-    if init_path.exists() {
-        let result = load_lua_file(lua, &init_path)?;
-        // If the result is a table, return it with metadata
-        if let Value::Table(tbl) = result {
-            // Add metadata to the loaded module (if it doesn't conflict)
-            if tbl.get::<Value>("_type")?.is_nil() {
-                tbl.set("_type", "input")?;
+    // Parse outputs (defaults to ["out"])
+    let outputs: Vec<String> = match spec.get::<Value>("outputs") {
+        Ok(Value::Table(t)) => {
+            let mut outs = Vec::new();
+            for pair in t.pairs::<i64, String>() {
+                let (_, v) = pair?;
+                outs.push(v);
             }
-            if tbl.get::<Value>("_input_id")?.is_nil() {
-                tbl.set("_input_id", input_id.to_string())?;
+            if outs.is_empty() {
+                vec!["out".to_string()]
+            } else {
+                outs
             }
-            return Ok(tbl);
         }
-        // If init.lua returns a non-table, wrap it in a table
-        let wrapper = lua.create_table()?;
-        wrapper.set("_type", "input")?;
-        wrapper.set("_input_id", input_id.to_string())?;
-        wrapper.set("_value", result)?;
-        return Ok(wrapper);
-    }
-
-    // No init.lua at root - create a lazy loader for submodules
-    let loader = lua.create_table()?;
-
-    // Store metadata
-    loader.set("_type", "input")?;
-    loader.set("_input_id", input_id.to_string())?;
-    loader.set("_base_path", base_path.to_string_lossy().to_string())?;
-
-    // Create metatable with __index
-    let metatable = lua.create_table()?;
-
-    let index_fn = lua.create_function(move |lua, (tbl, key): (Table, String)| {
-        let base: String = tbl.get("_base_path")?;
-        let base_path = PathBuf::from(&base);
-
-        // Try to load the module
-        load_module_from_input(lua, &base_path, &key)
-    })?;
-
-    metatable.set("__index", index_fn)?;
-    loader.set_metatable(Some(metatable))?;
-
-    Ok(loader)
-}
-
-/// Load a module from an input directory using standard Lua resolution.
-///
-/// Tries in order:
-/// 1. `<base>/<key>.lua`
-/// 2. `<base>/<key>/init.lua`
-///
-/// Returns the loaded module, which may be a table that also supports __index
-/// for nested modules.
-fn load_module_from_input(lua: &Lua, base_path: &Path, key: &str) -> LuaResult<Value> {
-    // Try <key>.lua first
-    let file_path = base_path.join(format!("{}.lua", key));
-    if file_path.exists() {
-        return load_lua_file(lua, &file_path);
-    }
-
-    // Try <key>/init.lua
-    let init_path = base_path.join(key).join("init.lua");
-    if init_path.exists() {
-        return load_lua_file(lua, &init_path);
-    }
-
-    // Check if it's a directory without init.lua (allow traversal)
-    let dir_path = base_path.join(key);
-    if dir_path.is_dir() {
-        let loader = create_subdir_loader(lua, &dir_path)?;
-        return Ok(Value::Table(loader));
-    }
-
-    Err(mlua::Error::runtime(format!(
-        "Module '{}' not found in input (tried {}.lua and {}/init.lua)",
-        key, key, key
-    )))
-}
-
-/// Create a loader for a subdirectory within an input.
-fn create_subdir_loader(lua: &Lua, dir_path: &Path) -> LuaResult<Table> {
-    let loader = lua.create_table()?;
-
-    loader.set("_type", "input_subdir")?;
-    loader.set("_base_path", dir_path.to_string_lossy().to_string())?;
-
-    // Create metatable with __index
-    let metatable = lua.create_table()?;
-
-    let index_fn = lua.create_function(move |lua, (tbl, key): (Table, String)| {
-        let base: String = tbl.get("_base_path")?;
-        let base_path = PathBuf::from(&base);
-        load_module_from_input(lua, &base_path, &key)
-    })?;
-
-    metatable.set("__index", index_fn)?;
-    loader.set_metatable(Some(metatable))?;
-
-    Ok(loader)
-}
-
-/// Load and execute a Lua file, returning its result.
-///
-/// Temporarily modifies package.path to include the file's directory,
-/// allowing require() calls within the file to find sibling modules.
-fn load_lua_file(lua: &Lua, file_path: &Path) -> LuaResult<Value> {
-    let source = std::fs::read_to_string(file_path).map_err(|e| {
-        mlua::Error::runtime(format!("Failed to read {}: {}", file_path.display(), e))
-    })?;
-
-    // Get the directory containing this file
-    let file_dir = file_path.parent().map(|p| p.to_path_buf());
-
-    // Temporarily add the file's directory to package.path
-    let old_path: Option<String> = if let Some(dir) = &file_dir {
-        let package: Table = lua.globals().get("package")?;
-        let old: String = package.get("path")?;
-
-        // Add dir/?.lua and dir/?/init.lua to the front of package.path
-        let dir_str = dir.to_string_lossy();
-        let new_path = format!("{}/?.lua;{}/?/init.lua;{}", dir_str, dir_str, old);
-        package.set("path", new_path)?;
-
-        Some(old)
-    } else {
-        None
+        _ => vec!["out".to_string()],
     };
 
-    // Load and execute the chunk
-    let chunk = lua.load(&source).set_name(file_path.to_string_lossy());
-    let result = chunk.eval();
+    // Parse opts - can be a table or a function(sys)
+    let opts = parse_opts(lua, spec)?;
 
-    // Restore old package.path
-    if let Some(old) = old_path {
-        let package: Table = lua.globals().get("package")?;
-        package.set("path", old)?;
-    }
-
-    result
-}
-
-/// Create a placeholder table for unresolved inputs (GitHub inputs).
-///
-/// This table will error when accessed, indicating that the input needs
-/// to be resolved first via `sys update`.
-fn create_unresolved_input_placeholder(
-    lua: &Lua,
-    input_id: &str,
-    source: &str,
-) -> LuaResult<Table> {
-    let placeholder = lua.create_table()?;
-
-    placeholder.set("_type", "unresolved_input")?;
-    placeholder.set("_input_id", input_id.to_string())?;
-    placeholder.set("_source", source.to_string())?;
-
-    // Create metatable with __index that errors
-    let metatable = lua.create_table()?;
-    let source_clone = source.to_string();
-
-    let index_fn = lua.create_function(move |_, (_tbl, key): (Table, String)| {
-        Err::<Value, _>(mlua::Error::runtime(format!(
-            "Cannot access '{}' on unresolved input '{}'. Run 'sys update' first to fetch inputs.",
-            key, source_clone
-        )))
+    // Get config function (REQUIRED per architecture doc)
+    let config_fn: Function = spec.get("config").map_err(|_| {
+        mlua::Error::RuntimeError("derive: 'config' function is required".to_string())
     })?;
 
-    metatable.set("__index", index_fn)?;
-    placeholder.set_metatable(Some(metatable))?;
+    // Store the config function in the registry and get its index
+    let config_index = {
+        let registry_key = lua.create_registry_value(config_fn)?;
+        let mut coll = collector.lock().unwrap();
+        let idx = coll.derivation_config_functions.len();
+        coll.derivation_config_functions.push(registry_key);
+        idx
+    };
 
-    Ok(placeholder)
+    // Compute hash from name + version + opts
+    // In a real implementation, we'd also hash the config function source
+    let hash = compute_derivation_hash(&name, &version, &opts);
+
+    Ok(Derivation {
+        name,
+        version,
+        outputs,
+        hash,
+        opts,
+        config_index,
+    })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_syslua_global() {
-        let lua = Lua::new();
-        let platform = Platform::detect().unwrap();
-
-        setup_syslua_global(&lua, &platform).unwrap();
-
-        let syslua: Table = lua.globals().get("syslua").unwrap();
-
-        let os: String = syslua.get("os").unwrap();
-        assert!(!os.is_empty());
-
-        let is_darwin: bool = syslua.get("is_darwin").unwrap();
-        let is_linux: bool = syslua.get("is_linux").unwrap();
-        let is_windows: bool = syslua.get("is_windows").unwrap();
-
-        // Exactly one should be true
-        assert_eq!(
-            [is_darwin, is_linux, is_windows]
-                .iter()
-                .filter(|&&x| x)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn test_file_function_symlink() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/home/user/config");
-
-        setup_file_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        lua.load(
-            r#"
-            file {
-                path = "~/.gitconfig",
-                symlink = "./dotfiles/gitconfig",
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.files.len(), 1);
-
-        let file = &decls.files[0];
-        assert!(file.path.to_string_lossy().contains(".gitconfig"));
-        assert!(file.symlink.is_some());
-        assert_eq!(file.kind(), "symlink");
-    }
-
-    #[test]
-    fn test_file_function_content() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/home/user/config");
-
-        setup_file_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        lua.load(
-            r#"
-            file {
-                path = "/tmp/test.txt",
-                content = "Hello, world!",
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.files.len(), 1);
-
-        let file = &decls.files[0];
-        assert_eq!(file.content.as_deref(), Some("Hello, world!"));
-    }
-
-    #[test]
-    fn test_file_function_validation_error() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/home/user/config");
-
-        setup_file_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        // Missing required field
-        let result = lua
-            .load(
-                r#"
-            file {
-                path = "/tmp/test.txt",
-            }
-        "#,
-            )
-            .exec();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_env_function_simple() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_env_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            env {
-                EDITOR = "nvim",
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.envs.len(), 1);
-
-        let env = &decls.envs[0];
-        assert_eq!(env.name, "EDITOR");
-        assert_eq!(env.values.len(), 1);
-        assert_eq!(env.values[0].value, "nvim");
-        assert!(!env.is_path_like());
-    }
-
-    #[test]
-    fn test_env_function_path_prepend() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_env_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            env {
-                PATH = { "/usr/local/bin", "/opt/bin" },
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.envs.len(), 1);
-
-        let env = &decls.envs[0];
-        assert_eq!(env.name, "PATH");
-        assert_eq!(env.values.len(), 2);
-        assert!(env.is_path_like());
-        assert!(matches!(env.values[0].strategy, EnvMergeStrategy::Prepend));
-    }
-
-    #[test]
-    fn test_env_function_explicit_append() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_env_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            env {
-                MANPATH = { append = "/usr/share/man" },
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.envs.len(), 1);
-
-        let env = &decls.envs[0];
-        assert_eq!(env.name, "MANPATH");
-        assert!(matches!(env.values[0].strategy, EnvMergeStrategy::Append));
-    }
-
-    #[test]
-    fn test_env_function_tilde_expansion() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_env_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            env {
-                PATH = { "~/.local/bin" },
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        let env = &decls.envs[0];
-
-        // Should have expanded ~ to home directory
-        assert!(!env.values[0].value.starts_with("~/"));
-        assert!(env.values[0].value.contains(".local/bin"));
-    }
-
-    #[test]
-    fn test_env_function_multiple() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_env_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            env {
-                EDITOR = "nvim",
-                PAGER = "less",
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.envs.len(), 2);
-    }
-
-    #[test]
-    fn test_derivation_function_basic() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_derivation_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            local rg = derivation {
-                name = "ripgrep",
-                version = "15.1.0",
-                inputs = {
-                    url = "https://example.com/rg.tar.gz",
-                    sha256 = "abc123",
-                },
-                build = function(ctx)
-                    -- build steps
-                end,
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.derivations.len(), 1);
-
-        let drv = &decls.derivations[0];
-        assert_eq!(drv.name, "ripgrep");
-        assert_eq!(drv.version, Some("15.1.0".to_string()));
-        assert!(drv.inputs.contains_key("url"));
-        assert!(drv.inputs.contains_key("sha256"));
-    }
-
-    #[test]
-    fn test_derivation_function_nested_inputs() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_derivation_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            derivation {
-                name = "test-pkg",
-                inputs = {
-                    sources = {
-                        main = "src/main.rs",
-                        lib = "src/lib.rs",
-                    },
-                    flags = { "-O2", "-Wall" },
-                    enabled = true,
-                    count = 42,
-                },
-                build = function(ctx) end,
-            }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        let drv = &decls.derivations[0];
-
-        // Check nested table
-        match drv.inputs.get("sources") {
-            Some(DerivationInput::Table(t)) => {
-                assert!(t.contains_key("main"));
-                assert!(t.contains_key("lib"));
-            }
-            _ => panic!("Expected table for 'sources'"),
+/// Parse opts from spec - can be static table or function(sys)
+fn parse_opts(lua: &Lua, spec: &Table) -> Result<HashMap<String, OptsValue>> {
+    match spec.get::<Value>("opts") {
+        Ok(Value::Table(t)) => table_to_opts(&t),
+        Ok(Value::Function(f)) => {
+            // Call opts(sys) to get the resolved options
+            let sys = create_sys_table(lua)?;
+            let result: Table = f.call(sys)?;
+            table_to_opts(&result)
         }
+        Ok(Value::Nil) => Ok(HashMap::new()),
+        _ => Ok(HashMap::new()),
+    }
+}
 
-        // Check array
-        match drv.inputs.get("flags") {
-            Some(DerivationInput::Array(a)) => {
-                assert_eq!(a.len(), 2);
+/// Create the sys table passed to opts(sys)
+fn create_sys_table(lua: &Lua) -> Result<Table> {
+    let platform_info = sys_platform::PlatformInfo::current();
+    let sys = lua.create_table()?;
+    sys.set("platform", platform_info.platform.to_string())?;
+    sys.set("os", platform_info.platform.os.to_string())?;
+    sys.set("arch", platform_info.platform.arch.to_string())?;
+    sys.set("hostname", platform_info.hostname)?;
+    sys.set("username", platform_info.username)?;
+    sys.set(
+        "is_darwin",
+        platform_info.platform.os == sys_platform::Os::Darwin,
+    )?;
+    sys.set(
+        "is_linux",
+        platform_info.platform.os == sys_platform::Os::Linux,
+    )?;
+    sys.set(
+        "is_windows",
+        platform_info.platform.os == sys_platform::Os::Windows,
+    )?;
+    Ok(sys)
+}
+
+/// Convert a Lua table to HashMap<String, OptsValue>
+fn table_to_opts(table: &Table) -> Result<HashMap<String, OptsValue>> {
+    let mut opts = HashMap::new();
+    for pair in table.clone().pairs::<String, Value>() {
+        let (k, v) = pair?;
+        if let Some(val) = value_to_opts_value(&v)? {
+            opts.insert(k, val);
+        }
+    }
+    Ok(opts)
+}
+
+/// Convert a Lua Value to OptsValue
+fn value_to_opts_value(value: &Value) -> Result<Option<OptsValue>> {
+    match value {
+        Value::Nil => Ok(None),
+        Value::Boolean(b) => Ok(Some(OptsValue::Boolean(*b))),
+        Value::Integer(n) => Ok(Some(OptsValue::Number(*n as f64))),
+        Value::Number(n) => Ok(Some(OptsValue::Number(*n))),
+        Value::String(s) => Ok(Some(OptsValue::String(s.to_str()?.to_string()))),
+        Value::Table(t) => {
+            // Check if it's an array (sequential integer keys starting at 1)
+            let first_key: mlua::Result<i64> = t
+                .clone()
+                .pairs::<i64, Value>()
+                .next()
+                .map_or(Err(mlua::Error::RuntimeError("empty".to_string())), |r| {
+                    r.map(|(k, _)| k)
+                });
+
+            if first_key.is_ok() {
+                // It's an array
+                let mut arr = Vec::new();
+                for pair in t.clone().pairs::<i64, Value>() {
+                    let (_, v) = pair?;
+                    if let Some(val) = value_to_opts_value(&v)? {
+                        arr.push(val);
+                    }
+                }
+                Ok(Some(OptsValue::Array(arr)))
+            } else {
+                // It's a table/map
+                let mut map = HashMap::new();
+                for pair in t.clone().pairs::<String, Value>() {
+                    let (k, v) = pair?;
+                    if let Some(val) = value_to_opts_value(&v)? {
+                        map.insert(k, val);
+                    }
+                }
+                Ok(Some(OptsValue::Table(map)))
             }
-            _ => panic!("Expected array for 'flags'"),
         }
+        _ => Ok(None), // Skip functions, userdata, etc.
+    }
+}
 
-        // Check bool
-        match drv.inputs.get("enabled") {
-            Some(DerivationInput::Bool(b)) => assert!(*b),
-            _ => panic!("Expected bool for 'enabled'"),
-        }
+/// Compute a hash for the derivation
+fn compute_derivation_hash(
+    name: &str,
+    version: &Option<String>,
+    opts: &HashMap<String, OptsValue>,
+) -> String {
+    use sha2::{Digest, Sha256};
 
-        // Check number
-        match drv.inputs.get("count") {
-            Some(DerivationInput::Number(n)) => assert_eq!(*n, 42.0),
-            _ => panic!("Expected number for 'count'"),
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    if let Some(v) = version {
+        hasher.update(v.as_bytes());
+    }
+
+    // Include opts in hash (sorted for determinism)
+    let mut keys: Vec<_> = opts.keys().collect();
+    keys.sort();
+    for key in keys {
+        hasher.update(key.as_bytes());
+        if let Some(val) = opts.get(key) {
+            hash_opts_value(&mut hasher, val);
         }
     }
 
-    #[test]
-    fn test_derivation_returns_table() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
+    let result = hasher.finalize();
+    hex::encode(&result[..16]) // Use first 16 bytes (32 hex chars)
+}
 
-        setup_derivation_function(&lua, declarations.clone()).unwrap();
-
-        // The derivation should return a table that can be used later
-        lua.load(
-            r#"
-            local rg = derivation {
-                name = "ripgrep",
-                inputs = { url = "test" },
-                build = function(ctx) end,
+fn hash_opts_value(hasher: &mut sha2::Sha256, value: &OptsValue) {
+    use sha2::Digest;
+    match value {
+        OptsValue::String(s) => hasher.update(s.as_bytes()),
+        OptsValue::Number(n) => hasher.update(n.to_le_bytes()),
+        OptsValue::Boolean(b) => hasher.update([*b as u8]),
+        OptsValue::Array(arr) => {
+            for v in arr {
+                hash_opts_value(hasher, v);
             }
-            
-            -- Verify the returned table has expected fields
-            assert(rg.name == "ripgrep")
-            assert(rg._type == "derivation")
-        "#,
-        )
-        .exec()
-        .unwrap();
-    }
-
-    #[test]
-    fn test_pkg_function() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        setup_derivation_function(&lua, declarations.clone()).unwrap();
-        setup_pkg_function(&lua, declarations.clone()).unwrap();
-
-        lua.load(
-            r#"
-            local rg = derivation {
-                name = "ripgrep",
-                inputs = { url = "test" },
-                build = function(ctx) end,
+        }
+        OptsValue::Table(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                hasher.update(key.as_bytes());
+                if let Some(v) = map.get(key) {
+                    hash_opts_value(hasher, v);
+                }
             }
-            
-            pkg(rg)
-        "#,
-        )
-        .exec()
-        .unwrap();
+        }
+    }
+}
 
-        let decls = declarations.borrow();
-        assert_eq!(decls.derivations.len(), 1);
-        assert_eq!(decls.pkgs.len(), 1);
-        assert_eq!(decls.pkgs[0].derivation_name, "ripgrep");
-        assert!(decls.pkgs[0].add_to_path);
+fn parse_activation(
+    lua: &Lua,
+    spec: &Table,
+    collector: &Arc<Mutex<Collector>>,
+) -> Result<Activation> {
+    // Parse opts - can be a table or a function(sys)
+    let opts = parse_opts(lua, spec)?;
+
+    // Get config function (REQUIRED per architecture doc)
+    let config_fn: Function = spec.get("config").map_err(|_| {
+        mlua::Error::RuntimeError("activate: 'config' function is required".to_string())
+    })?;
+
+    // Store the config function in the registry and get its index
+    let config_index = {
+        let registry_key = lua.create_registry_value(config_fn)?;
+        let mut coll = collector.lock().unwrap();
+        let idx = coll.activation_config_functions.len();
+        coll.activation_config_functions.push(registry_key);
+        idx
+    };
+
+    // Compute hash from opts
+    let hash = compute_activation_hash(&opts);
+
+    Ok(Activation {
+        hash,
+        opts,
+        config_index,
+    })
+}
+
+/// Compute a hash for the activation
+fn compute_activation_hash(opts: &HashMap<String, OptsValue>) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"activation");
+
+    // Include opts in hash (sorted for determinism)
+    let mut keys: Vec<_> = opts.keys().collect();
+    keys.sort();
+    for key in keys {
+        hasher.update(key.as_bytes());
+        if let Some(val) = opts.get(key) {
+            hash_opts_value(&mut hasher, val);
+        }
     }
 
-    #[test]
-    fn test_pkg_function_requires_derivation() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
+    let result = hasher.finalize();
+    hex::encode(&result[..16]) // Use first 16 bytes (32 hex chars)
+}
 
-        setup_pkg_function(&lua, declarations.clone()).unwrap();
-
-        // Should fail when passing a non-derivation table
-        let result = lua
-            .load(
-                r#"
-            pkg({ name = "not-a-derivation" })
-        "#,
-            )
-            .exec();
-
-        assert!(result.is_err());
+/// Convert opts HashMap back to a Lua table for passing to config function
+pub fn opts_to_lua_table(lua: &Lua, opts: &HashMap<String, OptsValue>) -> Result<Table> {
+    let table = lua.create_table()?;
+    for (k, v) in opts {
+        table.set(k.as_str(), opts_value_to_lua(lua, v)?)?;
     }
+    Ok(table)
+}
 
-    #[test]
-    fn test_input_function_github() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/tmp");
-
-        setup_input_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        lua.load(
-            r#"
-            local pkgs = input { source = "sys-lua/pkgs" }
-            -- Check that input returns a table
-            assert(type(pkgs) == "table")
-            -- Check that it's marked as unresolved
-            assert(pkgs._type == "unresolved_input")
-            assert(pkgs._source == "sys-lua/pkgs")
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.inputs.len(), 1);
-        assert_eq!(decls.inputs[0].source, "sys-lua/pkgs");
-    }
-
-    #[test]
-    fn test_input_function_github_with_ref() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/tmp");
-
-        setup_input_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        // New syntax: ref is part of the source string (owner/repo/ref)
-        lua.load(
-            r#"
-            local pkgs = input { source = "sys-lua/pkgs/v2.0.0" }
-            assert(type(pkgs) == "table")
-            assert(pkgs._source == "sys-lua/pkgs/v2.0.0")
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.inputs.len(), 1);
-        assert_eq!(decls.inputs[0].source, "sys-lua/pkgs/v2.0.0");
-    }
-
-    #[test]
-    fn test_input_function_path() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        // Create a temporary directory with a test module
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let module_path = temp_dir.path().join("test_module.lua");
-        std::fs::write(&module_path, "return { name = 'test' }").unwrap();
-
-        setup_input_function(&lua, declarations.clone(), temp_dir.path().to_path_buf()).unwrap();
-
-        // Use relative path from config dir
-        lua.load(
-            r#"
-            local local_pkgs = input { source = "path:." }
-            assert(type(local_pkgs) == "table")
-            assert(local_pkgs._type == "input")
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.inputs.len(), 1);
-        assert_eq!(decls.inputs[0].source, "path:.");
-        assert!(decls.inputs[0].resolved_path.is_some());
-    }
-
-    #[test]
-    fn test_input_function_path_module_loading() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        // Create a temporary directory with a test module
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let module_path = temp_dir.path().join("mymodule.lua");
-        std::fs::write(&module_path, "return { value = 42 }").unwrap();
-
-        setup_input_function(&lua, declarations.clone(), temp_dir.path().to_path_buf()).unwrap();
-
-        // Load a module from the input
-        lua.load(
-            r#"
-            local pkgs = input { source = "path:." }
-            local mymod = pkgs.mymodule
-            assert(type(mymod) == "table")
-            assert(mymod.value == 42)
-        "#,
-        )
-        .exec()
-        .unwrap();
-    }
-
-    #[test]
-    fn test_input_function_path_nested_module() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        // Create a temporary directory with nested modules
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let subdir = temp_dir.path().join("tools");
-        std::fs::create_dir_all(&subdir).unwrap();
-        std::fs::write(subdir.join("ripgrep.lua"), "return { name = 'ripgrep' }").unwrap();
-
-        setup_input_function(&lua, declarations.clone(), temp_dir.path().to_path_buf()).unwrap();
-
-        // Load a nested module
-        lua.load(
-            r#"
-            local pkgs = input { source = "path:." }
-            local rg = pkgs.tools.ripgrep
-            assert(type(rg) == "table")
-            assert(rg.name == "ripgrep")
-        "#,
-        )
-        .exec()
-        .unwrap();
-    }
-
-    #[test]
-    fn test_input_function_path_init_lua() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        // Create a temporary directory with init.lua
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let subdir = temp_dir.path().join("mypackage");
-        std::fs::create_dir_all(&subdir).unwrap();
-        std::fs::write(subdir.join("init.lua"), "return { initialized = true }").unwrap();
-
-        setup_input_function(&lua, declarations.clone(), temp_dir.path().to_path_buf()).unwrap();
-
-        // Load module that uses init.lua
-        lua.load(
-            r#"
-            local pkgs = input { source = "path:." }
-            local mypkg = pkgs.mypackage
-            assert(type(mypkg) == "table")
-            assert(mypkg.initialized == true)
-        "#,
-        )
-        .exec()
-        .unwrap();
-    }
-
-    #[test]
-    fn test_input_function_multiple() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        setup_input_function(&lua, declarations.clone(), temp_dir.path().to_path_buf()).unwrap();
-
-        lua.load(
-            r#"
-            local inputs = {
-                pkgs = input { source = "sys-lua/pkgs" },
-                extras = input { source = "sys-lua/extras/v1.0.0" },
+fn opts_value_to_lua(lua: &Lua, value: &OptsValue) -> Result<Value> {
+    match value {
+        OptsValue::String(s) => Ok(Value::String(lua.create_string(s)?)),
+        OptsValue::Number(n) => Ok(Value::Number(*n)),
+        OptsValue::Boolean(b) => Ok(Value::Boolean(*b)),
+        OptsValue::Array(arr) => {
+            let t = lua.create_table()?;
+            for (i, v) in arr.iter().enumerate() {
+                t.set(i + 1, opts_value_to_lua(lua, v)?)?;
             }
-        "#,
-        )
-        .exec()
-        .unwrap();
-
-        let decls = declarations.borrow();
-        assert_eq!(decls.inputs.len(), 2);
-    }
-
-    #[test]
-    fn test_input_function_unresolved_access_error() {
-        let lua = Lua::new();
-        let declarations = Rc::new(RefCell::new(Declarations::new()));
-        let config_dir = PathBuf::from("/tmp");
-
-        setup_input_function(&lua, declarations.clone(), config_dir).unwrap();
-
-        // Accessing an unresolved GitHub input should error
-        let result = lua
-            .load(
-                r#"
-            local pkgs = input { source = "sys-lua/pkgs" }
-            local _ = pkgs.ripgrep  -- This should error
-        "#,
-            )
-            .exec();
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("unresolved input"));
+            Ok(Value::Table(t))
+        }
+        OptsValue::Table(map) => {
+            let t = lua.create_table()?;
+            for (k, v) in map {
+                t.set(k.as_str(), opts_value_to_lua(lua, v)?)?;
+            }
+            Ok(Value::Table(t))
+        }
     }
 }

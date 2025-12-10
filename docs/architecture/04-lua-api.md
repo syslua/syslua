@@ -13,6 +13,95 @@ The API follows standard Lua patterns:
 - No auto-evaluation, no hidden behavior
 - Plain tables for configuration
 
+## Entry Point Pattern
+
+The entry point file (`init.lua`) follows a two-phase evaluation pattern using `M.inputs` and `M.setup(inputs)`:
+
+```lua
+-- ~/.config/syslua/init.lua
+local M = {}
+
+-- Phase 1: Declare external inputs (optional)
+-- syslua reads this table first and resolves all sources
+M.inputs = {
+    -- Git repositories (SSH recommended for private repos)
+    private = "git:git@github.com:myorg/my-dotfiles.git",
+
+    -- Public registries via HTTPS
+    community = "git:https://github.com/syslua/community-pkgs.git",
+
+    -- Local paths for development
+    local_pkgs = "path:~/code/my-packages",
+}
+
+-- Phase 2: Configure the system
+-- Called after inputs are resolved; inputs table provides require paths
+function M.setup(inputs)
+    -- Access resolved inputs via require
+    local private = require("inputs.private")
+    local community = require("inputs.community")
+
+    -- Configure packages and modules
+    require("pkgs.cli.ripgrep").setup()
+    private.setup_dotfiles()
+
+    user {
+        name = "alice",
+        setup = function()
+            -- inputs accessible via closure
+            community.neovim.setup({ colorscheme = "gruvbox" })
+            file { path = "~/.gitconfig", source = private.path .. "/gitconfig" }
+        end,
+    }
+end
+
+return M
+```
+
+### Two-Phase Evaluation
+
+1. **Phase 1 (Input Resolution)**: syslua loads `init.lua`, reads `M.inputs`, and resolves all external sources (cloning git repos, validating paths). This happens before any configuration runs.
+
+2. **Phase 2 (Configuration)**: syslua calls `M.setup(inputs)` with the resolved inputs table. The `inputs` parameter provides metadata, but you access input modules via `require("inputs.<name>")`.
+
+### Contract
+
+- Entry point **must** return a table with a `setup` function
+- Entry point **may** include an `inputs` table (optional if no external dependencies)
+- `setup` receives the resolved inputs metadata table
+- syslua errors if `init.lua` doesn't return a valid table with `setup`
+
+### Minimal Entry Point (No Inputs)
+
+If you don't need external inputs, the entry point is simpler:
+
+```lua
+local M = {}
+
+-- M.inputs omitted - no external dependencies
+
+function M.setup()
+    require("pkgs.cli.ripgrep").setup()
+
+    user {
+        name = "alice",
+        setup = function()
+            file { path = "~/.bashrc", content = "# managed by syslua" }
+        end,
+    }
+end
+
+return M
+```
+
+### Why This Pattern?
+
+- **Explicit dependencies**: All external sources declared upfront in `M.inputs`
+- **Deterministic resolution**: Inputs resolved before config evaluation prevents ordering issues
+- **SSH-first auth**: Git SSH URLs use existing `~/.ssh/` keys—no token management
+- **Standard Lua**: Follows the same `local M = {} ... return M` pattern as modules
+- **IDE friendly**: LuaLS can analyze the structure and provide completions
+
 ## API Layers
 
 ```
@@ -33,20 +122,20 @@ The API follows standard Lua patterns:
 
 ### Core Primitives (Rust-backed)
 
-| Function       | Purpose                              | See Also                           |
-| -------------- | ------------------------------------ | ---------------------------------- |
-| `derive {}`    | Create a derivation (build recipe)   | [Derivations](./01-derivations.md) |
-| `activate {}`  | Create an activation (side effects)  | [Activations](./02-activations.md) |
+| Function      | Purpose                             | See Also                           |
+| ------------- | ----------------------------------- | ---------------------------------- |
+| `derive {}`   | Create a derivation (build recipe)  | [Derivations](./01-derivations.md) |
+| `activate {}` | Create an activation (side effects) | [Activations](./02-activations.md) |
 
 ### Convenience Helpers (Lua)
 
-| Function     | Purpose                                           |
-| ------------ | ------------------------------------------------- |
-| `file {}`    | Declare a managed file                            |
-| `env {}`     | Declare environment variables                     |
-| `user {}`    | Declare per-user scoped configuration             |
-| `project {}` | Declare project-scoped environment                |
-| `input ""`   | Declare an input source (registry, git, path)     |
+| Function     | Purpose                                       |
+| ------------ | --------------------------------------------- |
+| `file {}`    | Declare a managed file                        |
+| `env {}`     | Declare environment variables                 |
+| `user {}`    | Declare per-user scoped configuration         |
+| `project {}` | Declare project-scoped environment            |
+| `input ""`   | Declare an input source (registry, git, path) |
 
 Note: There is no `service {}` or `pkg()` global. Packages and services are plain Lua modules:
 
@@ -197,7 +286,7 @@ function env(vars) end
 
 ---@class UserSpec
 ---@field name string Username
----@field config fun() User configuration function
+---@field setup fun() User setup function
 
 ---Declare per-user configuration
 ---@param spec UserSpec
@@ -433,7 +522,7 @@ The `config` function provides scoping for declarations:
 ```lua
 user {
     name = "alice",
-    config = function()
+    setup = function()
         require("pkgs.cli.neovim").setup()
         file { path = "~/.gitconfig", content = "..." }
         env { EDITOR = "nvim" }
@@ -442,7 +531,7 @@ user {
 
 project {
     name = "my-app",
-    config = function()
+    setup = function()
         require("pkgs.runtime.nodejs").setup({ version = "20" })
         env { NODE_ENV = "development" }
     end,

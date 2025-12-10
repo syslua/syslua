@@ -15,6 +15,39 @@ sys.lua modules are **plain Lua modules**. No magic, no DSL, no hidden behavior:
 
 If you know Lua, you know how sys.lua modules work.
 
+## Entry Point vs Regular Modules
+
+The **entry point** (`init.lua`) and **regular modules** both use the `local M = {} ... return M` pattern, but serve different purposes:
+
+| Aspect | Entry Point (`init.lua`) | Regular Module |
+|--------|--------------------------|----------------|
+| **Purpose** | Declare external inputs, configure system | Provide reusable functionality |
+| **`M.inputs`** | External dependencies (git repos, paths) | Not used |
+| **`M.options`** | Not used | Default configuration values |
+| **`M.setup()`** | Receives resolved `inputs` table | Receives user `opts` table |
+| **Called by** | syslua runtime | Other modules or entry point |
+
+```lua
+-- Entry point pattern (init.lua)
+local M = {}
+M.inputs = { pkgs = "git:https://..." }  -- external dependencies
+function M.setup(inputs)                   -- called by syslua
+    require("inputs.pkgs.cli.ripgrep").setup()
+end
+return M
+
+-- Regular module pattern (modules/foo.lua)
+local M = {}
+M.options = { port = 8080 }               -- default config values
+function M.setup(opts)                     -- called by user code
+    opts = opts or {}
+    -- merge with M.options...
+end
+return M
+```
+
+See [Lua API - Entry Point Pattern](./04-lua-api.md#entry-point-pattern) for details.
+
 ## The Module Pattern
 
 Every module follows the same structure:
@@ -377,7 +410,7 @@ We explicitly rejected auto-evaluation because:
 ```
 ~/.config/syslua/
 ├── init.lua              # Entry point
-├── syslua.lock           # Lock file
+├── syslua.lock           # Lock file (auto-generated)
 └── modules/              # Custom modules
     └── my-dev-setup.lua
 ```
@@ -385,36 +418,49 @@ We explicitly rejected auto-evaluation because:
 Example `init.lua`:
 
 ```lua
--- Packages
-require("pkgs.cli.ripgrep").setup()
-require("pkgs.cli.fd").setup()
+local M = {}
 
--- Services (if on server)
-if syslua.hostname == "server" then
-    require("modules.services.nginx").setup({ port = 80 })
-end
+M.inputs = {
+    pkgs = "git:https://github.com/syslua/pkgs.git",
+}
 
--- Custom module
-require("modules.my-dev-setup").setup()
-
--- Direct declarations
-file {
-    path = "~/.gitconfig",
-    content = [[
+function M.setup(inputs)
+    local pkgs = require("inputs.pkgs")
+    
+    -- Packages
+    pkgs.cli.ripgrep.setup()
+    pkgs.cli.fd.setup()
+    
+    -- Services (if on server)
+    if syslua.hostname == "server" then
+        require("modules.services.nginx").setup({ port = 80 })
+    end
+    
+    -- Custom module
+    require("modules.my-dev-setup").setup()
+    
+    -- Direct declarations
+    file {
+        path = "~/.gitconfig",
+        content = [[
 [user]
     name = Alice
     email = alice@example.com
 ]],
-}
+    }
+    
+    env {
+        EDITOR = "nvim",
+    }
+end
 
-env {
-    EDITOR = "nvim",
-}
+return M
 ```
 
 ## See Also
 
 - [Overview](./00-overview.md) — Core values and principles
-- [Lua API](./04-lua-api.md) — API layers and globals
+- [Lua API](./04-lua-api.md) — API layers, globals, and entry point pattern
+- [Inputs](./06-inputs.md) — External dependencies and authentication
 - [Derivations](./01-derivations.md) — How `derive {}` works
 - [Activations](./02-activations.md) — How `activate {}` works

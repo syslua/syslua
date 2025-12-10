@@ -205,17 +205,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "atty"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
-dependencies = [
- "hermit-abi",
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2026,15 +2015,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "hex"
@@ -3902,15 +3882,16 @@ name = "sys-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atty",
  "clap",
  "clap_complete",
  "console",
  "dialoguer",
+ "dirs 5.0.1",
  "indicatif",
  "sys-core",
+ "sys-lua",
  "sys-platform",
- "tokio",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3939,7 +3920,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "sys-lua",
  "sys-platform",
  "sys-sops",
  "tar",
@@ -3958,8 +3938,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
+ "hex",
  "mlua",
  "serde",
+ "serde_json",
+ "sha2",
  "sys-platform",
  "tempfile",
  "thiserror 2.0.17",

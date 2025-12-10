@@ -8,19 +8,19 @@ sys.lua is a cross-platform declarative system/environment manager inspired by N
 
 The architecture documentation has been split into focused documents for easier navigation:
 
-| Document | Content |
-|----------|---------|
-| [00-overview.md](./architecture/00-overview.md) | Core principles, terminology, high-level architecture |
-| [01-derivations.md](./architecture/01-derivations.md) | Derivation system, context API, hashing |
-| [02-activations.md](./architecture/02-activations.md) | Activation types, execution, examples |
-| [03-store.md](./architecture/03-store.md) | Store layout, realization, immutability |
-| [04-lua-api.md](./architecture/04-lua-api.md) | Lua API layers, globals, type definitions, LuaLS |
-| [05-snapshots.md](./architecture/05-snapshots.md) | Snapshot design, rollback, garbage collection |
-| [06-inputs.md](./architecture/06-inputs.md) | Input sources, registry, lock files, authentication |
-| [07-modules.md](./architecture/07-modules.md) | Module system, auto-evaluation, composition |
-| [08-apply-flow.md](./architecture/08-apply-flow.md) | Apply flow, DAG execution, atomicity |
-| [09-platform.md](./architecture/09-platform.md) | Platform-specific: services, env, paths |
-| [10-crates.md](./architecture/10-crates.md) | Crate structure and Rust dependencies |
+| Document                                              | Content                                               |
+| ----------------------------------------------------- | ----------------------------------------------------- |
+| [00-overview.md](./architecture/00-overview.md)       | Core principles, terminology, high-level architecture |
+| [01-derivations.md](./architecture/01-derivations.md) | Derivation system, context API, hashing               |
+| [02-activations.md](./architecture/02-activations.md) | Activation types, execution, examples                 |
+| [03-store.md](./architecture/03-store.md)             | Store layout, realization, immutability               |
+| [04-lua-api.md](./architecture/04-lua-api.md)         | Lua API layers, globals, type definitions, LuaLS      |
+| [05-snapshots.md](./architecture/05-snapshots.md)     | Snapshot design, rollback, garbage collection         |
+| [06-inputs.md](./architecture/06-inputs.md)           | Input sources, registry, lock files, authentication   |
+| [07-modules.md](./architecture/07-modules.md)         | Module system, auto-evaluation, composition           |
+| [08-apply-flow.md](./architecture/08-apply-flow.md)   | Apply flow, DAG execution, atomicity                  |
+| [09-platform.md](./architecture/09-platform.md)       | Platform-specific: services, env, paths               |
+| [10-crates.md](./architecture/10-crates.md)           | Crate structure and Rust dependencies                 |
 
 ## Quick Reference
 
@@ -52,13 +52,13 @@ Output: immutable store object  Output: system side effects
 
 The Rust implementation is intentionally minimal:
 
-| Component | Purpose |
-|-----------|---------|
-| Derivations | Hashing, realization, build context |
-| Activations | Execution of system side effects |
-| Store | Content-addressed storage, immutability |
-| Lua parsing | Config evaluation via mlua |
-| Snapshots | History and rollback |
+| Component   | Purpose                                 |
+| ----------- | --------------------------------------- |
+| Derivations | Hashing, realization, build context     |
+| Activations | Execution of system side effects        |
+| Store       | Content-addressed storage, immutability |
+| Lua parsing | Config evaluation via mlua              |
+| Snapshots   | History and rollback                    |
 
 ## Getting Started
 

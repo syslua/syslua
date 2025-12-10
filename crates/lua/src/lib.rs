@@ -1,20 +1,21 @@
-//! sys-lua: Lua configuration evaluation for sys.lua
+//! sys-lua: Lua runtime for sys.lua configuration
 //!
-//! This crate provides the Lua runtime and API for evaluating sys.lua configurations.
+//! This crate provides the Lua runtime environment with:
+//! - Global functions: derive{}, activate{}
+//! - System information: syslua table
+//! - Two-phase evaluation: M.inputs extraction + M.setup(inputs) call
+//! - DerivationCtx: context passed to derivation config functions during realization
+//! - ActivationCtx: context passed to activation config functions during apply
 
 mod error;
-mod eval;
 mod globals;
-mod types;
+mod manifest;
+mod runtime;
 
-pub use error::LuaError;
-pub use eval::{EvalContext, evaluate_config, evaluate_config_with_inputs};
-pub use types::{
-    // Core primitives
-    ActivateAction, ActivateDecl, ActivateInput, DeriveDecl, DeriveInput, DeriveRef,
-    // Higher-level declarations
-    EnvDecl, EnvMergeStrategy, EnvValue, FileDecl, InputDecl,
+pub use error::{Error, Result};
+pub use globals::{
+    opts_to_lua_table, Activation, ActivationAction, ActivationCtx, Collector, Derivation,
+    DerivationCtx, OptsValue, Shell,
 };
-
-/// Result type for Lua operations
-pub type Result<T> = std::result::Result<T, LuaError>;
+pub use manifest::Manifest;
+pub use runtime::Runtime;
