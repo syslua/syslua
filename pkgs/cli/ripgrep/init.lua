@@ -11,7 +11,7 @@ setmetatable(M, {
 M.setup = function(opts)
 	-- default to latest
 	if opts == nil then
-		return require("pkgs.cli.ripgrep")["15_1_0"].setup()
+		return require("pkgs.cli.ripgrep.15_1_0").setup()
 	end
 end
 
