@@ -24,35 +24,36 @@ local M = {}
 -- Phase 1: Declare external inputs (optional)
 -- syslua reads this table first and resolves all sources
 M.inputs = {
-    -- Git repositories (SSH recommended for private repos)
-    private = "git:git@github.com:myorg/my-dotfiles.git",
+  -- Public registries via HTTPS
+  syslua = 'git:https://github.com/spirit-led-software/syslua',
 
-    -- Public registries via HTTPS
-    community = "git:https://github.com/syslua/community-pkgs.git",
+  -- Git repositories (SSH recommended for private repos)
+  private = 'git:git@github.com:myorg/my-dotfiles.git',
 
-    -- Local paths for development
-    local_pkgs = "path:~/code/my-packages",
+  -- Local paths for development
+  local_pkgs = 'path:~/code/my-packages',
 }
 
 -- Phase 2: Configure the system
 -- Called after inputs are resolved; inputs table provides require paths
 function M.setup(inputs)
-    -- Access resolved inputs via require
-    local private = require("inputs.private")
-    local community = require("inputs.community")
+  -- Access resolved inputs via require
+  local private = require('private') -- reads init.lua at root of private repo
+  local syslua = require('syslua')
+  local lib = syslua.lib
 
-    -- Configure packages and modules
-    require("pkgs.cli.ripgrep").setup()
-    private.setup_dotfiles()
+  -- Configure packages and modules
+  require('syslua.pkgs.cli.ripgrep').setup()
+  private.setup_dotfiles()
 
-    user {
-        name = "alice",
-        setup = function()
-            -- inputs accessible via closure
-            community.neovim.setup({ colorscheme = "gruvbox" })
-            file { path = "~/.gitconfig", source = private.path .. "/gitconfig" }
-        end,
-    }
+  lib.user.setup({
+    name = 'alice',
+    setup = function()
+      -- inputs accessible via closure
+      syslua.pkgs.editors.neovim.setup({ colorscheme = 'gruvbox' })
+      lib.file.setup({ path = '~/.gitconfig', source = inputs.private.path .. '/gitconfig' })
+    end,
+  })
 end
 
 return M
@@ -81,14 +82,9 @@ local M = {}
 -- M.inputs omitted - no external dependencies
 
 function M.setup()
-    require("pkgs.cli.ripgrep").setup()
-
-    user {
-        name = "alice",
-        setup = function()
-            file { path = "~/.bashrc", content = "# managed by syslua" }
-        end,
-    }
+  sys.build({
+    ...,
+  })
 end
 
 return M
@@ -108,11 +104,9 @@ return M
 ┌─────────────────────────────────────────────┐
 │  Modules: require("...").setup({})          │  ← Packages, services, programs
 ├─────────────────────────────────────────────┤
-│  Helpers: file{}, env{}, user{}, project{}  │  ← Convenience wrappers
+│  Core primitives: sys.build {}, sys.bind {} │  ← Everything builds on this
 ├─────────────────────────────────────────────┤
-│  Core primitives: derive {}, activate {}    │  ← Everything builds on this
-├─────────────────────────────────────────────┤
-│  Contexts: DerivationCtx, ActivationCtx     │  ← Passed to config functions
+│  Contexts: BuildCtx, BindCtx                │  ← Passed to config functions
 ├─────────────────────────────────────────────┤
 │  syslua.lib: toJSON, mkDefault, mkForce     │  ← Utility functions
 └─────────────────────────────────────────────┘
@@ -122,27 +116,27 @@ return M
 
 ### Core Primitives (Rust-backed)
 
-| Function      | Purpose                             | See Also                           |
-| ------------- | ----------------------------------- | ---------------------------------- |
-| `derive {}`   | Create a derivation (build recipe)  | [Derivations](./01-derivations.md) |
-| `activate {}` | Create an activation (side effects) | [Activations](./02-activations.md) |
+| Function     | Purpose                             | See Also                     |
+| ------------ | ----------------------------------- | ---------------------------- |
+| `sys.build()` | Create a build (build recipe)      | [Builds](./01-builds.md)     |
+| `sys.bind()`  | Create a bind (side effects)       | [Binds](./02-binds.md)       |
+| `input()`    | Declare an input source             | [Inputs](./06-inputs.md)     |
 
-### Convenience Helpers (Lua)
+### Convenience Helpers (Lua, provided by syslua input source)
 
-| Function     | Purpose                                       |
-| ------------ | --------------------------------------------- |
-| `file {}`    | Declare a managed file                        |
-| `env {}`     | Declare environment variables                 |
-| `user {}`    | Declare per-user scoped configuration         |
-| `project {}` | Declare project-scoped environment            |
-| `input ""`   | Declare an input source (registry, git, path) |
+| Function              | Purpose                               |
+| --------------------- | ------------------------------------- |
+| `lib.file.setup()`    | Declare a managed file                |
+| `lib.env.setup()`     | Declare environment variables         |
+| `lib.user.setup()`    | Declare per-user scoped configuration |
+| `lib.project.setup()` | Declare project-scoped environment    |
 
-Note: There is no `service {}` or `pkg()` global. Packages and services are plain Lua modules:
+Note: There is no `service()` or `pkg()` global. Packages and services are plain Lua modules:
 
 ```lua
-require("pkgs.cli.ripgrep").setup()
-require("pkgs.cli.ripgrep").setup({ version = "14.0.0" })
-require("modules.services.nginx").setup({ port = 8080 })
+require('pkgs.cli.ripgrep').setup()
+require('pkgs.cli.ripgrep').setup({ version = '14.0.0' })
+require('modules.services.nginx').setup({ port = 8080 })
 ```
 
 ### System Information
@@ -155,31 +149,28 @@ syslua.os         -- "darwin", "linux", "windows"
 syslua.arch       -- "aarch64", "x86_64", "arm"
 syslua.hostname   -- Machine hostname
 syslua.username   -- Current user
-syslua.is_linux   -- boolean
-syslua.is_darwin  -- boolean
-syslua.is_windows -- boolean
 syslua.version    -- sys.lua version string
 ```
 
 ## Library Functions (`syslua.lib`)
 
 ```lua
-local lib = require("syslua.lib")
+local lib = require('syslua.lib')
 
 -- JSON conversion
-lib.toJSON(table)           -- Convert Lua table to JSON string
+lib.toJSON(table) -- Convert Lua table to JSON string
 
 -- Priority functions for conflict resolution
-lib.mkDefault(value)        -- Priority 1000 (can be overridden)
-lib.mkForce(value)          -- Priority 50 (forces value)
-lib.mkBefore(value)         -- Priority 500 (prepend to mergeable)
-lib.mkAfter(value)          -- Priority 1500 (append to mergeable)
-lib.mkOverride(priority, value)  -- Explicit priority
-lib.mkOrder(priority, value)     -- Alias for mkOverride
+lib.mkDefault(value) -- Priority 1000 (can be overridden)
+lib.mkForce(value) -- Priority 50 (forces value)
+lib.mkBefore(value) -- Priority 500 (prepend to mergeable)
+lib.mkAfter(value) -- Priority 1500 (append to mergeable)
+lib.mkOverride(priority, value) -- Explicit priority
+lib.mkOrder(priority, value) -- Alias for mkOverride
 
 -- Environment variable definitions
-lib.env.defineMergeable(var_name)  -- PATH-like variables
-lib.env.defineSingular(var_name)   -- Single-value variables
+lib.env.defineMergeable(var_name) -- PATH-like variables
+lib.env.defineSingular(var_name) -- Single-value variables
 ```
 
 ## Lua Language Server (LuaLS) Integration
@@ -188,7 +179,7 @@ sys.lua provides excellent IDE/editor support through type definition files and 
 
 ### Goals
 
-- Autocomplete for global functions (`pkg`, `file`, `env`, `user`, `project`, `input`, etc.)
+- Autocomplete for global functions
 - Type checking for all API parameters
 - Hover documentation for functions and options
 - Go-to-definition for modules and package references
@@ -205,10 +196,8 @@ syslua/
 │   ├── types/
 │   │   ├── syslua.d.lua         # Global syslua table
 │   │   ├── syslua.lib.d.lua     # syslua.lib module
-│   │   ├── globals.d.lua        # derive{}, activate{}, file{}, env{}, etc.
-│   │   ├── inputs.d.lua         # input() function
+│   │   ├── globals.d.lua        # derive(), activate(), input()
 │   │   ├── modules.d.lua        # Module system types
-│   │   └── sops.d.lua           # SOPS integration
 │   └── init.lua                 # Actual runtime implementations
 ```
 
@@ -219,20 +208,20 @@ syslua/
 ```lua
 ---@meta
 
----@class Syslua
+---@class Sys
 ---@field platform string Platform identifier (e.g., "x86_64-linux", "aarch64-darwin")
 ---@field os "linux"|"darwin"|"windows" Operating system
 ---@field arch "x86_64"|"aarch64"|"arm" CPU architecture
 ---@field hostname string Machine hostname
 ---@field username string Current user
----@field is_linux boolean True if running on Linux
----@field is_darwin boolean True if running on macOS
----@field is_windows boolean True if running on Windows
 ---@field version string sys.lua version (e.g., "0.1.0")
+---@field path PathHelpers Path utilities
+---@field build fun(spec: BuildSpec): BuildRef Create a build
+---@field bind fun(spec: BindSpec): BindRef Create a bind
 
----Global syslua system information
----@type Syslua
-syslua = {}
+---Global sys system information
+---@type Sys
+sys = {}
 ```
 
 **`lib/types/globals.d.lua`:**
@@ -240,97 +229,41 @@ syslua = {}
 ```lua
 ---@meta
 
----@class Derivation
----@field name string Derivation name
+---@class BuildRef
+---@field name string Build name
 ---@field version? string Version string
 ---@field hash string Content-addressed hash
----@field out string Store path (after realization)
 ---@field outputs table<string, string> All output paths
 
----@class DeriveSpec
----@field name string Required: derivation name
+---@class BuildSpec
+---@field name string Required: build name
 ---@field version? string Optional: version string
----@field outputs? string[] Optional: output names (default: {"out"})
----@field opts? table|fun(sys: System): table Optional: input data
----@field config fun(opts: table, ctx: DerivationCtx): nil Required: build logic
+---@field outputs? table<string,string> Optional: output names (default: {out="out"})
+---@field inputs? table|fun(): table Optional: input data
+---@field config fun(inputs: table, ctx: BuildCtx): nil Required: build logic
 
----Create a derivation (returns Derivation and registers globally)
----@param spec DeriveSpec
----@return Derivation
-function derive(spec) end
+---@class BuildCtx
+---@field outputs table<string, string> Output paths
+---@field fetch_url fun(self: BuildCtx, url: string, sha256: string): string
+---@field cmd fun(self: BuildCtx, opts: BuildCmdOptions|string): nil
 
----@class ActivateSpec
----@field opts? table|fun(sys: System): table Optional: input data
----@field config fun(opts: table, ctx: ActivationCtx): nil Required: activation logic
+---@class BuildCmdOptions
+---@field cmd string Command to execute
+---@field env? table<string,string> Environment variables
+---@field cwd? string Working directory
 
----Create an activation (registers globally)
----@param spec ActivateSpec
-function activate(spec) end
+---@class BindSpec
+---@field inputs? table|fun(): table Optional: input data
+---@field apply fun(inputs: table, ctx: BindCtx): table? Required: apply logic, can return outputs
+---@field destroy? fun(inputs: table, ctx: BindCtx): nil Optional: destroy logic for rollback
 
----@class FileSpec
----@field path string Target path (~ expanded)
----@field source? string Source file/directory
----@field content? string Inline content
----@field mutable? boolean Direct symlink (default: false)
----@field mode? integer Unix file permissions
+---@class BindCtx
+---@field cmd fun(self: BindCtx, opts: BindCmdOptions|string): string Returns "${action:N}" placeholder
 
----Declare a file to be managed by sys.lua
----@param spec FileSpec
-function file(spec) end
-
----@alias EnvValue string|string[]|table
-
----Declare environment variables
----@param vars table<string, EnvValue>
-function env(vars) end
-
----@class UserSpec
----@field name string Username
----@field setup fun() User setup function
-
----Declare per-user configuration
----@param spec UserSpec
-function user(spec) end
-```
-
-**`lib/types/syslua.lib.d.lua`:**
-
-```lua
----@meta
-
----@class SysluaLib
-local lib = {}
-
----Convert a Lua table to JSON string
----@param value table
----@return string
-function lib.toJSON(value) end
-
----Set default priority (1000) - can be overridden
----@generic T
----@param value T
----@return T
-function lib.mkDefault(value) end
-
----Set highest priority (50) - forces value
----@generic T
----@param value T
----@return T
-function lib.mkForce(value) end
-
----Prepend to mergeable values (priority 500)
----@generic T
----@param value T
----@return T
-function lib.mkBefore(value) end
-
----Append to mergeable values (priority 1500)
----@generic T
----@param value T
----@return T
-function lib.mkAfter(value) end
-
-return lib
+---@class BindCmdOptions
+---@field cmd string Command to execute
+---@field env? table<string,string> Environment variables
+---@field cwd? string Working directory
 ```
 
 ### Workspace Configuration
@@ -343,75 +276,17 @@ sys.lua automatically generates a `.luarc.json` file when you run `sys apply`. T
     "version": "Lua 5.4"
   },
   "workspace": {
-    "library": [
-      "/syslua/store/pkg/syslua/0.1.0/share/lua/types",
-      "~/.local/share/syslua/types"
-    ],
+    "library": ["/syslua/types", "~/.local/share/syslua/types"],
     "checkThirdParty": false
   },
   "diagnostics": {
-    "globals": [
-      "syslua",
-      "derive",
-      "activate",
-      "file",
-      "env",
-      "user",
-      "project",
-      "input",
-      "sops"
-    ]
+    "globals": ["sys", "input"]
   },
   "completion": {
     "callSnippet": "Both",
     "keywordSnippet": "Both"
   }
 }
-```
-
-### Package Annotations
-
-Registry packages should include type annotations for their options:
-
-```lua
--- pkgs/neovim/0.10.0.lua
-
----@class NeovimOpts
----@field url string Download URL for prebuilt binary
----@field sha256 string Content hash
-
-local hashes = {
-  ["aarch64-darwin"] = "abc...",
-  ["x86_64-linux"] = "def...",
-}
-
-local M = {}
-
-M.name = "neovim"
-M.version = "0.10.0"
-
-M.derivation = derive {
-  name = M.name,
-  version = M.version,
-
-  ---@param sys System
-  ---@return NeovimOpts
-  opts = function(sys)
-    return {
-      url = "https://github.com/neovim/neovim/releases/download/v0.10.0/nvim-" .. sys.platform .. ".tar.gz",
-      sha256 = hashes[sys.platform],
-    }
-  end,
-
-  ---@param opts NeovimOpts
-  ---@param ctx DerivationCtx
-  config = function(opts, ctx)
-    local archive = ctx.fetch_url(opts.url, opts.sha256)
-    ctx.unpack(archive, ctx.out)
-  end,
-}
-
-return M
 ```
 
 ### Editor Setup
@@ -465,16 +340,17 @@ In addition to LSP-based type checking, sys.lua performs runtime validation duri
 
 ```lua
 -- Invalid config examples
+local lib = require('syslua.lib')
 
-env {
-    EDITOR = { "nvim" },  -- ✗ Runtime error: singular env var must be string
-}
+lib.env.setup({
+  EDITOR = { 'nvim' }, -- ✗ Runtime error: singular env var must be string
+})
 
-file {
-    path = "~/.gitconfig",
-    content = "...",
-    source = "...",  -- ✗ Runtime error: cannot specify both content and source
-}
+lib.file.setup({
+  path = '~/.gitconfig',
+  content = '...',
+  source = '...', -- ✗ Runtime error: cannot specify both content and source
+})
 ```
 
 **Error messages include:**
@@ -497,49 +373,26 @@ Error evaluating sys.lua:
 
 ## The `config` Property Pattern
 
-The `config` property appears in two contexts:
-
-### In `derive {}` and `activate {}`
+### In `sys.build {}` and `sys.bind {}`
 
 The `config` function receives resolved options and a context object:
 
 ```lua
-derive {
-    name = "ripgrep",
-    opts = function(sys) return { url = "...", sha256 = "..." } end,
-    config = function(opts, ctx)
-        -- ctx provides build operations
-        local archive = ctx.fetch_url(opts.url, opts.sha256)
-        ctx.unpack(archive, ctx.out)
-    end,
-}
-```
-
-### In `user {}` and `project {}`
-
-The `config` function provides scoping for declarations:
-
-```lua
-user {
-    name = "alice",
-    setup = function()
-        require("pkgs.cli.neovim").setup()
-        file { path = "~/.gitconfig", content = "..." }
-        env { EDITOR = "nvim" }
-    end,
-}
-
-project {
-    name = "my-app",
-    setup = function()
-        require("pkgs.runtime.nodejs").setup({ version = "20" })
-        env { NODE_ENV = "development" }
-    end,
-}
+sys.build({
+  name = 'ripgrep',
+  inputs = function()
+    return { url = '...', sha256 = '...' }
+  end,
+  apply = function(inputs, ctx)
+    -- ctx provides build operations
+    local archive = ctx:fetch_url(inputs.url, inputs.sha256)
+    ctx:cmd({ cmd = 'tar -xzf ' .. archive .. ' -C ' .. ctx.outputs.out })
+  end,
+})
 ```
 
 ## See Also
 
-- [Derivations](./01-derivations.md) - How `derive {}` works
-- [Activations](./02-activations.md) - How `activate {}` works
+- [Builds](./01-builds.md) - How `sys.build {}` works
+- [Binds](./02-binds.md) - How `sys.bind {}` works
 - [Modules](./07-modules.md) - Module system and composition

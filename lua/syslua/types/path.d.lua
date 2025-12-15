@@ -1,0 +1,12 @@
+---@meta
+
+---@class PathHelpers
+---@field resolve fun(...: string): string Resolves a sequence of path segments into an absolute path
+---@field join fun(...: string): string Joins multiple path segments into a single path
+---@field dirname fun(path: string): string Returns the directory name of the given path
+---@field basename fun(path: string): string Returns the base name of the given path
+---@field extname fun(path: string): string Returns the file extension of the given path
+---@field is_absolute fun(path: string): boolean Checks if the given path is absolute
+---@field normalize fun(path: string): string Normalizes the given path, resolving '..' and '.' segments
+---@field relative fun(from: string, to: string): string Returns the relative path from one path to another
+---@field split fun(path: string): table<string> Splits the path into its components

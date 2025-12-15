@@ -68,21 +68,26 @@ function M.setup(opts)
         if opts[k] == nil then opts[k] = v end
     end
     
-    -- Derivations and activations happen here
-    local config_drv = derive {
+    -- Builds and binds happen here
+    local config_build = sys.build({
         name = "nginx-config",
-        opts = function(sys) return opts end,
-        config = function(o, ctx)
-            ctx.write(ctx.out .. "/nginx.conf", generate_conf(o))
+        inputs = function() return opts end,
+        apply = function(o, ctx)
+            ctx:cmd({
+                cmd = 'echo "worker_processes ' .. o.workers .. ';" > ' .. ctx.outputs.out .. '/nginx.conf'
+            })
         end,
-    }
+    })
     
-    activate {
-        opts = function(sys) return { drv = config_drv } end,
-        config = function(o, ctx)
-            ctx.symlink(o.drv.out .. "/nginx.conf", "/etc/nginx/nginx.conf")
+    sys.bind({
+        inputs = function() return { build = config_build } end,
+        apply = function(o, ctx)
+            ctx:cmd('ln -sf ' .. o.build.outputs.out .. '/nginx.conf /etc/nginx/nginx.conf')
         end,
-    }
+        destroy = function(o, ctx)
+            ctx:cmd('rm /etc/nginx/nginx.conf')
+        end,
+    })
     
     return M
 end
@@ -112,28 +117,31 @@ function M.setup(opts)
         if opts[k] == nil then opts[k] = v end
     end
     
-    local drv = derive {
+    local build = sys.build({
         name = "ripgrep",
         version = opts.version,
-        opts = function(sys)
+        inputs = function()
             local urls = {
                 ["aarch64-darwin"] = "https://github.com/.../ripgrep-darwin-arm64.tar.gz",
                 ["x86_64-linux"] = "https://github.com/.../ripgrep-linux-x64.tar.gz",
             }
             return { url = urls[sys.platform], sha256 = "..." }
         end,
-        config = function(o, ctx)
-            local archive = ctx.fetch_url(o.url, o.sha256)
-            ctx.unpack(archive, ctx.out)
+        apply = function(o, ctx)
+            local archive = ctx:fetch_url(o.url, o.sha256)
+            ctx:cmd({ cmd = "tar -xzf " .. archive .. " -C " .. ctx.outputs.out })
         end,
-    }
+    })
     
-    activate {
-        opts = function(sys) return { drv = drv } end,
-        config = function(o, ctx)
-            ctx.add_to_path(o.drv.out .. "/bin")
+    sys.bind({
+        inputs = function() return { build = build } end,
+        apply = function(o, ctx)
+            ctx:cmd("ln -sf " .. o.build.outputs.out .. "/bin/rg /usr/local/bin/rg")
         end,
-    }
+        destroy = function(o, ctx)
+            ctx:cmd("rm /usr/local/bin/rg")
+        end,
+    })
     
     return M
 end
@@ -158,52 +166,60 @@ function M.setup(opts)
         if opts[k] == nil then opts[k] = v end
     end
     
-    local config_drv = derive {
+    local config_build = sys.build({
         name = "nginx-config",
-        opts = function(sys) return opts end,
-        config = function(o, ctx)
+        inputs = function() return opts end,
+        apply = function(o, ctx)
             local conf = string.format([[
 worker_processes %s;
 http {
     server { listen %d; }
 }
 ]], o.workers, o.port)
-            ctx.write(ctx.out .. "/nginx.conf", conf)
+            ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(conf) .. ' > ' .. ctx.outputs.out .. '/nginx.conf' })
         end,
-    }
+    })
     
-    local service_drv = derive {
+    local service_build = sys.build({
         name = "nginx-service",
-        opts = function(sys) return { sys = sys, config_path = config_drv.out } end,
-        config = function(o, ctx)
-            if o.sys.os == "linux" then
-                ctx.write(ctx.out .. "/nginx.service", [[
+        inputs = function() return { config_path = config_build } end,
+        apply = function(o, ctx)
+            if sys.os == "linux" then
+                local unit = [[
 [Unit]
 Description=nginx
 [Service]
-ExecStart=/usr/sbin/nginx -c ]] .. o.config_path .. [[/nginx.conf
+ExecStart=/usr/sbin/nginx -c ]] .. o.config_path.outputs.out .. [[/nginx.conf
 [Install]
 WantedBy=multi-user.target
-]])
-            elseif o.sys.os == "macos" then
-                ctx.write(ctx.out .. "/nginx.plist", generate_launchd_plist(o))
+]]
+                ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(unit) .. ' > ' .. ctx.outputs.out .. '/nginx.service' })
+            elseif sys.os == "macos" then
+                local plist = generate_launchd_plist(o)
+                ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(plist) .. ' > ' .. ctx.outputs.out .. '/nginx.plist' })
             end
         end,
-    }
+    })
     
-    activate {
-        opts = function(sys) return { config = config_drv, service = service_drv, sys = sys } end,
-        config = function(o, ctx)
-            ctx.symlink(o.config.out .. "/nginx.conf", "/etc/nginx/nginx.conf")
-            if o.sys.os == "linux" then
-                ctx.symlink(o.service.out .. "/nginx.service", "/etc/systemd/system/nginx.service")
-                ctx.enable_service("nginx")
-            elseif o.sys.os == "macos" then
-                ctx.symlink(o.service.out .. "/nginx.plist", "~/Library/LaunchAgents/nginx.plist")
-                ctx.enable_service("nginx")
+    sys.bind({
+        inputs = function() return { config = config_build, service = service_build } end,
+        apply = function(o, ctx)
+            ctx:cmd('ln -sf ' .. o.config.outputs.out .. '/nginx.conf /etc/nginx/nginx.conf')
+            if sys.os == "linux" then
+                ctx:cmd('ln -sf ' .. o.service.outputs.out .. '/nginx.service /etc/systemd/system/nginx.service && systemctl daemon-reload && systemctl enable --now nginx')
+            elseif sys.os == "macos" then
+                ctx:cmd('ln -sf ' .. o.service.outputs.out .. '/nginx.plist ~/Library/LaunchAgents/nginx.plist && launchctl load ~/Library/LaunchAgents/nginx.plist')
             end
         end,
-    }
+        destroy = function(o, ctx)
+            if sys.os == "linux" then
+                ctx:cmd('systemctl disable --now nginx && rm /etc/systemd/system/nginx.service && systemctl daemon-reload')
+            elseif sys.os == "macos" then
+                ctx:cmd('launchctl unload ~/Library/LaunchAgents/nginx.plist && rm ~/Library/LaunchAgents/nginx.plist')
+            end
+            ctx:cmd('rm /etc/nginx/nginx.conf')
+        end,
+    })
     
     return M
 end
@@ -228,39 +244,50 @@ function M.setup(opts)
         if opts[k] == nil then opts[k] = v end
     end
     
-    local vscode_drv = derive {
+    local vscode_build = sys.build({
         name = "vscode",
-        opts = function(sys)
+        inputs = function()
             local urls = {
                 ["aarch64-darwin"] = "https://...",
                 ["x86_64-linux"] = "https://...",
             }
             return { url = urls[sys.platform], sha256 = "..." }
         end,
-        config = function(o, ctx)
-            local archive = ctx.fetch_url(o.url, o.sha256)
-            ctx.unpack(archive, ctx.out)
+        apply = function(o, ctx)
+            local archive = ctx:fetch_url(o.url, o.sha256)
+            ctx:cmd({ cmd = 'tar -xzf ' .. archive .. ' -C ' .. ctx.outputs.out })
         end,
-    }
+    })
     
-    local settings_drv = derive {
+    local settings_build = sys.build({
         name = "vscode-settings",
-        opts = function(sys) return { settings = opts.settings } end,
-        config = function(o, ctx)
-            ctx.write(ctx.out .. "/settings.json", lib.toJSON(o.settings))
+        inputs = function() return { settings = opts.settings } end,
+        apply = function(o, ctx)
+            ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(lib.toJSON(o.settings)) .. ' > ' .. ctx.outputs.out .. '/settings.json' })
         end,
-    }
+    })
     
-    activate {
-        opts = function(sys) return { vscode = vscode_drv, settings = settings_drv, extensions = opts.extensions } end,
-        config = function(o, ctx)
-            ctx.add_to_path(o.vscode.out .. "/bin")
-            ctx.symlink(o.settings.out .. "/settings.json", "~/.config/Code/User/settings.json")
+    sys.bind({
+        inputs = function() return { vscode = vscode_build, settings = settings_build, extensions = opts.extensions } end,
+        apply = function(o, ctx)
+            -- Add to PATH
+            ctx:cmd('ln -sf ' .. o.vscode.outputs.out .. '/bin/code /usr/local/bin/code')
+            -- Symlink settings
+            ctx:cmd('mkdir -p ~/.config/Code/User && ln -sf ' .. o.settings.outputs.out .. '/settings.json ~/.config/Code/User/settings.json')
+            -- Install extensions
             for _, ext in ipairs(o.extensions) do
-                ctx.run("code --install-extension " .. ext)
+                ctx:cmd('code --install-extension ' .. ext)
             end
         end,
-    }
+        destroy = function(o, ctx)
+            -- Uninstall extensions (in reverse)
+            for i = #o.extensions, 1, -1 do
+                ctx:cmd('code --uninstall-extension ' .. o.extensions[i])
+            end
+            ctx:cmd('rm ~/.config/Code/User/settings.json')
+            ctx:cmd('rm /usr/local/bin/code')
+        end,
+    })
     
     return M
 end
@@ -462,5 +489,5 @@ return M
 - [Overview](./00-overview.md) — Core values and principles
 - [Lua API](./04-lua-api.md) — API layers, globals, and entry point pattern
 - [Inputs](./06-inputs.md) — External dependencies and authentication
-- [Derivations](./01-derivations.md) — How `derive {}` works
-- [Activations](./02-activations.md) — How `activate {}` works
+- [Builds](./01-builds.md) — How `sys.build()` works
+- [Binds](./02-binds.md) — How `sys.bind()` works

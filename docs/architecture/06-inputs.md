@@ -1,12 +1,12 @@
-# Inputs and Registry
+# Inputs
 
 > Part of the [sys.lua Architecture](./00-overview.md) documentation.
 
-This document covers input sources, registry structure, lock files, and authentication.
+This document covers input sources, lock files, and how inputs are accessed in configuration.
 
 ## Overview
 
-sys.lua uses declarative inputs defined in the entry point's `M.inputs` table. Inputs are resolved in a separate phase before configuration evaluation, ensuring all external dependencies are available when `M.setup(inputs)` runs.
+Inputs are external dependencies declared in your entry point's `M.inputs` table. An input can be any Git repository or local path - it doesn't need any special structure. Inputs are resolved before `M.setup(inputs)` runs, ensuring all external content is available during configuration evaluation.
 
 ## Input Declaration
 
@@ -17,29 +17,34 @@ Inputs are declared in the `M.inputs` table of your entry point (`init.lua`):
 local M = {}
 
 M.inputs = {
-    -- Public registry (HTTPS, no auth needed)
-    pkgs = "git:https://github.com/syslua/pkgs.git",
-    
-    -- Private repos (SSH recommended - uses ~/.ssh/ keys)
-    private = "git:git@github.com:myorg/my-dotfiles.git",
-    company = "git:git@github.com:mycompany/internal-pkgs.git",
-    
-    -- Local path (for development)
-    local_pkgs = "path:~/code/my-packages",
+    -- Git repository with init.lua (can be require()'d)
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+
+    -- Git repository without init.lua (accessed via inputs.dotfiles.path)
+    dotfiles = "git:git@github.com:myuser/dotfiles.git",
+
+    -- Local path
+    local_config = "path:~/code/my-config",
 }
 
 function M.setup(inputs)
-    -- Access input modules via require
-    local pkgs = require("inputs.pkgs")
-    local private = require("inputs.private")
-    
-    -- Use packages from inputs
-    pkgs.cli.ripgrep.setup()
-    pkgs.cli.neovim.setup()
-    private.my_module.setup()
-    
-    -- Pin to specific version
-    pkgs.cli.ripgrep.setup({ version = "14_1_0" })
+    -- Inputs with init.lua can be require()'d using the input name
+    local syslua = require("syslua")
+    local path, lib = syslua.path, syslua.lib
+
+    -- Install a package from syslua
+    require("syslua.pkgs.cli.ripgrep").setup()
+
+    -- Inputs without init.lua are accessed via inputs table
+    lib.file.setup({
+        target = "~/.gitconfig",
+        source = path.join(inputs.dotfiles.path, ".gitconfig"),
+    })
+
+    lib.file.setup({
+        target = "~/.zshrc",
+        source = path.join(inputs.dotfiles.path, ".zshrc"),
+    })
 end
 
 return M
@@ -47,165 +52,82 @@ return M
 
 ## Input URL Formats
 
-| Format | Example | Auth Method |
-|--------|---------|-------------|
-| Git SSH | `git:git@github.com:org/repo.git` | SSH keys (~/.ssh/) |
-| Git HTTPS | `git:https://github.com/org/repo.git` | None (public) or SOPS token |
-| Local path | `path:~/code/my-packages` | None |
-| Local path | `path:./relative/path` | None |
+| Format     | Example                               | Auth Method                 |
+| ---------- | ------------------------------------- | --------------------------- |
+| Git SSH    | `git:git@github.com:org/repo.git`     | SSH keys (~/.ssh/)          |
+| Git HTTPS  | `git:https://github.com/org/repo.git` | None (public) or SOPS token |
+| Local path | `path:~/code/my-packages`             | None                        |
+| Local path | `path:./relative/path`                | None                        |
 
-## Registry Structure
+## Accessing Inputs
 
-The official registry uses a hierarchical structure with `init.lua` entry points and versioned implementation files. Version files use underscores (e.g., `15_1_0.lua`) since Lua `require` doesn't work well with dots in module names.
+There are two ways to access input content, depending on whether the input has a top-level `init.lua`:
 
-```
-sys-lua/pkgs/
-├── cli/
-│   ├── init.lua              # Category entry point
-│   ├── ripgrep/
-│   │   ├── init.lua          # Package entry point (latest + version routing)
-│   │   ├── 15_1_0.lua        # Version implementation
-│   │   ├── 14_1_0.lua
-│   │   └── 13_0_0.lua
-│   └── fd/
-│       ├── init.lua
-│       ├── 9_0_0.lua
-│       └── 8_7_0.lua
-├── editors/
-│   ├── init.lua
-│   ├── neovim/
-│   │   ├── init.lua
-│   │   ├── 0_10_0.lua
-│   │   └── 0_9_5.lua
-│   └── helix/
-│       └── ...
-└── init.lua                  # Root entry point
-```
+### Inputs with `init.lua` (Requireable)
 
-### Version File Example
-
-**`pkgs/cli/ripgrep/15_1_0.lua`:**
+If an input has a top-level `init.lua`, it becomes a Lua module that can be `require()`'d using the input name as the namespace:
 
 ```lua
----@class pkgs.cli.ripgrep.15_1_0
-local M = {}
-
-local hashes = {
-    ["aarch64-darwin"] = "abc123...",
-    ["x86_64-linux"] = "def456...",
-    ["x86_64-windows"] = "ghi789...",
+M.inputs = {
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+    my_helpers = "git:git@github.com:myorg/lua-helpers.git",
 }
 
-M.make_derivation = function()
-    return derive({
-        name = "ripgrep",
-        version = "15.1.0",
-        opts = function(sys)
-            return {
-                url = "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-" .. sys.platform .. ".tar.gz",
-                sha256 = hashes[sys.platform],
-            }
-        end,
-        config = function(opts, ctx)
-            local archive = ctx.fetch_url(opts.url, opts.sha256)
-            ctx.unpack(archive, ctx.out)
-        end,
-    })
-end
+function M.setup(inputs)
+    -- require() using the input name directly
+    local syslua = require("syslua")
+    local helpers = require("my_helpers")
 
-M.make_activation = function(drv)
-    return activate({
-        opts = { drv = drv },
-        config = function(opts, ctx)
-            ctx.add_to_path(opts.drv.out .. "/bin")
-        end,
-    })
-end
+    -- Access submodules
+    local ripgrep = require("syslua.pkgs.cli.ripgrep")
+    ripgrep.setup()
 
-M.setup = function()
-    local derivation = M.make_derivation()
-    M.make_activation(derivation)
+    -- Use helpers from the input
+    helpers.do_something()
 end
-
-return M
 ```
 
-### Package Entry Point Example
+### Inputs without `init.lua` (Path Access)
 
-**`pkgs/cli/ripgrep/init.lua`:**
-
-```lua
----@class pkgs.cli.ripgrep
----@field ["15_1_0"] pkgs.cli.ripgrep.15_1_0
----@field ["14_1_0"] pkgs.cli.ripgrep.14_1_0
-local M = {}
-
--- Lazy loading of version modules
-setmetatable(M, {
-    __index = function(_, pkg)
-        return require("pkgs.cli.ripgrep." .. pkg)
-    end,
-})
-
-M.setup = function(opts)
-    if opts == nil then
-        return require("pkgs.cli.ripgrep.15_1_0").setup()
-    end
-
-    local version = opts.version or "15_1_0"
-    local version_module = require("pkgs.cli.ripgrep." .. version)
-
-    if opts.make_derivation then
-        version_module.make_derivation = opts.make_derivation
-    end
-    if opts.make_activation then
-        version_module.make_activation = opts.make_activation
-    end
-
-    return version_module.setup()
-end
-
-return M
-```
-
-### Version Selection
-
-| Usage                                                              | Behavior              |
-| ------------------------------------------------------------------ | --------------------- |
-| `require("inputs.pkgs.cli.ripgrep").setup()`                       | Uses latest (15_1_0)  |
-| `require("inputs.pkgs.cli.ripgrep").setup({ version = "14_1_0" })` | Uses specific version |
-| `require("inputs.pkgs.cli.ripgrep")["14_1_0"].setup()`             | Direct version access |
-
-## Package References
-
-When you access `inputs.pkgs.cli.ripgrep`, it returns a **package module** with factory functions and a `setup()` method:
+Inputs without a top-level `init.lua` cannot be `require()`'d, but their content is still accessible via the `inputs` table passed to `M.setup()`:
 
 ```lua
--- What inputs.pkgs.cli.ripgrep resolves to:
-{
-    -- Factory functions
-    make_derivation = function() ... end,
-    make_activation = function(drv) ... end,
-
-    -- Setup orchestrates the installation
-    setup = function(opts) ... end,
-
-    -- Version modules accessible via metatable
-    ["15_1_0"] = <lazy loaded version module>,
-    ["14_1_0"] = <lazy loaded version module>,
+M.inputs = {
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+    dotfiles = "git:git@github.com:myuser/dotfiles.git",  -- no init.lua
 }
 
--- Usage:
-require("inputs.pkgs.cli.ripgrep").setup()                         -- Latest version
-require("inputs.pkgs.cli.ripgrep").setup({ version = "14_1_0" })   -- Specific version
-require("inputs.pkgs.cli.ripgrep")["14_1_0"].setup()               -- Direct access
+function M.setup(inputs)
+    local syslua = require("syslua")
+    local path, lib = syslua.path, syslua.lib
+
+    -- Access dotfiles via inputs.dotfiles.path
+    lib.file.setup({
+        target = "~/.gitconfig",
+        source = path.join(inputs.dotfiles.path, ".gitconfig"),
+    })
+
+    lib.file.setup({
+        target = "~/.vimrc",
+        source = path.join(inputs.dotfiles.path, "vim/vimrc"),
+    })
+end
 ```
 
-**Note:** There is no separate `pkg()` function. Packages are installed by calling `setup()` on the package module, which internally calls `derive()` and `activate()` to register the package.
+### Input Table Structure
+
+Each input in the `inputs` table passed to `M.setup()` has the following structure:
+
+```lua
+inputs.dotfiles = {
+    path = "/path/to/resolved/input",  -- Absolute path to input content
+    rev = "abc123...",                  -- Git revision (or "local" for path inputs)
+}
+```
 
 ## Lock File
 
-sys.lua generates a `syslua.lock` file in the same directory as the configuration. This enables:
+sys.lua generates a `syslua.lock` file in the same directory as the configuration. This ensures reproducible builds by pinning input revisions.
 
 - **System configs**: `/etc/syslua/` → `/etc/syslua/syslua.lock`
 - **User configs**: `~/.config/syslua/` → `~/.config/syslua/syslua.lock`
@@ -217,19 +139,16 @@ sys.lua generates a `syslua.lock` file in the same directory as the configuratio
 {
   "version": 1,
   "inputs": {
-    "pkgs": {
-      "type": "github",
-      "owner": "sys-lua",
-      "repo": "pkgs",
+    "syslua": {
+      "type": "git",
+      "url": "https://github.com/spirit-led-software/syslua.git",
       "rev": "a1b2c3d4e5f6...",
       "sha256": "...",
       "lastModified": 1733667300
     },
-    "unstable": {
-      "type": "github",
-      "owner": "sys-lua",
-      "repo": "pkgs",
-      "branch": "unstable",
+    "dotfiles": {
+      "type": "git",
+      "url": "git@github.com:myuser/dotfiles.git",
       "rev": "f6e5d4c3b2a1...",
       "sha256": "...",
       "lastModified": 1733667400
@@ -247,23 +166,11 @@ sys.lua generates a `syslua.lock` file in the same directory as the configuratio
 | `sys update`          | Re-resolve specified inputs, update lock |
 | `sys update --commit` | Update lock and `git commit` it          |
 
-### Team Workflow
-
-```bash
-# Developer A: Add new input, commit lock file
-git add init.lua syslua.lock
-git commit -m "Add nodejs to project"
-
-# Developer B: Pull and apply (uses same pinned versions)
-git pull
-sudo sys apply sys.lua
-```
-
 ### Commands
 
 ```bash
 sys update                    # Update all inputs to latest
-sys update pkgs               # Update specific input
+sys update syslua             # Update specific input
 sys update --commit           # Update and commit lock file
 sys update --dry-run          # Show what would change
 ```
@@ -277,8 +184,8 @@ For private repositories, **SSH URLs are recommended**. They use your existing `
 ```lua
 M.inputs = {
     -- Public (HTTPS, no auth)
-    pkgs = "git:https://github.com/syslua/pkgs.git",
-    
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+
     -- Private (SSH - uses ~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
     company = "git:git@github.com:mycompany/internal-pkgs.git",
     private = "git:git@gitlab.com:myorg/dotfiles.git",
@@ -305,7 +212,6 @@ github_token: ENC[AES256_GCM,data:...,tag:...]
 local secrets = sops.load("./secrets.yaml")
 
 M.inputs = {
-    -- HTTPS with token auth
     company = {
         url = "git:https://github.com/mycompany/private-pkgs.git",
         auth = secrets.github_token,
@@ -315,12 +221,12 @@ M.inputs = {
 
 ### Authentication Methods
 
-| URL Format | Auth Method | Use Case |
-|------------|-------------|----------|
-| `git:git@github.com:...` | SSH keys (~/.ssh/) | **Recommended** for private repos |
-| `git:https://...` (public) | None | Public repositories |
-| `git:https://...` (private) | SOPS token | CI/CD, restricted environments |
-| `path:...` | None | Local development |
+| URL Format                  | Auth Method        | Use Case                          |
+| --------------------------- | ------------------ | --------------------------------- |
+| `git:git@github.com:...`    | SSH keys (~/.ssh/) | **Recommended** for private repos |
+| `git:https://...` (public)  | None               | Public repositories               |
+| `git:https://...` (private) | SOPS token         | CI/CD, restricted environments    |
+| `path:...`                  | None               | Local development                 |
 
 ### Security Notes
 
@@ -335,29 +241,27 @@ M.inputs = {
 RESOLVE_INPUTS(config, lock_file):
     inputs = {}
 
-    FOR EACH input_decl IN config.inputs:
-        input_id = input_decl.name
-
+    FOR EACH name, url IN config.inputs:
         // Check if lock file exists and has this input
-        IF lock_file EXISTS AND lock_file.inputs[input_id] EXISTS:
-            locked = lock_file.inputs[input_id]
+        IF lock_file EXISTS AND lock_file.inputs[name] EXISTS:
+            locked = lock_file.inputs[name]
 
             // Validate lock entry matches config
-            IF locked.type != input_decl.type OR locked.url != input_decl.url:
-                ERROR "Lock file mismatch for input '{input_id}'."
-                      "Run 'sys update {input_id}' to update the lock file."
+            IF locked.url != url:
+                ERROR "Lock file mismatch for input '{name}'."
+                      "Run 'sys update {name}' to update the lock file."
 
             // Use pinned revision from lock
-            inputs[input_id] = FETCH_INPUT(input_decl, locked.rev)
+            inputs[name] = FETCH_INPUT(name, url, locked.rev)
         ELSE:
             // No lock entry - resolve to latest
-            resolved = RESOLVE_LATEST(input_decl)
-            inputs[input_id] = FETCH_INPUT(input_decl, resolved.rev)
+            resolved = RESOLVE_LATEST(url)
+            inputs[name] = FETCH_INPUT(name, url, resolved.rev)
 
             // Add to lock file
-            lock_file.inputs[input_id] = {
-                type: input_decl.type,
-                url: input_decl.url,
+            lock_file.inputs[name] = {
+                type: PARSE_TYPE(url),
+                url: url,
                 rev: resolved.rev,
                 sha256: resolved.sha256,
                 lastModified: resolved.timestamp,
@@ -369,17 +273,9 @@ RESOLVE_INPUTS(config, lock_file):
 
     RETURN inputs
 
-RESOLVE_LATEST(input_decl):
-    SWITCH input_decl.type:
-        CASE "github":
-            IF input_decl.branch SPECIFIED:
-                RETURN GITHUB_API.get_branch_head(owner, repo, branch)
-            ELSE:
-                RETURN GITHUB_API.get_default_branch_head(owner, repo)
-
-        CASE "gitlab":
-            // Similar to GitHub
-
+RESOLVE_LATEST(url):
+    type = PARSE_TYPE(url)
+    SWITCH type:
         CASE "git":
             RETURN GIT.ls_remote(url, ref="HEAD")
 
@@ -387,85 +283,80 @@ RESOLVE_LATEST(input_decl):
             // Local paths use directory mtime as "revision"
             RETURN { rev: "local", sha256: HASH_DIRECTORY(path), timestamp: DIR_MTIME(path) }
 
-FETCH_INPUT(input_decl, rev):
-    cache_key = HASH(input_decl.url + rev)
+FETCH_INPUT(name, url, rev):
+    cache_key = HASH(url + rev)
     cache_path = "~/.cache/syslua/inputs/{cache_key}"
 
     IF cache_path EXISTS:
-        RETURN cache_path
+        RETURN { path: cache_path, rev: rev }
 
-    SWITCH input_decl.type:
-        CASE "github", "gitlab":
-            tarball_url = CONSTRUCT_ARCHIVE_URL(input_decl, rev)
-            DOWNLOAD(tarball_url, cache_path, auth=input_decl.auth)
-            EXTRACT(cache_path)
-
+    type = PARSE_TYPE(url)
+    SWITCH type:
         CASE "git":
-            GIT.clone(input_decl.url, cache_path, rev=rev, auth=input_decl.auth)
+            GIT.clone(url, cache_path, rev=rev)
             REMOVE(cache_path + "/.git")  // Strip git metadata
 
         CASE "path":
-            SYMLINK(input_decl.path, cache_path)
+            SYMLINK(EXPAND_PATH(url), cache_path)
 
-    RETURN cache_path
+    // Register as Lua module if init.lua exists
+    IF FILE_EXISTS(cache_path + "/init.lua"):
+        REGISTER_LUA_PATH(name, cache_path)
+
+    RETURN { path: cache_path, rev: rev }
 ```
 
 ### Lock File Validation Rules
 
-| Scenario                        | Behavior                                 |
-| ------------------------------- | ---------------------------------------- |
-| Lock exists, input unchanged    | Use locked `rev`                         |
-| Lock exists, input URL changed  | Error (must run `sys update`)            |
-| Lock exists, input type changed | Error (must run `sys update`)            |
-| Lock missing for input          | Resolve latest, add to lock              |
-| Lock file missing entirely      | Resolve all inputs, create lock          |
-| `sys update` command            | Re-resolve specified inputs, update lock |
+| Scenario                       | Behavior                                 |
+| ------------------------------ | ---------------------------------------- |
+| Lock exists, input unchanged   | Use locked `rev`                         |
+| Lock exists, input URL changed | Error (must run `sys update`)            |
+| Lock missing for input         | Resolve latest, add to lock              |
+| Lock file missing entirely     | Resolve all inputs, create lock          |
+| `sys update` command           | Re-resolve specified inputs, update lock |
 
-## Custom Package Definitions
-
-Users can define custom derivations directly in their entry point:
+## Example: Complete Configuration
 
 ```lua
 local M = {}
 
 M.inputs = {
-    pkgs = "git:https://github.com/syslua/pkgs.git",
+    -- Main syslua registry (has init.lua)
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+
+    -- Personal dotfiles (no init.lua, just config files)
+    dotfiles = "git:git@github.com:myuser/dotfiles.git",
+
+    -- Company tools (has init.lua with custom packages)
+    company = "git:git@github.com:mycompany/syslua-pkgs.git",
 }
 
 function M.setup(inputs)
-    -- Use registry packages
-    require("inputs.pkgs.cli.ripgrep").setup()
-    
-    -- Custom derivation from GitHub release (prebuilt binaries)
-    local hashes = {
-        ["x86_64-linux"] = "abc123...",
-        ["aarch64-darwin"] = "def456...",
-    }
-    
-    local internal_tool_drv = derive {
-        name = "my-internal-tool",
-        version = "2.1.0",
-        
-        opts = function(sys)
-            return {
-                url = "https://github.com/mycompany/internal-tool/releases/download/v2.1.0/internal-tool-2.1.0-" .. sys.platform .. ".tar.gz",
-                sha256 = hashes[sys.platform],
-            }
-        end,
-        
-        config = function(opts, ctx)
-            local archive = ctx.fetch_url(opts.url, opts.sha256)
-            ctx.unpack(archive, ctx.out)
-        end,
-    }
-    
-    -- Install it with activation
-    activate {
-        opts = { drv = internal_tool_drv },
-        config = function(opts, ctx)
-            ctx.add_to_path(opts.drv.out .. "/bin")
-        end,
-    }
+    -- Load syslua helpers
+    local syslua = require("syslua")
+    local path, lib = syslua.path, syslua.lib
+
+    -- Install packages from syslua registry
+    require("syslua.pkgs.cli.ripgrep").setup()
+    require("syslua.pkgs.cli.fd").setup()
+    require("syslua.pkgs.editors.neovim").setup()
+
+    -- Install company-specific tools
+    require("company.tools.internal_cli").setup()
+
+    -- Link dotfiles (accessed via path since no init.lua)
+    local dotfiles = inputs.dotfiles.path
+
+    lib.file.setup({ target = "~/.gitconfig", source = path.join(dotfiles, "git/gitconfig") })
+    lib.file.setup({ target = "~/.zshrc", source = path.join(dotfiles, "zsh/zshrc") })
+    lib.file.setup({ target = "~/.config/nvim", source = path.join(dotfiles, "nvim") })
+
+    -- Set environment variables
+    lib.env.setup({
+        EDITOR = "nvim",
+        PAGER = "less",
+    })
 end
 
 return M
@@ -474,6 +365,6 @@ return M
 ## See Also
 
 - [Lua API](./04-lua-api.md) - Entry point pattern (`M.inputs`/`M.setup`)
-- [Derivations](./01-derivations.md) - How derivations work
-- [Activations](./02-activations.md) - How activations work
+- [Builds](./01-builds.md) - How builds work
+- [Binds](./02-binds.md) - How binds work
 - [Modules](./07-modules.md) - Module system

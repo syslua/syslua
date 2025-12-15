@@ -1,13 +1,12 @@
 # Store Design
 
-> **Core Principle:** The store is the realization engine for derivations.
+> **Core Principle:** The store is the realization engine for builds.
 
-Every object in `store/obj/` is the output of realizing a derivation. Objects use a human-readable naming scheme: `obj/name-version-hash/` (or `obj/name-hash/` if no version).
+Every object in `store/obj/` is the output of realizing a build. Objects use a human-readable naming scheme: `obj/name-version-hash/` (or `obj/name-hash/` if no version).
 
 The store provides:
 
 - **Content addressing**: Objects are identified by their content hash
-- **Human-readable paths**: `obj/ripgrep-15.1.0-abc123/` instead of just `obj/abc123/`
 - **Immutability**: Once written, objects never change
 - **Deduplication**: Same content → same hash → stored once
 - **Caching**: Derivation hash → output hash mapping enables instant cache hits
@@ -26,23 +25,21 @@ sys.lua uses a multi-level store architecture:
 
 ### User Store (Managed by Each User, No Sudo Required)
 
-| Platform | User Store Path                              |
-| -------- | -------------------------------------------- |
-| Linux    | `~/.local/share/syslua/store`                |
-| macOS    | `~/Library/Application Support/syslua/store` |
-| Windows  | `%LOCALAPPDATA%\syslua\store`                |
+| Platform    | User Store Path               |
+| ----------- | ----------------------------- |
+| Linux/macOS | `~/.local/share/syslua/store` |
+| Windows     | `%LOCALAPPDATA%\syslua\store` |
 
 ## System Store Layout
 
 ```
 /syslua/store/
-├── obj/<name>-<version>-<hash>/  # Realized derivation outputs (immutable, world-readable)
-│   ├── bin/                      # The actual content produced by the derivation
+├── obj/<name>-<version>-<hash>/  # Realized build outputs (immutable, world-readable)
+│   ├── bin/                      # The actual content produced by the build
 │   ├── lib/
 │   └── ...
-├── pkg/<name>/<ver>/<plat>       # Human-readable symlinks → obj/<name>-<version>-<hash>
-├── drv/<hash>.drv                # Serialized derivation descriptions (for debugging/rebuilds)
-├── drv-out/<hash>                # Maps derivation hash → output hash (cache index)
+├── drv/<hash>.drv                # Serialized build descriptions (for debugging/rebuilds)
+├── drv-out/<hash>                # Maps build hash → output hash (cache index)
 └── metadata/
     ├── manifest.json             # Current system manifest
     ├── snapshots.json            # System snapshots
@@ -59,10 +56,9 @@ sys.lua uses a multi-level store architecture:
 
 | Directory   | Purpose                                                               |
 | ----------- | --------------------------------------------------------------------- |
-| `obj/`      | **The actual store** - all derivation outputs live here               |
-| `pkg/`      | Human-readable names pointing to `obj/` - convenience layer           |
-| `drv/`      | Derivation descriptions - enables rebuilds and debugging              |
-| `drv-out/`  | Cache index - maps derivation hash to output hash for instant lookups |
+| `obj/`      | **The actual store** - all build outputs live here                    |
+| `drv/`      | Build descriptions - enables rebuilds and debugging                   |
+| `drv-out/`  | Cache index - maps build hash to output hash for instant lookups      |
 | `metadata/` | State tracking - manifest, snapshots, GC roots                        |
 
 ## User Store Layout
@@ -71,17 +67,14 @@ sys.lua uses a multi-level store architecture:
 ~/.local/share/syslua/
 ├── store/
 │   ├── obj/<name>-<version>-<hash>/  # User's packages (or hardlinks to system store)
-│   ├── pkg/<name>/<ver>/             # User's package symlinks
-│   ├── drv/<hash>.drv                # User's build derivations
+│   ├── drv/<hash>.drv                # User's build specs
 │   └── metadata/
 │       ├── manifest.json             # Current user manifest
 │       ├── snapshots.json            # User snapshots
 │       └── gc-roots/                 # User GC roots
-├── env.sh                            # Generated environment script (bash/zsh)
+├── zshenv                            # Generated environment script (bash/zsh)
 ├── env.fish                          # Generated environment script (fish)
 ├── env.ps1                           # Generated environment script (PowerShell)
-└── config/
-    └── init.lua                      # User's configuration (optional default location)
 ```
 
 ## Benefits of Multi-Level Store
@@ -94,53 +87,53 @@ sys.lua uses a multi-level store architecture:
 
 ## Store Realization
 
-The store converts derivation descriptions into actual content:
+The store converts build descriptions into actual content:
 
 ```rust
 impl Store {
-    /// Realize a derivation, returning the store path of the output
-    pub fn realize(&self, drv: &Derivation) -> Result<StorePath> {
-        // 1. Compute derivation hash (content-addressed)
-        let drv_hash = drv.hash();
+    /// Realize a build, returning the store path of the output
+    pub fn realize(&self, build: &BuildSpec) -> Result<StorePath> {
+        // 1. Compute build hash (content-addressed)
+        let build_hash = build.hash();
 
         // 2. Check if output already exists (cache hit)
-        if let Some(output) = self.lookup_cache(&drv_hash) {
+        if let Some(output) = self.lookup_cache(&build_hash) {
             return Ok(output);
         }
 
-        // 3. Realize input derivations first
-        let realized_inputs = self.realize_inputs(&drv.inputs)?;
+        // 3. Realize input builds first
+        let realized_inputs = self.realize_inputs(&build.inputs)?;
 
-        // 4. Execute the build function with ctx
-        let output_path = self.execute_build(drv, &realized_inputs)?;
+        // 4. Execute the build actions with ctx
+        let output_path = self.execute_build(build, &realized_inputs)?;
 
         // 5. Compute output hash and move to final location
         let output_hash = self.hash_directory(&output_path)?;
-        let final_path = self.store_path(drv, &output_hash);
+        let final_path = self.store_path(build, &output_hash);
         self.move_to_store(output_path, &final_path)?;
 
         // 6. Make immutable and cache the mapping
         self.make_immutable(&final_path)?;
-        self.cache_output(&drv_hash, &final_path);
+        self.cache_output(&build_hash, &final_path);
 
         Ok(final_path)
     }
 }
 ```
 
-**Key insight**: The store doesn't care what inputs look like or what the build function does. It just:
+**Key insight**: The store doesn't care what inputs look like or what the build actions do. It just:
 
-1. Hashes the derivation description
+1. Hashes the build description
 2. Checks if output exists
 3. Executes build if needed
 4. Stores result immutably
 
 This uniformity enables:
 
-- **Unified caching**: Every derivation output is cached the same way
-- **Composition**: Any derivation can depend on any other derivation
-- **Parallelization**: Independent derivations can be realized concurrently
-- **Reproducibility**: Same derivation hash → same output (or cache hit)
+- **Unified caching**: Every build output is cached the same way
+- **Composition**: Any build can depend on any other build
+- **Parallelization**: Independent builds can be realized concurrently
+- **Reproducibility**: Same build hash → same output (or cache hit)
 
 ## Store Deduplication
 
@@ -183,104 +176,109 @@ Objects in `obj/<hash>/` are made immutable after extraction:
 - **Purpose:** Prevent accidental modification
 - **Removal:** User can run `sys gc` to remove (clears immutability first)
 
-## Derivation-to-Store Flow Example
+## Build-to-Store Flow Example
 
-```
 1. User writes config:
 
-   local jq = derive {
+```lua
+   local jq = sys.build({
      name = "jq",
      version = "1.7.1",
-     opts = function(sys)
+     inputs = function()
        return {
          url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-" .. sys.platform,
          sha256 = "4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7c...",
        }
      end,
-     config = function(opts, ctx)
-       local archive = ctx.fetch_url(opts.url, opts.sha256)
-       ctx.mkdir(ctx.out .. "/bin")
-       ctx.copy(archive, ctx.out .. "/bin/jq")
-       ctx.chmod(ctx.out .. "/bin/jq", "755")
+     apply = function(inputs, ctx)
+       local archive = ctx:fetch_url(inputs.url, inputs.sha256)
+       ctx:cmd({ cmd = "mkdir -p " .. ctx.outputs.out .. "/bin" })
+       ctx:cmd({ cmd = "cp " .. archive .. " " .. ctx.outputs.out .. "/bin/jq" })
+       ctx:cmd({ cmd = "chmod 755 " .. ctx.outputs.out .. "/bin/jq" })
      end,
-   }
-   
-   activate {
-     opts = function(sys) return { drv = jq } end,
-     config = function(opts, ctx)
-       ctx.add_to_path(opts.drv.out .. "/bin")
+   })
+
+   sys.bind({
+     inputs = function() return { build = jq } end,
+     apply = function(inputs, ctx)
+       ctx:cmd("ln -sf " .. inputs.build.outputs.out .. "/bin/jq /usr/local/bin/jq")
      end,
-   }
+     destroy = function(inputs, ctx)
+       ctx:cmd("rm /usr/local/bin/jq")
+     end,
+   })
+```
 
-2. Lua evaluation creates derivation object:
+2. Lua evaluation creates build object:
 
-   Derivation {
+```
+   BuildDef {
      name: "jq",
      version: "1.7.1",
-     opts: <function>,
-     config: <function>,
-     outputs: ["out"],
+     inputs: <evaluated>,
+     apply_actions: [FetchUrl {...}, Cmd {...}, Cmd {...}, Cmd {...}],
+     outputs: { out: "out" },
    }
+```
 
-3. Store computes derivation hash:
+3. Store computes build hash:
 
-   drv_hash = sha256(name + version + opts(sys) + config_src + sys) = "abc123..."
+```
+   build_hash = sha256(name + version + inputs + actions) = "abc123..."
+```
 
 4. Store checks cache (drv-out/abc123...):
 
+```
    If exists: output_hash = read("drv-out/abc123...")
    If obj/jq-1.7.1-<output_hash>/ exists: CACHE HIT - skip build
+```
 
-5. If cache miss, store executes derivation:
-
-   - Realize any input derivations first
-   - Create build sandbox with ctx
-   - Execute config function
+5. If cache miss, store executes build:
+   - Realize any input builds first
+   - Execute actions (fetch, cmd, etc.)
    - Compute output hash from result
    - Move to obj/jq-1.7.1-<output_hash>/
    - Make immutable
    - Write drv-out/abc123... → output_hash
 
-6. Store creates human-readable link:
+6. Result in store:
 
-   pkg/jq/1.7.1/aarch64-darwin → ../../../obj/jq-1.7.1-<output_hash>/
-
-7. Result in store:
-
+```
    /syslua/store/
    ├── obj/
-   │   └── jq-1.7.1-def456789/
-   │       └── bin/
-   │           └── jq              # The actual binary
+   │ └── jq-1.7.1-def456789/
+   │ └── bin/
+   │ └── jq # The actual binary
    ├── pkg/
-   │   └── jq/
-   │       └── 1.7.1/
-   │           └── aarch64-darwin → ../../../obj/jq-1.7.1-def456789/
+   │ └── jq/
+   │ └── 1.7.1/
+   │ └── aarch64-darwin → ../../../obj/jq-1.7.1-def456789/
    ├── drv/
-   │   └── abc123....drv           # Serialized derivation (for debugging)
+   │ └── abc123....drv # Serialized build spec (for debugging)
    └── drv-out/
-       └── abc123...               # Contains: def456789
+   └── abc123... # Contains: def456789
 ```
 
-**Key insight**: The derivation hash (`abc123...`) is computed from the _description_, while the output hash is computed from the _content_. This separation enables:
+**Key insight**: The build hash (`abc123...`) is computed from the _description_, while the output hash is computed from the _content_. This separation enables:
 
 - Cache hits even when the same content is described differently
-- Reproducibility verification (same derivation → same output)
+- Reproducibility verification (same build → same output)
 - Debugging (inspect the `.drv` file to see what was requested)
 - Human-readable store paths for easier debugging
 
 ## Build Caching
 
-Built packages are cached by **output hash** (hash of the actual built artifacts), not derivation hash. This avoids cache invalidation issues where rebuilding with the same inputs produces a different hash.
+Built packages are cached by **output hash** (hash of the actual built artifacts), not build hash. This avoids cache invalidation issues where rebuilding with the same inputs produces a different hash.
 
 ```
 store/
-├── obj/<output-hash>/      # Built artifacts (immutable)
-├── drv/<drv-hash>.drv      # Derivation files (build instructions)
-└── drv-out/<drv-hash>      # Maps derivation hash → output hash
+├── obj/<output-hash>/    # Built artifacts (immutable)
+├── drv/<build-hash>.drv  # Build files (build instructions)
+└── drv-out/<build-hash>  # Maps build hash → output hash
 ```
 
-**Why output hash instead of derivation hash:**
+**Why output hash instead of build hash:**
 
 - Same source code built on different machines produces same output hash
 - Compiler version changes don't invalidate cache if output is identical
@@ -294,6 +292,6 @@ store/
 
 ## Related Documentation
 
-- [01-derivations.md](./01-derivations.md) - What produces store content
+- [01-builds.md](./01-builds.md) - What produces store content
 - [05-snapshots.md](./05-snapshots.md) - How store state is tracked over time
 - [08-apply-flow.md](./08-apply-flow.md) - How the store is populated during apply

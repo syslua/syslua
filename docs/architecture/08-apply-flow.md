@@ -47,11 +47,11 @@ sys apply init.lua
     ├─► PHASE 4: PLANNING
     │   ├─► Get current installed state from store
     │   ├─► Compute diff: desired (manifest) vs current
-    │   │   ├─► to_realize = derivations not in store
-    │   │   └─► to_deactivate = current activations not in manifest
+    │   │   ├─► to_realize = builds not in store
+    │   │   └─► to_unbind = current binds not in manifest
     │   ├─► Build execution DAG from manifest
-    │   │   ├─► Nodes: derivations and activations
-    │   │   └─► Edges: derivation dependencies (from opts)
+    │   │   ├─► Nodes: builds and binds
+    │   │   └─► Edges: build dependencies (from inputs)
     │   └─► Topologically sort DAG for execution order
     │
     ├─► PHASE 5: EXECUTION
@@ -60,9 +60,9 @@ sys apply init.lua
     │   ├─► Create pre-apply snapshot (with config content)
     │   ├─► Execute DAG in topological order:
     │   │   ├─► Parallel execution for independent nodes
-    │   │   ├─► Realize derivations (download/build to store)
-    │   │   ├─► Execute activations (symlinks, PATH, services)
-    │   │   └─► Deactivate removed activations
+    │   │   ├─► Realize builds (download/build to store)
+    │   │   ├─► Execute binds (run apply_actions)
+    │   │   └─► Unbind removed binds (run destroy_actions)
     │   ├─► On failure: rollback completed nodes, abort
     │   ├─► Create post-apply snapshot (with config content)
     │   └─► Generate env scripts (env.sh, env.fish, env.ps1)
@@ -124,34 +124,34 @@ The manifest is the intermediate representation between Lua config and system st
 ```rust
 /// The complete manifest produced by evaluating a Lua configuration
 pub struct Manifest {
-    /// All derivations (build recipes producing store content)
-    pub derivations: Vec<Derivation>,
-    /// All activations (making derivations visible to the system)
-    pub activations: Vec<Activation>,
+    /// All builds (evaluated build definitions)
+    pub builds: Vec<BuildDef>,
+    /// All binds (evaluated bind definitions, called "activations")
+    pub activations: Vec<BindDef>,
 }
 ```
 
-**Key insight:** There are no separate types for packages, files, or environment variables. The Lua helpers `file{}`, `env{}`, `user{}`, and package `setup()` all create derivations and activations internally:
+**Key insight:** There are no separate types for packages, files, or environment variables. The Lua helpers `file{}`, `env{}`, `user{}`, and package `setup()` all create builds and binds internally:
 
 | Lua Declaration | Creates |
 |-----------------|---------|
-| `require("pkgs.cli.ripgrep").setup()` | Derivation (fetch/build) + Activation (add to PATH) |
-| `file { path, source }` | Derivation (copy to store) + Activation (symlink) |
-| `env { EDITOR = "nvim" }` | Derivation (generate shell scripts) + Activation (source in shell) |
-| `user { name, setup }` | Scoping only (derivations/activations created inside `setup`) |
+| `require("pkgs.cli.ripgrep").setup()` | Build (fetch/build) + Bind (add to PATH) |
+| `file { path, source }` | Build (copy to store) + Bind (symlink) |
+| `env { EDITOR = "nvim" }` | Build (generate shell scripts) + Bind (source in shell) |
+| `user { name, setup }` | Scoping only (builds/binds created inside `setup`) |
 
 This unified model provides:
 
 - **Simpler implementation**: Only two types to handle, not N
-- **Consistent caching**: All content goes through the derivation system
-- **Clean rollback**: Snapshots store derivation hashes + activations
+- **Consistent caching**: All content goes through the build system
+- **Clean rollback**: Snapshots store build hashes + binds
 - **Composability**: Everything uses the same primitives
 
-See [Derivations](./01-derivations.md) and [Activations](./02-activations.md) for the full type definitions.
+See [Builds](./01-builds.md) and [Binds](./02-binds.md) for the full type definitions.
 
 ## Execution DAG
 
-The DAG ensures correct ordering regardless of config declaration order. Nodes are derivations and activations; edges represent dependencies.
+The DAG ensures correct ordering regardless of config declaration order. Nodes are builds and binds; edges represent dependencies.
 
 ```
 Example: User declares in any order:
@@ -160,23 +160,23 @@ Example: User declares in any order:
   file { path = "~/.config/nvim/init.lua", source = "./nvim-config" }
 
 Internally creates:
-  - ripgrep derivation + activation
-  - neovim derivation + activation
-  - file derivation (copy content) + activation (symlink)
+  - ripgrep build + bind
+  - neovim build + bind
+  - file build (copy content) + bind (symlink)
 
-DAG constructed (derivations must complete before their activations):
+DAG constructed (builds must complete before their binds):
   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-  │ ripgrep (deriv) │     │ neovim (deriv)  │     │ nvim-cfg (deriv)│
+  │ ripgrep (build) │     │ neovim (build)  │     │ nvim-cfg (build)│
   └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
            │                       │                       │
            ▼                       ▼                       ▼
   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-  │ ripgrep (activ) │     │ neovim (activ)  │     │ nvim-cfg (activ)│
+  │ ripgrep (bind)  │     │ neovim (bind)   │     │ nvim-cfg (bind) │
   └─────────────────┘     └─────────────────┘     └─────────────────┘
 
 Execution order (determined by system, not user):
-  Wave 1: ripgrep, neovim, nvim-cfg derivations (parallel - independent)
-  Wave 2: ripgrep, neovim, nvim-cfg activations (parallel - derivations done)
+  Wave 1: ripgrep, neovim, nvim-cfg builds (parallel - independent)
+  Wave 2: ripgrep, neovim, nvim-cfg binds (parallel - builds done)
 ```
 
 ### DAG Execution Example
@@ -184,20 +184,20 @@ Execution order (determined by system, not user):
 ```
 $ sys plan init.lua
 
-Derivations to realize:
+Builds to realize:
   + ripgrep-15.1.0-abc123 (not in store)
   + neovim-0.10.0-def456 (not in store)
   = postgresql-16.1.0-ghi789 (cached)
 
-Activations to apply:
-  + AddToPath: ripgrep/bin
-  + AddToPath: neovim/bin
-  + AddToPath: postgresql/bin
-  + Symlink: ~/.config/nvim/init.lua
+Binds to apply:
+  + cmd: ln -sf .../ripgrep/bin/rg /usr/local/bin/rg
+  + cmd: ln -sf .../neovim/bin/nvim /usr/local/bin/nvim
+  + cmd: ln -sf .../postgresql/bin/psql /usr/local/bin/psql
+  + cmd: ln -sf ... ~/.config/nvim/init.lua
 
 Execution order:
   [Wave 1] Realize: ripgrep, neovim (parallel)
-  [Wave 2] Activate: all activations (parallel, derivations done)
+  [Wave 2] Bind: all binds (parallel, builds done)
 ```
 
 ## Atomic Apply (All-or-Nothing)
@@ -266,13 +266,13 @@ Run 'sys plan' to review the execution plan.
 
 ### What Gets Rolled Back
 
-| Component        | Rollback Action                                         |
-| ---------------- | ------------------------------------------------------- |
-| **Derivations**  | Objects remain in store (immutable, may be GC'd later)  |
-| **Activations**  | Deactivate: remove symlinks, PATH entries, stop services|
-| **Symlinks**     | Restore original target or remove                       |
-| **Environment**  | Regenerate env scripts from previous snapshot           |
-| **Services**     | Stop newly started services, restart stopped services   |
+| Component        | Rollback Action                                                     |
+| ---------------- | ------------------------------------------------------------------- |
+| **Builds**       | Objects remain in store (immutable, may be GC'd later)              |
+| **Binds**        | Execute destroy_actions: remove symlinks, PATH entries, stop services |
+| **Symlinks**     | Restore original target or remove                                   |
+| **Environment**  | Regenerate env scripts from previous snapshot                       |
+| **Services**     | Stop newly started services, restart stopped services               |
 
 ### Edge Cases
 
@@ -291,22 +291,22 @@ $ sys plan sys.lua
 Evaluating sys.lua...
 Building execution plan...
 
-Derivations:
+Builds:
   + fd-9.0.0-abc123 (to realize)
   + bat-0.24.0-def456 (to realize)
   = jq-1.7.1-ghi789 (cached)
   - ripgrep-14.1.1-old123 (unreferenced, will be GC'd)
 
-Activations:
-  + AddToPath: fd/bin
-  + AddToPath: bat/bin
-  = AddToPath: jq/bin (unchanged)
-  - AddToPath: ripgrep/bin (to remove)
+Binds:
+  + cmd: ln -sf .../fd/bin/fd /usr/local/bin/fd
+  + cmd: ln -sf .../bat/bin/bat /usr/local/bin/bat
+  = cmd: ln -sf .../jq/bin/jq /usr/local/bin/jq (unchanged)
+  - destroy: rm /usr/local/bin/rg (to remove)
 
 Execution order:
   1. [realize] fd, bat (parallel)
-  2. [activate] fd, bat activations (parallel)
-  3. [deactivate] ripgrep activation
+  2. [bind] fd, bat binds (parallel)
+  3. [unbind] ripgrep bind
 ```
 
 ## Priority-Based Conflict Resolution
@@ -365,7 +365,7 @@ Use lib.mkForce() to override, or lib.mkDefault() to provide a fallback.
 
 - [Lua API](./04-lua-api.md) - Entry point pattern (`M.inputs`/`M.setup`)
 - [Inputs](./06-inputs.md) - Input sources and authentication
-- [Derivations](./01-derivations.md) - Build recipes
-- [Activations](./02-activations.md) - Making derivations visible
+- [Builds](./01-builds.md) - Build recipes
+- [Binds](./02-binds.md) - Making builds visible
 - [Snapshots](./05-snapshots.md) - State capture and rollback
 - [Store](./03-store.md) - Where objects live

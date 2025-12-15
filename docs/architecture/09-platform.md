@@ -4,9 +4,9 @@
 
 This document covers platform-specific details including services, environment scripts, file management, and paths.
 
-## Platform Abstraction (sys-platform)
+## Platform Abstraction (syslua-lib)
 
-The `sys-platform` crate provides OS abstraction for:
+The `syslua-lib` crate provides OS abstraction for:
 
 - Store/config/cache paths per OS
 - Platform identifier (e.g., `aarch64-darwin`)
@@ -25,11 +25,10 @@ The `sys-platform` crate provides OS abstraction for:
 
 ### User Store (managed by each user, no sudo required)
 
-| Platform | User Store Path                              |
-| -------- | -------------------------------------------- |
-| Linux    | `~/.local/share/syslua/store`                |
-| macOS    | `~/Library/Application Support/syslua/store` |
-| Windows  | `%LOCALAPPDATA%\syslua\store`                |
+| Platform    | User Store Path               |
+| ----------- | ----------------------------- |
+| Linux/macOS | `~/.local/share/syslua/store` |
+| Windows     | `%LOCALAPPDATA%\syslua\store` |
 
 ## Environment Scripts
 
@@ -118,7 +117,7 @@ Persistent variables are written directly to OS-level configuration, available t
 
 ## File Management
 
-sys.lua provides declarative file management through the unified derivation model.
+sys.lua provides declarative file management through the unified build model.
 
 **Important: Files are fully managed by sys.lua.** When you declare a file:
 
@@ -155,7 +154,7 @@ sys.lua provides declarative file management through the unified derivation mode
 
 - Direct symlink, content lives outside the store
 - File can be edited in place
-- Still tracked by sys.lua (derivation records the link metadata)
+- Still tracked by sys.lua (build records the link metadata)
 - No content-based rollback (rollback restores the symlink, not content)
 
 ## Service Management
@@ -197,14 +196,14 @@ function M.setup(opts)
     for k, v in pairs(M.options) do
         if opts[k] == nil then opts[k] = v end
     end
-    
-    -- Derive the service unit file
-    local service_drv = derive {
+
+    -- Build the service unit file
+    local service_build = sys.build({
         name = "myapp-service",
-        opts = function(sys) return { sys = sys, port = opts.port } end,
-        config = function(o, ctx)
-            if o.sys.os == "linux" then
-                ctx.write(ctx.out .. "/myapp.service", [[
+        inputs = function() return { port = opts.port } end,
+        apply = function(o, ctx)
+            if sys.os == "linux" then
+                local unit = [[
 [Unit]
 Description=My Application
 After=network.target
@@ -218,27 +217,34 @@ User=myapp
 
 [Install]
 WantedBy=multi-user.target
-]])
-            elseif o.sys.os == "macos" then
-                ctx.write(ctx.out .. "/myapp.plist", generate_launchd_plist(o))
+]]
+                ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(unit) .. ' > ' .. ctx.outputs.out .. '/myapp.service' })
+            elseif sys.os == "macos" then
+                local plist = generate_launchd_plist(o)
+                ctx:cmd({ cmd = 'echo ' .. lib.shellQuote(plist) .. ' > ' .. ctx.outputs.out .. '/myapp.plist' })
             end
         end,
-    }
-    
-    -- Activate: install and enable
-    activate {
-        opts = function(sys) return { drv = service_drv, sys = sys } end,
-        config = function(o, ctx)
-            if o.sys.os == "linux" then
-                ctx.symlink(o.drv.out .. "/myapp.service", "/etc/systemd/system/myapp.service")
-                ctx.enable_service("myapp")
-            elseif o.sys.os == "macos" then
-                ctx.symlink(o.drv.out .. "/myapp.plist", "~/Library/LaunchAgents/myapp.plist")
-                ctx.enable_service("myapp")
+    })
+
+    -- Bind: install and enable
+    sys.bind({
+        inputs = function() return { build = service_build } end,
+        apply = function(o, ctx)
+            if sys.os == "linux" then
+                ctx:cmd('ln -sf ' .. o.build.outputs.out .. '/myapp.service /etc/systemd/system/myapp.service && systemctl daemon-reload && systemctl enable --now myapp')
+            elseif sys.os == "macos" then
+                ctx:cmd('ln -sf ' .. o.build.outputs.out .. '/myapp.plist ~/Library/LaunchAgents/myapp.plist && launchctl load ~/Library/LaunchAgents/myapp.plist')
             end
         end,
-    }
-    
+        destroy = function(o, ctx)
+            if sys.os == "linux" then
+                ctx:cmd('systemctl disable --now myapp && rm /etc/systemd/system/myapp.service && systemctl daemon-reload')
+            elseif sys.os == "macos" then
+                ctx:cmd('launchctl unload ~/Library/LaunchAgents/myapp.plist && rm ~/Library/LaunchAgents/myapp.plist')
+            end
+        end,
+    })
+
     return M
 end
 
@@ -284,32 +290,41 @@ While sys.lua prefers prebuilt binaries for speed, it supports building from sou
 
 ```lua
 -- Prebuilt binary (preferred, fast)
-derive {
+sys.build({
     name = "ripgrep",
     version = "15.1.0",
-    config = function(opts, ctx)
-        local archive = ctx.fetch_url(opts.url, opts.sha256)
-        ctx.unpack(archive, ctx.out)
+    inputs = function()
+        return { url = "https://...", sha256 = "..." }
     end,
-}
+    apply = function(o, ctx)
+        local archive = ctx:fetch_url(o.url, o.sha256)
+        ctx:cmd({ cmd = 'tar -xzf ' .. archive .. ' -C ' .. ctx.outputs.out })
+    end,
+})
 
 -- Build from source (when no prebuilt available)
-derive {
+sys.build({
     name = "custom-tool",
     version = "1.0.0",
-    opts = function(sys)
+    inputs = function()
         return {
-            rust = rust_drv,  -- Build dependency
+            rust = rust_build,  -- Build dependency
+            git_url = "https://github.com/...",
+            rev = "abc123",
+            sha256 = "...",
         }
     end,
-    config = function(opts, ctx)
-        local src = ctx.fetch_git(opts.git_url, opts.rev, opts.sha256)
-        ctx.env.PATH = opts.rust.out .. "/bin:" .. ctx.env.PATH
-        ctx.run("cargo build --release", { cwd = src })
-        ctx.mkdir(ctx.out .. "/bin")
-        ctx.copy(src .. "/target/release/custom-tool", ctx.out .. "/bin/custom-tool")
+    apply = function(o, ctx)
+        local src = ctx:fetch_git(o.git_url, o.rev, o.sha256)
+        ctx:cmd({
+            cmd = 'cargo build --release',
+            cwd = src,
+            env = { PATH = o.rust.outputs.out .. '/bin:' .. os.getenv('PATH') },
+        })
+        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.outputs.out .. '/bin' })
+        ctx:cmd({ cmd = 'cp ' .. src .. '/target/release/custom-tool ' .. ctx.outputs.out .. '/bin/custom-tool' })
     end,
-}
+})
 ```
 
 ### Cross-Compilation (Future)
@@ -323,5 +338,5 @@ Cross-compilation is **not supported in the initial release**. Current recommend
 ## See Also
 
 - [Store](./03-store.md) - Store layout and deduplication
-- [Derivations](./01-derivations.md) - Build system details
+- [Builds](./01-builds.md) - Build system details
 - [Snapshots](./05-snapshots.md) - Rollback for services and files

@@ -1,0 +1,15 @@
+[package]
+name = "syslua-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mlua = { version = "0.11", features = ["anyhow", "async", "lua54", "vendored"] }
+sha2 = "0.10"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+serial_test = { workspace = true }
+temp-env = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }

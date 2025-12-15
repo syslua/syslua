@@ -1,33 +1,16 @@
 [workspace]
 resolver = "2"
-members = [
-  "crates/cli",
-  "crates/core",
-  "crates/lua",
-  "crates/platform",
-  "crates/sops",
-]
+members = ["crates/cli", "crates/lib"]
 
 [workspace.dependencies]
-# Shared dependencies used across multiple crates
-mlua = { version = "0.11", features = [
-  "lua54",
-  "serialize",
-  "async",
-  "vendored",
-] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-thiserror = "2.0"
-anyhow = "1.0"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1.0", features = ["full"] }
+temp-env = "0.3"
+tempfile = "3.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serial_test = "3.2"
 
-# Internal workspace crates
-sys-cli = { path = "crates/cli" }
-sys-core = { path = "crates/core" }
-sys-lua = { path = "crates/lua" }
-sys-platform = { path = "crates/platform" }
-sys-sops = { path = "crates/sops" }
+syslua-cli = { path = "crates/cli" }
+syslua-lib = { path = "crates/lib" }
