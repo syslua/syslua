@@ -14,6 +14,7 @@ pub mod build;
 pub mod consts;
 pub mod error;
 pub mod eval;
+pub mod execute;
 pub mod inputs;
 pub mod lua;
 pub mod manifest;

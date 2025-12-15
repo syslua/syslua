@@ -14,7 +14,7 @@ use mlua::prelude::*;
 use crate::build::{BUILD_REF_TYPE, BuildCmdOptions, BuildCtx, BuildDef};
 use crate::consts::HASH_PREFIX_LEN;
 use crate::inputs::InputsRef;
-use crate::lua::inputs::{inputs_ref_to_lua, lua_value_to_inputs_ref};
+use crate::lua::inputs::{contains_bind_ref, inputs_ref_to_lua, lua_value_to_inputs_ref};
 use crate::lua::outputs::parse_outputs;
 use crate::manifest::Manifest;
 
@@ -102,6 +102,15 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
       Some(v) => Some(lua_value_to_inputs_ref(v, &manifest.borrow())?),
       None => None,
     };
+
+    // 2.5 Validate no bind references in inputs (builds cannot depend on binds)
+    if let Some(ref inputs) = resolved_inputs
+      && contains_bind_ref(inputs)
+    {
+      return Err(LuaError::external(
+        "build inputs cannot reference binds: binds are side-effectful and cannot be inputs to immutable builds",
+      ));
+    }
 
     // 3. Create BuildCtx and call the apply function
     let ctx = BuildCtx::new();
@@ -696,7 +705,11 @@ mod tests {
       use crate::build::BuildAction;
       match &build_def.apply_actions[0] {
         BuildAction::Cmd { cmd, .. } => {
-          assert!(cmd.contains("$${out}"), "cmd should contain ${{out}} placeholder: {}", cmd);
+          assert!(
+            cmd.contains("$${out}"),
+            "cmd should contain ${{out}} placeholder: {}",
+            cmd
+          );
           assert_eq!(cmd, "mkdir -p $${out}/bin");
         }
         _ => panic!("expected Cmd action"),
@@ -704,11 +717,92 @@ mod tests {
 
       match &build_def.apply_actions[1] {
         BuildAction::Cmd { cmd, .. } => {
-          assert!(cmd.contains("$${out}"), "cmd should contain ${{out}} placeholder: {}", cmd);
+          assert!(
+            cmd.contains("$${out}"),
+            "cmd should contain ${{out}} placeholder: {}",
+            cmd
+          );
           assert_eq!(cmd, "cp binary $${out}/bin/");
         }
         _ => panic!("expected Cmd action"),
       }
+
+      Ok(())
+    }
+
+    #[test]
+    fn build_with_bind_input_fails() -> LuaResult<()> {
+      let (lua, _) = create_test_lua_with_manifest()?;
+
+      let result = lua
+        .load(
+          r#"
+                local link = sys.bind({
+                    apply = function(inputs, ctx)
+                        ctx:cmd("ln -sf /src /dest")
+                    end,
+                })
+
+                return sys.build({
+                    name = "invalid-build",
+                    inputs = { bind_dep = link },
+                    apply = function(inputs, ctx)
+                        ctx:cmd("make")
+                        return { out = "/output" }
+                    end,
+                })
+            "#,
+        )
+        .eval::<LuaTable>();
+
+      assert!(result.is_err());
+      let err = result.unwrap_err().to_string();
+      assert!(
+        err.contains("cannot reference binds") || err.contains("side-effectful"),
+        "error should explain bind ref constraint: {}",
+        err
+      );
+
+      Ok(())
+    }
+
+    #[test]
+    fn build_with_nested_bind_input_fails() -> LuaResult<()> {
+      let (lua, _) = create_test_lua_with_manifest()?;
+
+      // Test that nested bind references are also caught
+      let result = lua
+        .load(
+          r#"
+                local link = sys.bind({
+                    apply = function(inputs, ctx)
+                        ctx:cmd("ln -sf /src /dest")
+                    end,
+                })
+
+                return sys.build({
+                    name = "invalid-build",
+                    inputs = {
+                        nested = {
+                            deep = { bind_dep = link }
+                        }
+                    },
+                    apply = function(inputs, ctx)
+                        ctx:cmd("make")
+                        return { out = "/output" }
+                    end,
+                })
+            "#,
+        )
+        .eval::<LuaTable>();
+
+      assert!(result.is_err());
+      let err = result.unwrap_err().to_string();
+      assert!(
+        err.contains("cannot reference binds") || err.contains("side-effectful"),
+        "error should explain bind ref constraint for nested refs: {}",
+        err
+      );
 
       Ok(())
     }

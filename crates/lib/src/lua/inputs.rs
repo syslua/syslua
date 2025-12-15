@@ -10,6 +10,19 @@ use crate::{
   manifest::Manifest,
 };
 
+/// Check if an InputsRef contains any Bind references.
+///
+/// Returns true if any Bind reference is found anywhere in the tree.
+/// This is used to validate that builds don't depend on binds.
+pub fn contains_bind_ref(inputs: &InputsRef) -> bool {
+  match inputs {
+    InputsRef::Bind(_) => true,
+    InputsRef::Table(map) => map.values().any(contains_bind_ref),
+    InputsRef::Array(arr) => arr.iter().any(contains_bind_ref),
+    InputsRef::String(_) | InputsRef::Number(_) | InputsRef::Boolean(_) | InputsRef::Build(_) => false,
+  }
+}
+
 /// Convert a Lua value to InputsRef (for resolved/static inputs).
 ///
 /// Handles primitives, arrays, tables, and specially-marked BuildRef/BindRef tables

@@ -680,14 +680,22 @@ mod tests {
       use crate::bind::BindAction;
       match &bind_def.apply_actions[0] {
         BindAction::Cmd { cmd, .. } => {
-          assert!(cmd.contains("$${out}"), "cmd should contain ${{out}} placeholder: {}", cmd);
+          assert!(
+            cmd.contains("$${out}"),
+            "cmd should contain ${{out}} placeholder: {}",
+            cmd
+          );
           assert_eq!(cmd, "mkdir -p $${out}");
         }
       }
 
       match &bind_def.apply_actions[1] {
         BindAction::Cmd { cmd, .. } => {
-          assert!(cmd.contains("$${out}"), "cmd should contain ${{out}} placeholder: {}", cmd);
+          assert!(
+            cmd.contains("$${out}"),
+            "cmd should contain ${{out}} placeholder: {}",
+            cmd
+          );
           assert_eq!(cmd, "ln -sf /src $${out}/link");
         }
       }
@@ -724,7 +732,11 @@ mod tests {
       use crate::bind::BindAction;
       match &destroy_actions[0] {
         BindAction::Cmd { cmd, .. } => {
-          assert!(cmd.contains("$${out}"), "destroy cmd should contain ${{out}} placeholder: {}", cmd);
+          assert!(
+            cmd.contains("$${out}"),
+            "destroy cmd should contain ${{out}} placeholder: {}",
+            cmd
+          );
           assert_eq!(cmd, "rm -rf $${out}");
         }
       }

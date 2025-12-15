@@ -72,6 +72,12 @@ pub struct BuildSpec {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BuildHash(pub String);
 
+impl std::fmt::Display for BuildHash {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
 /// An action that can be performed during build execution.
 ///
 /// Build actions are the primitive operations that builds can perform.

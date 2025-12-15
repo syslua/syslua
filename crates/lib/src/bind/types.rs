@@ -72,6 +72,12 @@ pub struct BindSpec {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BindHash(pub String);
 
+impl std::fmt::Display for BindHash {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
 /// An action that can be performed during bind execution.
 ///
 /// Bind actions are the primitive operations that bindings can perform.

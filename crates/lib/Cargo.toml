@@ -14,10 +14,14 @@ gix = { version = "0.75", default-features = false, features = [
 mlua = { version = "0.11", features = ["anyhow", "async", "lua54", "vendored"] }
 sha2 = "0.10"
 
+hex = { workspace = true }
+petgraph = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
 temp-env = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
