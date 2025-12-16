@@ -49,8 +49,9 @@ mod tests {
 
     let hash = ObjectHash("abc123def45678901234".to_string());
     let path = bind_path(&hash, false);
-    // Use Path for cross-platform comparison
-    let expected_suffix = Path::new("store").join("bind").join("abc123def45678901234");
+    // Check that path ends with bind/{hash}
+    // Note: We don't check for "store" because SYSLUA_USER_STORE env var can override to any path
+    let expected_suffix = Path::new("bind").join("abc123def45678901234");
     assert!(
       path.ends_with(&expected_suffix),
       "Path {:?} should end with {:?}",

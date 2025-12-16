@@ -638,7 +638,7 @@ mod tests {
 
   /// Returns a command that creates an empty file at the given path.
   /// Unix: /usr/bin/touch {path}
-  /// Windows: type nul > "{path}"
+  /// Windows: copy nul "{path}"
   #[cfg(unix)]
   fn touch_cmd(path: &std::path::Path) -> String {
     format!("/usr/bin/touch {}", path.display())
@@ -646,7 +646,7 @@ mod tests {
 
   #[cfg(windows)]
   fn touch_cmd(path: &std::path::Path) -> String {
-    format!("type nul > \"{}\"", path.display())
+    format!("copy nul \"{}\"", path.display())
   }
 
   /// Returns a command that removes a file at the given path.

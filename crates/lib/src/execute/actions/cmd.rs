@@ -168,19 +168,6 @@ mod tests {
     format!("echo %{}%", var)
   }
 
-  /// Get a command that prints the current working directory.
-  /// Unix: pwd
-  /// Windows: cd (prints current directory)
-  #[cfg(unix)]
-  fn print_cwd() -> &'static str {
-    "pwd"
-  }
-
-  #[cfg(windows)]
-  fn print_cwd() -> &'static str {
-    "cd"
-  }
-
   #[tokio::test]
   async fn execute_simple_command() {
     let temp_dir = TempDir::new().unwrap();
@@ -248,6 +235,18 @@ mod tests {
     assert!(matches!(result, Err(ExecuteError::CmdFailed { code: Some(1), .. })));
   }
 
+  /// Returns a command that creates a file named "cwd_marker" in the current directory.
+  /// This is more reliable than comparing path strings across platforms.
+  #[cfg(unix)]
+  fn create_cwd_marker() -> &'static str {
+    "/usr/bin/touch cwd_marker"
+  }
+
+  #[cfg(windows)]
+  fn create_cwd_marker() -> &'static str {
+    "copy nul cwd_marker"
+  }
+
   #[tokio::test]
   async fn execute_command_with_cwd() {
     let temp_dir = TempDir::new().unwrap();
@@ -257,13 +256,22 @@ mod tests {
     let sub_dir = out_dir.join("subdir");
     tokio::fs::create_dir(&sub_dir).await.unwrap();
 
-    let result = execute_cmd(print_cwd(), None, Some(sub_dir.to_str().unwrap()), out_dir, None)
-      .await
-      .unwrap();
+    // Run a command that creates a marker file in the cwd
+    execute_cmd(
+      create_cwd_marker(),
+      None,
+      Some(sub_dir.to_str().unwrap()),
+      out_dir,
+      None,
+    )
+    .await
+    .unwrap();
 
-    // On macOS, /var is a symlink to /private/var, so we need to canonicalize
-    let expected = sub_dir.canonicalize().unwrap();
-    assert_eq!(result, expected.to_string_lossy());
+    // Verify the marker file was created in the subdirectory (proving cwd was set correctly)
+    assert!(
+      sub_dir.join("cwd_marker").exists(),
+      "cwd_marker should exist in subdirectory, proving cwd was set correctly"
+    );
   }
 
   #[tokio::test]

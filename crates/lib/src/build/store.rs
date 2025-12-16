@@ -56,8 +56,20 @@ mod tests {
 
   #[test]
   fn object_path_includes_obj_dir() {
+    use std::path::Path;
+
+    let name = "test";
+    let version = Some("1.0");
     let hash = ObjectHash("abc123def45678901234".to_string());
-    let path = build_path("ripgrep", Some("14.1.0"), &hash, false);
-    assert!(path.ends_with("store/obj/ripgrep-14.1.0-abc123def45678901234"));
+    let path = build_path(name, version, &hash, false);
+    // Check that path ends with obj/name-version-{hash}
+    // Note: We don't check for "store" because SYSLUA_USER_STORE env var can override to any path
+    let expected_suffix = Path::new("obj").join("test-1.0-abc123def45678901234");
+    assert!(
+      path.ends_with(&expected_suffix),
+      "Path {:?} should end with {:?}",
+      path,
+      expected_suffix
+    );
   }
 }
