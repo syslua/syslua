@@ -13,14 +13,18 @@
 //!
 //! On failure, rolls back any applied binds from this run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
-use crate::bind::execute::destroy_bind;
+use crate::bind::execute::{apply_bind, destroy_bind};
 use crate::bind::state::{BindState, BindStateError, load_bind_state, remove_bind_state, save_bind_state};
+use crate::build::store::build_path;
 use crate::eval::{EvalError, evaluate_config};
 use crate::execute::execute_manifest;
 use crate::manifest::Manifest;
@@ -28,6 +32,7 @@ use crate::snapshot::{Snapshot, SnapshotError, SnapshotStore, StateDiff, compute
 use crate::store::paths::StorePaths;
 use crate::util::hash::ObjectHash;
 
+use super::dag::{DagNode, ExecutionDag};
 use super::resolver::ExecutionResolver;
 use super::types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError};
 
@@ -77,6 +82,28 @@ pub enum ApplyError {
     #[source]
     source: ExecuteError,
   },
+
+  /// Restore phase failed during rollback.
+  #[error("failed to restore bind {hash} during rollback: {source}")]
+  RestoreFailed {
+    hash: ObjectHash,
+    #[source]
+    source: Box<dyn std::error::Error + Send + Sync>,
+  },
+}
+
+/// Error during the destroy phase, tracking partial progress for rollback.
+///
+/// This is used internally to track which binds were successfully destroyed
+/// before a failure occurred, enabling restoration of those binds.
+#[derive(Debug)]
+struct DestroyPhaseError {
+  /// Bind hashes that were successfully destroyed before the failure.
+  destroyed: Vec<ObjectHash>,
+  /// The bind hash that failed to destroy.
+  failed_hash: ObjectHash,
+  /// The underlying error.
+  source: ExecuteError,
 }
 
 /// Options for the apply operation.
@@ -125,6 +152,9 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   let snapshot_store = SnapshotStore::default_store();
   let current_snapshot = snapshot_store.load_current()?;
   let current_manifest = current_snapshot.as_ref().map(|s| &s.manifest);
+
+  // Capture previous snapshot ID for potential rollback
+  let previous_snapshot_id = snapshot_store.current_id()?;
 
   info!(has_current = current_snapshot.is_some(), "loaded current state");
 
@@ -188,8 +218,28 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     });
   }
 
-  // 4. Destroy removed binds
-  let binds_destroyed = destroy_removed_binds(&diff.binds_to_destroy, current_manifest, &options.execute).await?;
+  // 4. Destroy removed binds (state file cleanup is deferred until success)
+  let destroyed_hashes = match destroy_removed_binds(&diff.binds_to_destroy, current_manifest, &options.execute).await {
+    Ok(hashes) => hashes,
+    Err(destroy_err) => {
+      // Partial destroy failure - restore what we destroyed
+      if !destroy_err.destroyed.is_empty()
+        && let Some(ref current_snapshot) = current_snapshot
+      {
+        let _ = restore_destroyed_binds(
+          &destroy_err.destroyed,
+          &current_snapshot.manifest,
+          &options.execute,
+          options.system,
+        )
+        .await;
+      }
+      return Err(ApplyError::DestroyFailed {
+        hash: destroy_err.failed_hash,
+        source: destroy_err.source,
+      });
+    }
+  };
 
   // 5 & 6. Build execution manifest and execute (realize builds, apply binds)
   // Filter to only include builds that need realization and binds that need applying
@@ -205,8 +255,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
 
   // Check for failures
   if !dag_result.is_success() {
-    // Rollback is handled by execute_manifest internally for binds applied in this run.
-    // We need to handle the case where we partially succeeded.
+    // Log the failure details
     error!("execution failed");
 
     if let Some((hash, ref err)) = dag_result.build_failed {
@@ -216,7 +265,37 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
       error!(bind = %hash.0, error = %err, "bind failed");
     }
 
-    // Return error but include partial results
+    // Execution failed - restore destroyed binds
+    if !destroyed_hashes.is_empty()
+      && let Some(ref current_snapshot) = current_snapshot
+    {
+      match restore_destroyed_binds(
+        &destroyed_hashes,
+        &current_snapshot.manifest,
+        &options.execute,
+        options.system,
+      )
+      .await
+      {
+        Ok(_) => {
+          // Restore succeeded - point snapshot back to previous
+          if let Some(ref prev_id) = previous_snapshot_id {
+            let _ = snapshot_store.set_current(prev_id);
+            info!(snapshot_id = %prev_id, "restored previous snapshot");
+          }
+        }
+        Err(restore_err) => {
+          // Restore failed - clear snapshot for self-healing
+          error!(
+            error = %restore_err,
+            "failed to restore destroyed binds, clearing snapshot pointer"
+          );
+          let _ = snapshot_store.clear_current();
+        }
+      }
+    }
+
+    // Return the execution error
     return Err(ApplyError::Execute(ExecuteError::CmdFailed {
       cmd: "apply".to_string(),
       code: Some(1),
@@ -229,6 +308,9 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     save_bind_state(hash, &bind_state, options.system)?;
     debug!(bind = %hash.0, "saved bind state");
   }
+
+  // Clean up state files for destroyed binds (only after full success)
+  cleanup_destroyed_bind_states(&destroyed_hashes, options.system)?;
 
   // 7. Create and save snapshot
   let snapshot = Snapshot::new(
@@ -244,7 +326,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     snapshot,
     diff,
     execution: dag_result,
-    binds_destroyed,
+    binds_destroyed: destroyed_hashes.len(),
   })
 }
 
@@ -287,19 +369,20 @@ fn build_execution_manifest(desired: &Manifest, diff: &StateDiff) -> Manifest {
 ///
 /// # Returns
 ///
-/// Number of binds successfully destroyed.
+/// List of bind hashes that were successfully destroyed.
+/// Does NOT remove bind state files - caller must do this after successful apply.
 async fn destroy_removed_binds(
   hashes: &[ObjectHash],
   current_manifest: Option<&Manifest>,
   config: &ExecuteConfig,
-) -> Result<usize, ApplyError> {
+) -> Result<Vec<ObjectHash>, DestroyPhaseError> {
   if hashes.is_empty() {
-    return Ok(0);
+    return Ok(Vec::new());
   }
 
   info!(count = hashes.len(), "destroying removed binds");
 
-  let mut destroyed = 0;
+  let mut destroyed = Vec::new();
 
   // Create an empty resolver for destroy operations
   // (destroy actions typically only need outputs from the bind itself)
@@ -310,11 +393,22 @@ async fn destroy_removed_binds(
 
   for hash in hashes {
     // Load bind state (outputs from when it was applied)
-    let bind_state = match load_bind_state(hash, config.system)? {
-      Some(state) => state,
-      None => {
+    let bind_state = match load_bind_state(hash, config.system) {
+      Ok(Some(state)) => state,
+      Ok(None) => {
         warn!(bind = %hash.0, "no bind state found, skipping destroy");
         continue;
+      }
+      Err(e) => {
+        error!(bind = %hash.0, error = %e, "failed to load bind state");
+        return Err(DestroyPhaseError {
+          destroyed,
+          failed_hash: hash.clone(),
+          source: ExecuteError::CmdFailed {
+            cmd: format!("load bind state for {}", hash.0),
+            code: None,
+          },
+        });
       }
     };
 
@@ -337,20 +431,204 @@ async fn destroy_removed_binds(
     info!(bind = %hash.0, "destroying bind");
     if let Err(e) = destroy_bind(hash, bind_def, &bind_result, &resolver, config).await {
       error!(bind = %hash.0, error = %e, "failed to destroy bind");
-      return Err(ApplyError::DestroyFailed {
-        hash: hash.clone(),
+      return Err(DestroyPhaseError {
+        destroyed,
+        failed_hash: hash.clone(),
         source: e,
       });
     }
 
-    // Remove bind state file
-    remove_bind_state(hash, config.system)?;
-    destroyed += 1;
+    // Track successful destruction (state file cleanup is deferred)
+    destroyed.push(hash.clone());
     debug!(bind = %hash.0, "bind destroyed");
   }
 
-  info!(destroyed, "destroy phase complete");
+  info!(count = destroyed.len(), "destroy phase complete");
   Ok(destroyed)
+}
+
+/// Remove bind state files for successfully destroyed binds.
+///
+/// This is called only after apply fully succeeds, to clean up state files
+/// for binds that were destroyed and whose state is no longer needed.
+fn cleanup_destroyed_bind_states(destroyed_hashes: &[ObjectHash], system: bool) -> Result<(), BindStateError> {
+  for hash in destroyed_hashes {
+    remove_bind_state(hash, system)?;
+  }
+  Ok(())
+}
+
+/// Build resolver data for restore operations.
+///
+/// Loads bind state for all binds in the manifest (destroyed + unchanged)
+/// and computes build store paths from the manifest. This allows placeholder
+/// resolution during restore (e.g., `$${build:hash:out}`, `$${bind:hash:output}`).
+fn build_restore_resolver_data(
+  manifest: &Manifest,
+  system: bool,
+) -> Result<(HashMap<ObjectHash, BuildResult>, HashMap<ObjectHash, BindResult>), ApplyError> {
+  let mut builds = HashMap::new();
+  let mut binds = HashMap::new();
+
+  // Compute BuildResult for each build (just need store_path and outputs)
+  for (hash, build_def) in &manifest.builds {
+    let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, system);
+
+    // Resolve outputs - for now use the definition's output patterns
+    // In practice, builds in the store should have their outputs already resolved
+    let mut outputs = HashMap::new();
+    if let Some(def_outputs) = &build_def.outputs {
+      for (name, pattern) in def_outputs {
+        // Simple substitution of $${out} with store_path
+        let resolved = pattern.replace("$${out}", store_path.to_string_lossy().as_ref());
+        outputs.insert(name.clone(), resolved);
+      }
+    }
+    // Always add "out" pointing to store path
+    outputs.insert("out".to_string(), store_path.to_string_lossy().to_string());
+
+    builds.insert(
+      hash.clone(),
+      BuildResult {
+        store_path,
+        outputs,
+        action_results: vec![],
+      },
+    );
+  }
+
+  // Load BindState for each bind and convert to BindResult
+  for hash in manifest.bindings.keys() {
+    if let Some(state) = load_bind_state(hash, system)? {
+      binds.insert(
+        hash.clone(),
+        BindResult {
+          outputs: state.outputs,
+          action_results: vec![],
+        },
+      );
+    }
+  }
+
+  Ok((builds, binds))
+}
+
+/// Restore previously destroyed binds using DAG ordering from the manifest.
+///
+/// Uses parallel wave execution matching the normal apply flow.
+/// This is a best-effort operation used during rollback.
+///
+/// # Arguments
+///
+/// * `destroyed_hashes` - Hashes of binds that were destroyed and need restoration
+/// * `manifest` - The previous manifest (from the snapshot before apply started)
+/// * `config` - Execution configuration
+/// * `system` - Whether to use system store
+///
+/// # Returns
+///
+/// Ok(()) on success, or an error if any bind fails to restore.
+async fn restore_destroyed_binds(
+  destroyed_hashes: &[ObjectHash],
+  manifest: &Manifest,
+  config: &ExecuteConfig,
+  system: bool,
+) -> Result<(), ApplyError> {
+  if destroyed_hashes.is_empty() {
+    return Ok(());
+  }
+
+  info!(count = destroyed_hashes.len(), "restoring destroyed binds");
+
+  let destroyed_set: HashSet<_> = destroyed_hashes.iter().collect();
+
+  // Build resolver data with all binds from previous manifest
+  let (completed_builds, mut completed_binds) = build_restore_resolver_data(manifest, system)?;
+
+  // Build DAG from the full manifest to get correct dependency ordering
+  let dag = ExecutionDag::from_manifest(manifest)?;
+  let waves = dag.execution_waves()?;
+
+  // Create semaphore for parallelism control
+  let semaphore = Arc::new(Semaphore::new(config.parallelism));
+
+  for (wave_idx, wave) in waves.iter().enumerate() {
+    // Filter wave to only include destroyed binds
+    let binds_to_restore: Vec<_> = wave
+      .iter()
+      .filter_map(|node| match node {
+        DagNode::Bind(hash) if destroyed_set.contains(hash) => {
+          manifest.bindings.get(hash).map(|def| (hash.clone(), def.clone()))
+        }
+        _ => None,
+      })
+      .collect();
+
+    if binds_to_restore.is_empty() {
+      continue;
+    }
+
+    debug!(wave = wave_idx, count = binds_to_restore.len(), "restoring wave");
+
+    // Execute in parallel within wave using JoinSet
+    let mut join_set: JoinSet<Result<(ObjectHash, BindResult), ApplyError>> = JoinSet::new();
+
+    for (hash, bind_def) in binds_to_restore {
+      let hash = hash.clone();
+      let bind_def = bind_def.clone();
+      let config = config.clone();
+      let completed_builds = completed_builds.clone();
+      let completed_binds = completed_binds.clone();
+      let semaphore = semaphore.clone();
+      let manifest = manifest.clone();
+
+      join_set.spawn(async move {
+        let _permit = semaphore.acquire().await.unwrap();
+
+        let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/tmp", system);
+
+        let result = apply_bind(&hash, &bind_def, &resolver, &config)
+          .await
+          .map_err(|e| ApplyError::RestoreFailed {
+            hash: hash.clone(),
+            source: Box::new(e),
+          })?;
+
+        // Save bind state
+        let bind_state = BindState::new(result.outputs.clone());
+        save_bind_state(&hash, &bind_state, system).map_err(|e| ApplyError::RestoreFailed {
+          hash: hash.clone(),
+          source: Box::new(e),
+        })?;
+
+        Ok((hash, result))
+      });
+    }
+
+    // Collect results and update completed_binds for next wave
+    while let Some(join_result) = join_set.join_next().await {
+      match join_result {
+        Ok(Ok((hash, result))) => {
+          info!(bind = %hash.0, "bind restored");
+          completed_binds.insert(hash, result);
+        }
+        Ok(Err(e)) => {
+          error!(error = %e, "failed to restore bind");
+          return Err(e);
+        }
+        Err(e) => {
+          error!(error = %e, "restore task panicked");
+          return Err(ApplyError::RestoreFailed {
+            hash: ObjectHash("unknown".to_string()),
+            source: Box::new(std::io::Error::other(e.to_string())),
+          });
+        }
+      }
+    }
+  }
+
+  info!("restore complete");
+  Ok(())
 }
 
 #[cfg(test)]
@@ -369,6 +647,24 @@ mod tests {
       system: false,
       dry_run: false,
     }
+  }
+
+  /// Helper to set up a temp store environment for tests.
+  fn with_temp_env<F, R>(f: F) -> R
+  where
+    F: FnOnce(&TempDir) -> R,
+  {
+    let temp_dir = TempDir::new().unwrap();
+    temp_env::with_vars(
+      [
+        (
+          "SYSLUA_USER_STORE",
+          Some(temp_dir.path().join("store").to_str().unwrap()),
+        ),
+        ("XDG_DATA_HOME", Some(temp_dir.path().join("data").to_str().unwrap())),
+      ],
+      || f(&temp_dir),
+    )
   }
 
   #[test]
@@ -493,5 +789,233 @@ mod tests {
         assert_eq!(result.execution.applied.len(), 0);
       },
     );
+  }
+
+  #[test]
+  #[serial]
+  fn cleanup_destroyed_bind_states_removes_state_files() {
+    with_temp_env(|_temp_dir| {
+      let hash1 = ObjectHash("destroyed_bind_1".to_string());
+      let hash2 = ObjectHash("destroyed_bind_2".to_string());
+
+      // Create bind state files
+      let mut outputs = HashMap::new();
+      outputs.insert("link".to_string(), "/test/path".to_string());
+      let state = BindState::new(outputs);
+
+      save_bind_state(&hash1, &state, false).unwrap();
+      save_bind_state(&hash2, &state, false).unwrap();
+
+      // Verify they exist
+      assert!(load_bind_state(&hash1, false).unwrap().is_some());
+      assert!(load_bind_state(&hash2, false).unwrap().is_some());
+
+      // Clean up
+      cleanup_destroyed_bind_states(&[hash1.clone(), hash2.clone()], false).unwrap();
+
+      // Verify they're gone
+      assert!(load_bind_state(&hash1, false).unwrap().is_none());
+      assert!(load_bind_state(&hash2, false).unwrap().is_none());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn cleanup_destroyed_bind_states_handles_empty_list() {
+    with_temp_env(|_temp_dir| {
+      // Should succeed with empty list
+      cleanup_destroyed_bind_states(&[], false).unwrap();
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn build_restore_resolver_data_computes_build_paths() {
+    use crate::build::BuildDef;
+
+    with_temp_env(|_temp_dir| {
+      let mut manifest = Manifest::default();
+
+      // Add a build
+      manifest.builds.insert(
+        ObjectHash("build123".to_string()),
+        BuildDef {
+          name: "test-pkg".to_string(),
+          version: Some("1.0.0".to_string()),
+          inputs: None,
+          apply_actions: vec![],
+          outputs: None,
+        },
+      );
+
+      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+
+      // Should have one build result
+      assert_eq!(builds.len(), 1);
+      assert!(builds.contains_key(&ObjectHash("build123".to_string())));
+
+      let build_result = builds.get(&ObjectHash("build123".to_string())).unwrap();
+      // Store path should contain the package name and hash
+      assert!(build_result.store_path.to_string_lossy().contains("test-pkg"));
+      // Should have "out" output
+      assert!(build_result.outputs.contains_key("out"));
+
+      // No binds in manifest, so no bind results
+      assert!(binds.is_empty());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn build_restore_resolver_data_loads_bind_states() {
+    use crate::bind::BindDef;
+
+    with_temp_env(|_temp_dir| {
+      let hash = ObjectHash("bind123".to_string());
+
+      // Create a bind state file
+      let mut outputs = HashMap::new();
+      outputs.insert("link".to_string(), "/home/user/.config/test".to_string());
+      let state = BindState::new(outputs.clone());
+      save_bind_state(&hash, &state, false).unwrap();
+
+      // Create manifest with the bind
+      let mut manifest = Manifest::default();
+      manifest.bindings.insert(
+        hash.clone(),
+        BindDef {
+          inputs: None,
+          apply_actions: vec![],
+          outputs: None,
+          destroy_actions: None,
+        },
+      );
+
+      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+
+      // No builds
+      assert!(builds.is_empty());
+
+      // Should have loaded the bind state
+      assert_eq!(binds.len(), 1);
+      let bind_result = binds.get(&hash).unwrap();
+      assert_eq!(bind_result.outputs.get("link").unwrap(), "/home/user/.config/test");
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn build_restore_resolver_data_skips_missing_bind_states() {
+    use crate::bind::BindDef;
+
+    with_temp_env(|_temp_dir| {
+      let hash = ObjectHash("bind_without_state".to_string());
+
+      // Create manifest with a bind but don't create state file
+      let mut manifest = Manifest::default();
+      manifest.bindings.insert(
+        hash.clone(),
+        BindDef {
+          inputs: None,
+          apply_actions: vec![],
+          outputs: None,
+          destroy_actions: None,
+        },
+      );
+
+      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+
+      // No builds
+      assert!(builds.is_empty());
+      // Bind without state should be skipped
+      assert!(binds.is_empty());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn destroy_removed_binds_returns_empty_vec_for_empty_input() {
+    with_temp_env(|_temp_dir| {
+      let rt = tokio::runtime::Runtime::new().unwrap();
+      let result = rt.block_on(destroy_removed_binds(&[], None, &ExecuteConfig::default()));
+
+      assert!(result.is_ok());
+      assert!(result.unwrap().is_empty());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn destroy_removed_binds_skips_binds_without_state() {
+    use crate::bind::BindDef;
+
+    with_temp_env(|_temp_dir| {
+      let hash = ObjectHash("bind_no_state".to_string());
+
+      // Create manifest with bind definition but no state file
+      let mut manifest = Manifest::default();
+      manifest.bindings.insert(
+        hash.clone(),
+        BindDef {
+          inputs: None,
+          apply_actions: vec![],
+          outputs: None,
+          destroy_actions: None,
+        },
+      );
+
+      let rt = tokio::runtime::Runtime::new().unwrap();
+      let result = rt.block_on(destroy_removed_binds(
+        &[hash],
+        Some(&manifest),
+        &ExecuteConfig::default(),
+      ));
+
+      // Should succeed but return empty (skipped due to no state)
+      assert!(result.is_ok());
+      assert!(result.unwrap().is_empty());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn destroy_removed_binds_skips_binds_without_definition() {
+    with_temp_env(|_temp_dir| {
+      let hash = ObjectHash("bind_no_def".to_string());
+
+      // Create state file but no manifest entry
+      let state = BindState::new(HashMap::new());
+      save_bind_state(&hash, &state, false).unwrap();
+
+      let manifest = Manifest::default(); // No bindings
+
+      let rt = tokio::runtime::Runtime::new().unwrap();
+      let result = rt.block_on(destroy_removed_binds(
+        &[hash.clone()],
+        Some(&manifest),
+        &ExecuteConfig::default(),
+      ));
+
+      // Should succeed but return empty (skipped due to no definition)
+      assert!(result.is_ok());
+      assert!(result.unwrap().is_empty());
+
+      // State file should still exist (not cleaned up on skip)
+      assert!(load_bind_state(&hash, false).unwrap().is_some());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn restore_destroyed_binds_handles_empty_list() {
+    with_temp_env(|_temp_dir| {
+      let manifest = Manifest::default();
+      let config = ExecuteConfig::default();
+
+      let rt = tokio::runtime::Runtime::new().unwrap();
+      let result = rt.block_on(restore_destroyed_binds(&[], &manifest, &config, false));
+
+      assert!(result.is_ok());
+    });
   }
 }

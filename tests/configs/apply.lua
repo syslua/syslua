@@ -13,6 +13,10 @@
 ---   sys apply tests/configs/apply.lua
 ---
 ---   # Modify this file (e.g., add/remove a bind) and re-apply to test diff
+
+-- Standard PATH for commands (syslua isolates the environment for reproducibility)
+local PATH = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+
 return {
   inputs = {},
   setup = function()
@@ -23,16 +27,16 @@ return {
       version = '1.0.0',
       apply = function(_, ctx)
         -- ctx.out returns the $${out} placeholder
-        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin' })
+        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin', env = { PATH = PATH } })
         ctx:cmd({
           cmd = string.format(
-            [[
-              echo -e '#!/bin/sh\necho "Hello from greeter!"' > %s/bin/greet'
-            ]],
+            [[echo '#!/bin/sh
+echo "Hello from greeter!"' > %s/bin/greet]],
             ctx.out
           ),
+          env = { PATH = PATH },
         })
-        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/greet' })
+        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/greet', env = { PATH = PATH } })
 
         return {
           out = ctx.out,
@@ -46,11 +50,12 @@ return {
       name = 'counter',
       version = '1.0.0',
       apply = function(_, ctx)
-        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin' })
+        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin', env = { PATH = PATH } })
         ctx:cmd({
           cmd = "echo '#!/bin/sh\nseq 1 10' > " .. ctx.out .. '/bin/count',
+          env = { PATH = PATH },
         })
-        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/count' })
+        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/count', env = { PATH = PATH } })
 
         return {
           out = ctx.out,
@@ -66,7 +71,7 @@ return {
       version = '1.0.0',
       inputs = { greeter = greeter },
       apply = function(build_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin' })
+        ctx:cmd({ cmd = 'mkdir -p ' .. ctx.out .. '/bin', env = { PATH = PATH } })
         -- Create a wrapper script that calls greeter
         ctx:cmd({
           cmd = "echo '#!/bin/sh\n"
@@ -74,8 +79,9 @@ return {
             .. ' && echo "Wrapper done!"\' > '
             .. ctx.out
             .. '/bin/wrap',
+          env = { PATH = PATH },
         })
-        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/wrap' })
+        ctx:cmd({ cmd = 'chmod +x ' .. ctx.out .. '/bin/wrap', env = { PATH = PATH } })
 
         return {
           out = ctx.out,
@@ -89,14 +95,15 @@ return {
     sys.bind({
       inputs = { greeter = greeter },
       apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test' })
+        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test', env = { PATH = PATH } })
         ctx:cmd({
           cmd = 'ln -sf ' .. bind_inputs.greeter.outputs.bin .. ' /tmp/syslua-test/greet',
+          env = { PATH = PATH },
         })
         return { link = '/tmp/syslua-test/greet' }
       end,
       destroy = function(_, ctx)
-        ctx:cmd({ cmd = 'rm -f /tmp/syslua-test/greet' })
+        ctx:cmd({ cmd = 'rm -f /tmp/syslua-test/greet', env = { PATH = PATH } })
       end,
     })
 
@@ -105,14 +112,15 @@ return {
     sys.bind({
       inputs = { counter = counter },
       apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test' })
+        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test', env = { PATH = PATH } })
         ctx:cmd({
           cmd = 'ln -sf ' .. bind_inputs.counter.outputs.bin .. ' /tmp/syslua-test/count',
+          env = { PATH = PATH },
         })
         return { link = '/tmp/syslua-test/count' }
       end,
       destroy = function(outputs, ctx)
-        ctx:cmd({ cmd = 'rm -f ' .. outputs.link })
+        ctx:cmd({ cmd = 'rm -f ' .. outputs.link, env = { PATH = PATH } })
       end,
     })
 
@@ -121,14 +129,15 @@ return {
     sys.bind({
       inputs = { wrapper = wrapper },
       apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test' })
+        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test', env = { PATH = PATH } })
         ctx:cmd({
           cmd = 'ln -sf ' .. bind_inputs.wrapper.outputs.bin .. ' /tmp/syslua-test/wrap',
+          env = { PATH = PATH },
         })
         return { link = '/tmp/syslua-test/wrap' }
       end,
       destroy = function(outputs, ctx)
-        ctx:cmd({ cmd = 'rm -f ' .. outputs.link })
+        ctx:cmd({ cmd = 'rm -f ' .. outputs.link, env = { PATH = PATH } })
       end,
     })
 
@@ -136,14 +145,15 @@ return {
     -- Tests bind-only execution
     sys.bind({
       outputs = { marker = '/tmp/syslua-test/marker.txt' },
-      apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test' })
+      apply = function(_, ctx)
+        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test', env = { PATH = PATH } })
         ctx:cmd({
           cmd = 'echo "Applied at $(date)" > /tmp/syslua-test/marker.txt',
+          env = { PATH = PATH },
         })
       end,
-      destroy = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'rm -f /tmp/syslua-test/marker.txt' })
+      destroy = function(_, ctx)
+        ctx:cmd({ cmd = 'rm -f /tmp/syslua-test/marker.txt', env = { PATH = PATH } })
       end,
     })
 
@@ -152,7 +162,7 @@ return {
     sys.bind({
       inputs = { greeter = greeter, counter = counter },
       apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test' })
+        ctx:cmd({ cmd = 'mkdir -p /tmp/syslua-test', env = { PATH = PATH } })
         local content = '# syslua test environment\\n'
           .. 'export GREETER_BIN='
           .. bind_inputs.greeter.outputs.bin
@@ -162,11 +172,12 @@ return {
           .. '\\n'
         ctx:cmd({
           cmd = 'printf "' .. content .. '" > /tmp/syslua-test/env.sh',
+          env = { PATH = PATH },
         })
         return { env = '/tmp/syslua-test/env.sh' }
       end,
       destroy = function(outputs, ctx)
-        ctx:cmd({ cmd = 'rm -f ' .. outputs.env })
+        ctx:cmd({ cmd = 'rm -f ' .. outputs.env, env = { PATH = PATH } })
       end,
     })
   end,

@@ -198,6 +198,16 @@ impl SnapshotStore {
     Ok(())
   }
 
+  /// Clear the current snapshot pointer without removing any snapshots.
+  ///
+  /// This is used when rollback fails and the system is in an inconsistent state.
+  /// The next apply will see no current state and do a full fresh apply (self-healing).
+  pub fn clear_current(&self) -> Result<(), SnapshotError> {
+    let mut index = self.load_index()?;
+    index.current = None;
+    self.save_index(&index)
+  }
+
   /// List all snapshots.
   ///
   /// Returns snapshots in chronological order (oldest first).
@@ -395,5 +405,28 @@ mod tests {
     assert!(store.load_snapshot("snap1").is_ok());
     assert!(store.load_snapshot("snap2").is_ok());
     assert!(store.load_snapshot("snap3").is_ok());
+  }
+
+  #[test]
+  fn clear_current_removes_pointer() {
+    let (_temp, store) = temp_store();
+    let snapshot = make_snapshot("test123");
+
+    // Set up a current snapshot
+    store.save_and_set_current(&snapshot).unwrap();
+    assert_eq!(store.current_id().unwrap(), Some("test123".to_string()));
+
+    // Clear the current pointer
+    store.clear_current().unwrap();
+
+    // Current should be None, but snapshot should still exist
+    assert!(store.current_id().unwrap().is_none());
+    assert!(store.load_current().unwrap().is_none());
+    assert!(store.load_snapshot("test123").is_ok());
+
+    // Index should still contain the snapshot
+    let list = store.list().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, "test123");
   }
 }

@@ -1,5 +1,9 @@
 --- Input resolution test configuration
 --- Tests that git and path inputs are resolved correctly, including #ref syntax
+
+-- Standard PATH for commands (syslua isolates the environment for reproducibility)
+local PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 return {
   inputs = {
     -- Git input from GitHub with specific commit ref
@@ -33,7 +37,7 @@ return {
       },
       apply = function(build_inputs, ctx)
         -- Reference the input path in a build command
-        ctx:cmd({ cmd = "ls -la " .. build_inputs.src.path })
+        ctx:cmd({ cmd = "ls -la " .. build_inputs.src.path, env = { PATH = PATH } })
         return { out = "/store/example" }
       end,
     })
@@ -42,7 +46,10 @@ return {
     sys.bind({
       inputs = { example = example },
       apply = function(bind_inputs, ctx)
-        ctx:cmd({ cmd = "echo 'Example output: " .. bind_inputs.example.outputs.out .. "'" })
+        ctx:cmd({
+          cmd = "echo 'Example output: " .. bind_inputs.example.outputs.out .. "'",
+          env = { PATH = PATH },
+        })
       end,
     })
   end,

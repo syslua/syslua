@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "inputs": {
+    "syslua": {
+      "type": "git",
+      "url": "git:https://github.com/spirit-led-software/syslua.git#3d522f5e2baf56a5e2f750d4664c174a2099833b",
+      "rev": "3d522f5e2baf56a5e2f750d4664c174a2099833b",
+      "lastModified": 1765904835
+    }
+  }
+}
