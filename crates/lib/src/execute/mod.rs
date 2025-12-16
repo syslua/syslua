@@ -646,8 +646,9 @@ mod tests {
 
   #[cfg(windows)]
   fn touch_cmd(path: &std::path::Path) -> String {
-    // Use 'copy nul' which is more reliable than 'type nul >' for creating empty files
-    format!("copy nul \"{}\" >nul", path.display())
+    // Use 'type nul >' to create an empty file (0 bytes)
+    // This is more reliable than 'copy nul' which can have quoting issues
+    format!("type nul > \"{}\"", path.display())
   }
 
   /// Returns a command that removes a file at the given path.
