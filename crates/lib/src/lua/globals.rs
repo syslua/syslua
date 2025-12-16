@@ -188,8 +188,18 @@ mod tests {
     fn is_absolute_detects_absolute_paths() -> LuaResult<()> {
       let lua = create_test_lua()?;
 
-      let abs: bool = lua.load(r#"return sys.path.is_absolute("/foo/bar")"#).eval()?;
-      assert!(abs, "Unix absolute path should be detected");
+      // Test platform-appropriate absolute paths
+      #[cfg(unix)]
+      {
+        let abs: bool = lua.load(r#"return sys.path.is_absolute("/foo/bar")"#).eval()?;
+        assert!(abs, "Unix absolute path should be detected");
+      }
+
+      #[cfg(windows)]
+      {
+        let abs: bool = lua.load(r#"return sys.path.is_absolute("C:\\foo\\bar")"#).eval()?;
+        assert!(abs, "Windows absolute path should be detected");
+      }
 
       let rel: bool = lua.load(r#"return sys.path.is_absolute("foo/bar")"#).eval()?;
       assert!(!rel, "Relative path should not be absolute");
@@ -203,7 +213,11 @@ mod tests {
       let result: String = lua
         .load(r#"return sys.path.normalize("/foo/bar/../baz/./qux")"#)
         .eval()?;
+      // Path normalization uses platform separators
+      #[cfg(unix)]
       assert_eq!(result, "/foo/baz/qux");
+      #[cfg(windows)]
+      assert_eq!(result, "\\foo\\baz\\qux");
       Ok(())
     }
 
@@ -213,7 +227,11 @@ mod tests {
       let result: String = lua
         .load(r#"return sys.path.relative("/foo/bar", "/foo/baz/qux")"#)
         .eval()?;
+      // Relative paths use platform separators
+      #[cfg(unix)]
       assert_eq!(result, "../baz/qux");
+      #[cfg(windows)]
+      assert_eq!(result, "..\\baz\\qux");
       Ok(())
     }
 
@@ -230,8 +248,12 @@ mod tests {
       let lua = create_test_lua()?;
       let result: LuaTable = lua.load(r#"return sys.path.split("/foo/bar/baz")"#).eval()?;
 
+      // Root component differs by platform
       let first: String = result.get(1)?;
+      #[cfg(unix)]
       assert_eq!(first, "/");
+      #[cfg(windows)]
+      assert_eq!(first, "\\");
 
       let second: String = result.get(2)?;
       assert_eq!(second, "foo");

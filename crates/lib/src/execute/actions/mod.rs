@@ -137,6 +137,19 @@ mod tests {
     }
   }
 
+  /// Get an echo command that prints an environment variable.
+  /// Unix: echo $VAR
+  /// Windows: echo %VAR%
+  #[cfg(unix)]
+  fn echo_env(var: &str) -> String {
+    format!("echo ${}", var)
+  }
+
+  #[cfg(windows)]
+  fn echo_env(var: &str) -> String {
+    format!("echo %{}%", var)
+  }
+
   #[tokio::test]
   async fn execute_cmd_action() {
     let temp_dir = TempDir::new().unwrap();
@@ -198,7 +211,7 @@ mod tests {
     env.insert("OUT_DIR".to_string(), "$${out}".to_string());
 
     let action = BuildAction::Cmd {
-      cmd: "echo $OUT_DIR".to_string(),
+      cmd: echo_env("OUT_DIR"),
       env: Some(env),
       cwd: None,
     };

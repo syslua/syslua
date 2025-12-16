@@ -636,6 +636,32 @@ mod tests {
     })
   }
 
+  /// Returns a command that creates an empty file at the given path.
+  /// Unix: /usr/bin/touch {path}
+  /// Windows: type nul > "{path}"
+  #[cfg(unix)]
+  fn touch_cmd(path: &std::path::Path) -> String {
+    format!("/usr/bin/touch {}", path.display())
+  }
+
+  #[cfg(windows)]
+  fn touch_cmd(path: &std::path::Path) -> String {
+    format!("type nul > \"{}\"", path.display())
+  }
+
+  /// Returns a command that removes a file at the given path.
+  /// Unix: /bin/rm -f {path}
+  /// Windows: del /f /q "{path}"
+  #[cfg(unix)]
+  fn rm_cmd(path: &std::path::Path) -> String {
+    format!("/bin/rm -f {}", path.display())
+  }
+
+  #[cfg(windows)]
+  fn rm_cmd(path: &std::path::Path) -> String {
+    format!("del /f /q \"{}\"", path.display())
+  }
+
   #[test]
   #[serial]
   fn execute_empty_manifest() {
@@ -963,17 +989,17 @@ mod tests {
       let temp_dir = TempDir::new().unwrap();
       let marker_file = temp_dir.path().join("bind_a_applied");
 
-      // Use full paths since commands run in isolated environment with PATH=/path-not-set
+      // Use platform-specific commands since PATH is isolated
       let bind_a = BindDef {
         inputs: None,
         apply_actions: vec![BindAction::Cmd {
-          cmd: format!("/usr/bin/touch {}", marker_file.to_string_lossy()),
+          cmd: touch_cmd(&marker_file),
           env: None,
           cwd: None,
         }],
         outputs: None,
         destroy_actions: Some(vec![BindAction::Cmd {
-          cmd: format!("/bin/rm -f {}", marker_file.to_string_lossy()),
+          cmd: rm_cmd(&marker_file),
           env: None,
           cwd: None,
         }]),

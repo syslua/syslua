@@ -434,7 +434,13 @@ mod tests {
 
     // The output should be a temp directory path
     assert!(!result.outputs["dir"].is_empty());
-    assert!(result.action_results[0].output.starts_with('/') || result.action_results[0].output.contains("temp"));
+    // Check path looks reasonable: starts with / (Unix) or has drive letter (Windows)
+    let output = &result.action_results[0].output;
+    assert!(
+      output.starts_with('/') || output.starts_with('\\') || output.chars().nth(1) == Some(':'),
+      "Output path should be absolute: {}",
+      output
+    );
   }
 
   #[tokio::test]

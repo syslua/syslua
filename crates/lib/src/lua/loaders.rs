@@ -360,6 +360,12 @@ mod tests {
     Ok(())
   }
 
+  /// Escape a path for embedding in a Lua string literal.
+  /// On Windows, backslashes need to be doubled to avoid being interpreted as escape sequences.
+  fn escape_path_for_lua(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+  }
+
   #[test]
   fn test_dofile_with_absolute_path() -> LuaResult<()> {
     let temp_dir = TempDir::new().unwrap();
@@ -368,7 +374,7 @@ mod tests {
 
     let lua = create_test_runtime()?;
 
-    let code = format!("return dofile('{}')", file_path.display());
+    let code = format!("return dofile('{}')", escape_path_for_lua(&file_path));
     let result: String = lua.load(&code).eval()?;
 
     // Use canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
@@ -441,7 +447,7 @@ mod tests {
             local f = loadfile('{}')
             return type(f), f()
         "#,
-      file_path.display()
+      escape_path_for_lua(&file_path)
     );
     let result: LuaMultiValue = lua.load(&code).eval()?;
     let values: Vec<LuaValue> = result.into_iter().collect();
@@ -459,7 +465,7 @@ mod tests {
 
     let lua = create_test_runtime()?;
 
-    let code = format!("return loadfile('{}')()", file_path.display());
+    let code = format!("return loadfile('{}')()", escape_path_for_lua(&file_path));
     let result: String = lua.load(&code).eval()?;
 
     // Use canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)

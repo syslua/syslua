@@ -45,8 +45,17 @@ mod tests {
 
   #[test]
   fn object_path_includes_obj_dir() {
+    use std::path::Path;
+
     let hash = ObjectHash("abc123def45678901234".to_string());
     let path = bind_path(&hash, false);
-    assert!(path.ends_with("store/bind/abc123def45678901234"));
+    // Use Path for cross-platform comparison
+    let expected_suffix = Path::new("store").join("bind").join("abc123def45678901234");
+    assert!(
+      path.ends_with(&expected_suffix),
+      "Path {:?} should end with {:?}",
+      path,
+      expected_suffix
+    );
   }
 }

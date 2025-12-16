@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)]
     fn tilde_expansion() {
       let temp_dir = TempDir::new().unwrap();
       let home = temp_dir.path();
@@ -305,6 +306,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)]
     fn bare_tilde() {
       let temp_dir = TempDir::new().unwrap();
       let home = temp_dir.path();

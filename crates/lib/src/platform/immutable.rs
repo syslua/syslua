@@ -1,13 +1,14 @@
 //! Store object immutability management.
 //!
 //! After a build completes, its store path is made immutable (write-protected)
-//! to prevent accidental modification. This mirrors Nix's approach.
+//! to prevent accidental modification. This mirrors Nix's approach of using
+//! basic file permissions rather than ACLs.
 //!
 //! ## Platform Behavior
 //!
 //! - **Unix**: Sets permissions to 0444 (files) or 0555 (dirs/executables)
 //! - **macOS**: Additionally clears BSD file flags to allow future GC
-//! - **Windows**: Adds DENY ACE for write operations to "Everyone"
+//! - **Windows**: Sets FILE_ATTRIBUTE_READONLY via `set_readonly(true)`
 
 use std::path::Path;
 
@@ -37,10 +38,6 @@ pub enum ImmutableError {
     #[source]
     source: walkdir::Error,
   },
-
-  #[cfg(windows)]
-  #[error("failed to modify ACL for {path}: {message}")]
-  Acl { path: String, message: String },
 }
 
 /// Make a store path immutable (write-protected).
@@ -52,7 +49,7 @@ pub enum ImmutableError {
 ///
 /// - **Unix**: Sets permissions to 0444 (files) or 0555 (dirs/executables)
 /// - **macOS**: Additionally clears BSD file flags
-/// - **Windows**: Adds DENY ACE for write operations to "Everyone"
+/// - **Windows**: Sets FILE_ATTRIBUTE_READONLY
 pub fn make_immutable(path: &Path) -> Result<(), ImmutableError> {
   if !path.exists() {
     return Ok(());
@@ -88,7 +85,7 @@ pub fn make_immutable(path: &Path) -> Result<(), ImmutableError> {
 /// # Platform Behavior
 ///
 /// - **Unix**: Sets permissions to 0644 (files) or 0755 (dirs/executables)
-/// - **Windows**: Removes the DENY ACE added by make_immutable
+/// - **Windows**: Clears FILE_ATTRIBUTE_READONLY
 pub fn make_mutable(path: &Path) -> Result<(), ImmutableError> {
   if !path.exists() {
     return Ok(());
@@ -191,294 +188,44 @@ fn clear_bsd_flags(path: &Path) {
   }
 }
 
-// ============ Windows ACL Implementation ============
-
-#[cfg(windows)]
-mod windows_acl {
-  use std::ffi::OsStr;
-  use std::os::windows::ffi::OsStrExt;
-  use std::path::Path;
-
-  use windows_sys::Win32::Foundation::{ERROR_SUCCESS, GetLastError, LocalFree};
-  use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
-  };
-  use windows_sys::Win32::Security::{
-    ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation, AddAccessDeniedAceEx,
-    AddAce, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid, InitializeAcl,
-    IsValidAcl, OBJECT_INHERIT_ACE, PSID,
-  };
-
-  use super::ImmutableError;
-
-  // Write permissions to deny
-  const FILE_WRITE_DATA: u32 = 0x0002;
-  const FILE_APPEND_DATA: u32 = 0x0004;
-  const FILE_WRITE_EA: u32 = 0x0010;
-  const FILE_DELETE_CHILD: u32 = 0x0040;
-  const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-  const DELETE: u32 = 0x0001_0000;
-
-  /// Combined mask of all write-related permissions to deny.
-  const DENY_MASK: u32 =
-    FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_DELETE_CHILD | FILE_WRITE_ATTRIBUTES | DELETE;
-
-  /// ACCESS_DENIED_ACE_TYPE value
-  const ACCESS_DENIED_ACE_TYPE: u8 = 1;
-
-  fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-  }
-
-  fn get_everyone_sid() -> Result<PSID, u32> {
-    let sid_string = to_wide("S-1-1-0");
-    let mut sid: PSID = std::ptr::null_mut();
-    unsafe {
-      if ConvertStringSidToSidW(sid_string.as_ptr(), &mut sid) == 0 {
-        return Err(GetLastError());
-      }
-    }
-    Ok(sid)
-  }
-
-  /// Add a DENY ACE for write operations to a path.
-  pub fn add_deny_ace(path: &Path) -> Result<(), ImmutableError> {
-    let path_str = path.to_str().unwrap_or_default();
-    let path_wide = to_wide(path_str);
-
-    let everyone_sid = get_everyone_sid().map_err(|e| ImmutableError::Acl {
-      path: path.display().to_string(),
-      message: format!("failed to get Everyone SID: error {}", e),
-    })?;
-
-    unsafe {
-      // 1. Get existing DACL
-      let mut existing_dacl: *mut ACL = std::ptr::null_mut();
-      let mut sd: *mut core::ffi::c_void = std::ptr::null_mut();
-
-      let result = GetNamedSecurityInfoW(
-        path_wide.as_ptr(),
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        &mut existing_dacl,
-        std::ptr::null_mut(),
-        &mut sd,
-      );
-
-      if result != ERROR_SUCCESS {
-        LocalFree(everyone_sid as _);
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("GetNamedSecurityInfoW failed: {}", result),
-        });
-      }
-
-      // 2. Calculate new ACL size
-      let mut acl_info: ACL_SIZE_INFORMATION = std::mem::zeroed();
-      let existing_acl_valid = !existing_dacl.is_null() && IsValidAcl(existing_dacl) != 0;
-
-      if existing_acl_valid {
-        GetAclInformation(
-          existing_dacl,
-          &mut acl_info as *mut _ as *mut _,
-          std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-          AclSizeInformation,
-        );
-      }
-
-      let sid_length = GetLengthSid(everyone_sid);
-      let new_ace_size = std::mem::size_of::<ACCESS_DENIED_ACE>() - std::mem::size_of::<u32>() + sid_length as usize;
-      let new_acl_size = std::mem::size_of::<ACL>() + new_ace_size + acl_info.AclBytesInUse as usize;
-
-      // Allocate buffer for new ACL
-      let mut new_acl_buffer = vec![0u8; new_acl_size];
-      let new_acl = new_acl_buffer.as_mut_ptr() as *mut ACL;
-
-      // 3. Initialize new ACL
-      if InitializeAcl(new_acl, new_acl_size as u32, ACL_REVISION) == 0 {
-        LocalFree(sd as _);
-        LocalFree(everyone_sid as _);
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("InitializeAcl failed: {}", GetLastError()),
-        });
-      }
-
-      // 4. Add our deny ACE first (deny ACEs come before allow)
-      let inherit_flags = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
-      if AddAccessDeniedAceEx(new_acl, ACL_REVISION, inherit_flags, DENY_MASK, everyone_sid) == 0 {
-        LocalFree(sd as _);
-        LocalFree(everyone_sid as _);
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("AddAccessDeniedAceEx failed: {}", GetLastError()),
-        });
-      }
-
-      // 5. Copy existing ACEs
-      if existing_acl_valid {
-        for i in 0..acl_info.AceCount {
-          let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
-          if GetAce(existing_dacl, i, &mut ace) != 0 {
-            let ace_header = ace as *const ACE_HEADER;
-            AddAce(
-              new_acl,
-              ACL_REVISION,
-              u32::MAX, // MAXDWORD - append at end
-              ace,
-              (*ace_header).AceSize as u32,
-            );
-          }
-        }
-      }
-
-      // 6. Apply new DACL
-      let result = SetNamedSecurityInfoW(
-        path_wide.as_ptr() as *mut _,
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        new_acl,
-        std::ptr::null_mut(),
-      );
-
-      LocalFree(sd as _);
-      LocalFree(everyone_sid as _);
-
-      if result != ERROR_SUCCESS {
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("SetNamedSecurityInfoW failed: {}", result),
-        });
-      }
-    }
-
-    Ok(())
-  }
-
-  /// Remove the DENY ACE for write operations from a path.
-  pub fn remove_deny_ace(path: &Path) -> Result<(), ImmutableError> {
-    let path_str = path.to_str().unwrap_or_default();
-    let path_wide = to_wide(path_str);
-
-    let everyone_sid = get_everyone_sid().map_err(|e| ImmutableError::Acl {
-      path: path.display().to_string(),
-      message: format!("failed to get Everyone SID: error {}", e),
-    })?;
-
-    unsafe {
-      // 1. Get existing DACL
-      let mut existing_dacl: *mut ACL = std::ptr::null_mut();
-      let mut sd: *mut core::ffi::c_void = std::ptr::null_mut();
-
-      let result = GetNamedSecurityInfoW(
-        path_wide.as_ptr(),
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        &mut existing_dacl,
-        std::ptr::null_mut(),
-        &mut sd,
-      );
-
-      if result != ERROR_SUCCESS {
-        LocalFree(everyone_sid as _);
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("GetNamedSecurityInfoW failed: {}", result),
-        });
-      }
-
-      if existing_dacl.is_null() || IsValidAcl(existing_dacl) == 0 {
-        LocalFree(sd as _);
-        LocalFree(everyone_sid as _);
-        return Ok(());
-      }
-
-      // 2. Get ACL info
-      let mut acl_info: ACL_SIZE_INFORMATION = std::mem::zeroed();
-      GetAclInformation(
-        existing_dacl,
-        &mut acl_info as *mut _ as *mut _,
-        std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-        AclSizeInformation,
-      );
-
-      // 3. Create new ACL without our deny ACE
-      let buffer_size = acl_info.AclBytesInUse as usize + 256;
-      let mut new_acl_buffer = vec![0u8; buffer_size];
-      let new_acl = new_acl_buffer.as_mut_ptr() as *mut ACL;
-
-      if InitializeAcl(new_acl, buffer_size as u32, ACL_REVISION) == 0 {
-        LocalFree(sd as _);
-        LocalFree(everyone_sid as _);
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("InitializeAcl failed: {}", GetLastError()),
-        });
-      }
-
-      // 4. Copy all ACEs except our deny ACE
-      for i in 0..acl_info.AceCount {
-        let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
-        if GetAce(existing_dacl, i, &mut ace) != 0 {
-          let ace_header = ace as *const ACE_HEADER;
-
-          // Check if this is our deny ACE
-          if (*ace_header).AceType == ACCESS_DENIED_ACE_TYPE {
-            let deny_ace = ace as *const ACCESS_DENIED_ACE;
-
-            // Get the SID from the ACE (starts at SidStart field)
-            let ace_sid = std::ptr::addr_of!((*deny_ace).SidStart) as PSID;
-
-            // Skip if this matches our SID and mask
-            if windows_sys::Win32::Security::EqualSid(ace_sid, everyone_sid) != 0 && (*deny_ace).Mask == DENY_MASK {
-              continue;
-            }
-          }
-
-          AddAce(new_acl, ACL_REVISION, u32::MAX, ace, (*ace_header).AceSize as u32);
-        }
-      }
-
-      // 5. Apply new DACL
-      let result = SetNamedSecurityInfoW(
-        path_wide.as_ptr() as *mut _,
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        new_acl,
-        std::ptr::null_mut(),
-      );
-
-      LocalFree(sd as _);
-      LocalFree(everyone_sid as _);
-
-      if result != ERROR_SUCCESS {
-        return Err(ImmutableError::Acl {
-          path: path.display().to_string(),
-          message: format!("SetNamedSecurityInfoW failed: {}", result),
-        });
-      }
-    }
-
-    Ok(())
-  }
-}
+// ============ Windows Implementation ============
+//
+// On Windows, we use the simpler FILE_ATTRIBUTE_READONLY approach via
+// std::fs::set_permissions. This is more reliable than ACL manipulation
+// and properly reflects in permissions().readonly().
 
 #[cfg(windows)]
 fn make_entry_immutable(path: &Path) -> Result<(), ImmutableError> {
-  windows_acl::add_deny_ace(path)
+  let metadata = std::fs::metadata(path).map_err(|e| ImmutableError::Metadata {
+    path: path.display().to_string(),
+    source: e,
+  })?;
+
+  let mut perms = metadata.permissions();
+  perms.set_readonly(true);
+  std::fs::set_permissions(path, perms).map_err(|e| ImmutableError::SetPermissions {
+    path: path.display().to_string(),
+    source: e,
+  })?;
+
+  Ok(())
 }
 
 #[cfg(windows)]
 fn make_entry_mutable(path: &Path) -> Result<(), ImmutableError> {
-  windows_acl::remove_deny_ace(path)
+  let metadata = std::fs::metadata(path).map_err(|e| ImmutableError::Metadata {
+    path: path.display().to_string(),
+    source: e,
+  })?;
+
+  let mut perms = metadata.permissions();
+  perms.set_readonly(false);
+  std::fs::set_permissions(path, perms).map_err(|e| ImmutableError::SetPermissions {
+    path: path.display().to_string(),
+    source: e,
+  })?;
+
+  Ok(())
 }
 
 #[cfg(test)]
