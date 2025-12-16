@@ -283,6 +283,41 @@ Objects in `obj/<hash>/` are made immutable after extraction:
 - **Purpose:** Prevent accidental modification
 - **Removal:** User can run `sys gc` to remove (clears immutability first)
 
+## Environment Isolation
+
+syslua runs build and bind commands in an isolated environment to ensure reproducibility.
+The environment is cleared and only specific variables are set.
+
+### Unix
+
+On Unix systems, `env_clear()` removes all environment variables. The shell (`/bin/sh`)
+has no special requirements and works with a minimal environment.
+
+### Windows
+
+On Windows, certain system environment variables must be preserved for PowerShell to
+function. After clearing the environment, the following variables are restored from
+the parent process:
+
+| Variable      | Purpose                                                                              |
+| ------------- | ------------------------------------------------------------------------------------ |
+| `SystemRoot`  | Path to Windows directory (e.g., `C:\Windows`). Required for PowerShell to load DLLs |
+| `SYSTEMDRIVE` | System drive letter (e.g., `C:`). Used by many Windows programs                     |
+| `WINDIR`      | Windows directory path                                                               |
+| `COMSPEC`     | Path to cmd.exe. Used as fallback shell by some programs                             |
+| `PATHEXT`     | Executable extensions (e.g., `.COM;.EXE;.BAT;.CMD`). Required to resolve commands    |
+
+This is a minimal set required for shell functionality. User environment variables,
+application paths, and other configuration are still cleared for isolation.
+
+### Isolated PATH
+
+The `PATH` variable is set to an invalid path to ensure commands fail fast if
+dependencies aren't properly specified:
+
+- Unix: `/path-not-set`
+- Windows: `C:\path-not-set`
+
 ## Build System
 
 While sys.lua prefers prebuilt binaries for speed, it supports building from source when necessary.

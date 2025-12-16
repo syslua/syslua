@@ -15,7 +15,8 @@ use crate::execute::types::ExecuteError;
 ///
 /// Runs the command in an isolated environment:
 /// - Clears all environment variables
-/// - Sets PATH to /path-not-set (to fail fast if deps aren't specified)
+/// - On Windows, preserves critical system vars (SystemRoot, SYSTEMDRIVE, WINDIR, COMSPEC, PATHEXT)
+/// - Sets PATH to /path-not-set (C:\path-not-set on Windows) to fail fast if deps aren't specified
 /// - Sets HOME to /homeless-shelter
 /// - Sets TMPDIR/TMP/TEMP/TEMPDIR to a temp directory within out_dir
 /// - Sets `out` to the output directory
@@ -57,9 +58,31 @@ pub async fn execute_cmd(
     .arg(cmd)
     .current_dir(working_dir)
     // Clear all environment variables
-    .env_clear()
-    // Set isolated environment
-    .env("PATH", "/path-not-set")
+    .env_clear();
+
+  // On Windows, preserve critical system variables required for shell startup.
+  // Unlike Unix, Windows shells (especially PowerShell) require certain system
+  // environment variables to locate DLLs and resolve executables.
+  #[cfg(windows)]
+  {
+    for var in ["SystemRoot", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"] {
+      if let Ok(val) = std::env::var(var) {
+        command.env(var, val);
+      }
+    }
+  }
+
+  // Set platform-appropriate isolated PATH
+  #[cfg(unix)]
+  command.env("PATH", "/path-not-set");
+  #[cfg(windows)]
+  {
+    let system_drive = std::env::var("SYSTEMDRIVE").unwrap_or_else(|_| "C:".to_string());
+    command.env("PATH", format!("{}\\path-not-set", system_drive));
+  }
+
+  // Set isolated environment (cross-platform)
+  command
     .env("HOME", "/homeless-shelter")
     .env("TMPDIR", &tmp_dir)
     .env("TMP", &tmp_dir)
@@ -231,7 +254,34 @@ mod tests {
 
     let result = execute_cmd(&echo_env("PATH"), None, None, out_dir, None).await.unwrap();
 
+    #[cfg(unix)]
     assert_eq!(result, "/path-not-set");
+    #[cfg(windows)]
+    {
+      let system_drive = std::env::var("SYSTEMDRIVE").unwrap_or_else(|_| "C:".to_string());
+      assert_eq!(result, format!("{}\\path-not-set", system_drive));
+    }
+  }
+
+  /// On Windows, critical system variables must be preserved for PowerShell to function.
+  #[tokio::test]
+  #[cfg(windows)]
+  async fn execute_command_preserves_windows_system_vars() {
+    let temp_dir = TempDir::new().unwrap();
+    let out_dir = temp_dir.path();
+
+    // SystemRoot should be preserved for PowerShell to find Windows DLLs
+    let result = execute_cmd("Write-Output $env:SystemRoot", None, None, out_dir, None)
+      .await
+      .unwrap();
+
+    // SystemRoot is typically C:\Windows or similar
+    assert!(!result.is_empty(), "SystemRoot should be preserved");
+    assert!(
+      result.to_lowercase().contains("windows"),
+      "SystemRoot should contain 'Windows', got: {}",
+      result
+    );
   }
 
   #[tokio::test]
