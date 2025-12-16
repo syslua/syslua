@@ -64,13 +64,13 @@ pub fn is_elevated() -> bool {
 pub fn is_elevated() -> bool {
   use std::mem::{size_of, zeroed};
   use windows_sys::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, HANDLE},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::Threading::{GetCurrentProcess, OpenProcessToken},
   };
 
   unsafe {
-    let mut token = 0;
+    let mut token: HANDLE = std::ptr::null_mut();
     if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
       return false;
     }

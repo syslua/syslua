@@ -199,14 +199,14 @@ mod windows_acl {
   use std::os::windows::ffi::OsStrExt;
   use std::path::Path;
 
-  use windows_sys::Win32::Foundation::{ERROR_SUCCESS, GetLastError, LocalFree, PSID};
+  use windows_sys::Win32::Foundation::{ERROR_SUCCESS, GetLastError, LocalFree};
   use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
   };
   use windows_sys::Win32::Security::{
     ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation, AddAccessDeniedAceEx,
     AddAce, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid, InitializeAcl,
-    IsValidAcl, OBJECT_INHERIT_ACE,
+    IsValidAcl, OBJECT_INHERIT_ACE, PSID,
   };
 
   use super::ImmutableError;
@@ -339,10 +339,10 @@ mod windows_acl {
         path_wide.as_ptr() as *mut _,
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
-        std::ptr::null(),
-        std::ptr::null(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
         new_acl,
-        std::ptr::null(),
+        std::ptr::null_mut(),
       );
 
       LocalFree(sd as _);
@@ -450,10 +450,10 @@ mod windows_acl {
         path_wide.as_ptr() as *mut _,
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
-        std::ptr::null(),
-        std::ptr::null(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
         new_acl,
-        std::ptr::null(),
+        std::ptr::null_mut(),
       );
 
       LocalFree(sd as _);
