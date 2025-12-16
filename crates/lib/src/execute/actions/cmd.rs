@@ -28,7 +28,7 @@ use crate::execute::types::ExecuteError;
 /// * `env` - Optional user-specified environment variables
 /// * `cwd` - Optional working directory (defaults to out_dir)
 /// * `out_dir` - The build's output directory
-/// * `shell` - The shell to use (defaults to /bin/sh on Unix, powershell.exe on Windows)
+/// * `shell` - The shell to use (defaults to /bin/sh on Unix, cmd.exe on Windows)
 ///
 /// # Returns
 ///
@@ -148,7 +148,7 @@ pub async fn execute_cmd(
 ///
 /// # Note
 ///
-/// For isolated builds, we always use `/bin/sh` (Unix) or `powershell.exe` (Windows)
+/// For isolated builds, we always use `/bin/sh` (Unix) or `cmd.exe` (Windows)
 /// by default, rather than the user's configured shell. This is because
 /// interactive shells like bash/zsh may source profile files that modify
 /// the environment (e.g., adding to PATH), which would break isolation.
@@ -183,16 +183,7 @@ fn get_shell(override_shell: Option<&str>) -> (String, Vec<String>) {
 
   #[cfg(windows)]
   {
-    (
-      "powershell.exe".to_string(),
-      vec![
-        "-NoProfile".to_string(),
-        "-NonInteractive".to_string(),
-        "-ExecutionPolicy".to_string(),
-        "Bypass".to_string(),
-        "-Command".to_string(),
-      ],
-    )
+    ("cmd.exe".to_string(), vec!["/C".to_string()])
   }
 }
 
@@ -203,7 +194,7 @@ mod tests {
 
   /// Get an echo command that prints an environment variable.
   /// Unix: echo $VAR
-  /// Windows: Write-Output $env:VAR
+  /// Windows: echo %VAR%
   #[cfg(unix)]
   fn echo_env(var: &str) -> String {
     format!("echo ${}", var)
@@ -211,7 +202,7 @@ mod tests {
 
   #[cfg(windows)]
   fn echo_env(var: &str) -> String {
-    format!("Write-Output $env:{}", var)
+    format!("echo %{}%", var)
   }
 
   #[tokio::test]
@@ -265,15 +256,15 @@ mod tests {
     }
   }
 
-  /// On Windows, critical system variables must be preserved for PowerShell to function.
+  /// On Windows, critical system variables must be preserved for cmd.exe to function.
   #[tokio::test]
   #[cfg(windows)]
   async fn execute_command_preserves_windows_system_vars() {
     let temp_dir = TempDir::new().unwrap();
     let out_dir = temp_dir.path();
 
-    // SystemRoot should be preserved for PowerShell to find Windows DLLs
-    let result = execute_cmd("Write-Output $env:SystemRoot", None, None, out_dir, None)
+    // SystemRoot should be preserved for Windows to function properly
+    let result = execute_cmd("echo %SystemRoot%", None, None, out_dir, None)
       .await
       .unwrap();
 
@@ -317,7 +308,7 @@ mod tests {
 
   #[cfg(windows)]
   fn create_cwd_marker() -> &'static str {
-    "New-Item -ItemType File -Path cwd_marker -Force"
+    "type nul > cwd_marker"
   }
 
   #[tokio::test]
@@ -383,15 +374,17 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let out_dir = temp_dir.path();
 
-    let cmd = r#"
-      $x = 1
-      $y = 2
-      Write-Output ($x + $y)
-    "#;
+    // Test multiline command with cmd.exe - just verify multiline works
+    let cmd = "echo first\necho 3";
 
     let result = execute_cmd(cmd, None, None, out_dir, None).await.unwrap();
 
-    assert_eq!(result, "3");
+    // cmd.exe should execute both lines, output ends with "3"
+    assert!(
+      result.ends_with("3"),
+      "Expected output to end with '3', got: {}",
+      result
+    );
   }
 
   #[test]
@@ -442,7 +435,7 @@ mod tests {
 
   #[test]
   fn get_shell_default() {
-    // Default shell should be /bin/sh on Unix, powershell.exe on Windows
+    // Default shell should be /bin/sh on Unix, cmd.exe on Windows
     let (shell, args) = get_shell(None);
     #[cfg(unix)]
     {
@@ -451,17 +444,8 @@ mod tests {
     }
     #[cfg(windows)]
     {
-      assert_eq!(shell, "powershell.exe");
-      assert_eq!(
-        args,
-        vec![
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command"
-        ]
-      );
+      assert_eq!(shell, "cmd.exe");
+      assert_eq!(args, vec!["/C"]);
     }
   }
 }

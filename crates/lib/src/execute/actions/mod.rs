@@ -147,7 +147,7 @@ mod tests {
 
   #[cfg(windows)]
   fn echo_env(var: &str) -> String {
-    format!("Write-Output $env:{}", var)
+    format!("echo %{}%", var)
   }
 
   #[tokio::test]

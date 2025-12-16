@@ -559,7 +559,7 @@ mod tests {
           cwd: None,
         },
         BindAction::Cmd {
-          cmd: "echo $${action:0} $${action:1}".to_string(),
+          cmd: "echo \"$${action:0} $${action:1}\"".to_string(),
           env: None,
           cwd: None,
         },
