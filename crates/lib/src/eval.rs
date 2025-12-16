@@ -145,6 +145,8 @@ fn build_inputs_table(lua: &Lua, resolved: Option<&ResolvedInputs>) -> LuaResult
 
 #[cfg(test)]
 mod tests {
+  use crate::util::hash::Hashable;
+
   use super::*;
   use std::fs;
   use tempfile::TempDir;
@@ -262,7 +264,6 @@ mod tests {
     let hash2 = manifest2.compute_hash().unwrap();
 
     assert_eq!(hash1, hash2);
-    assert_eq!(hash1.len(), 64); // Manifest hash is full SHA-256 (64 hex chars)
     Ok(())
   }
 

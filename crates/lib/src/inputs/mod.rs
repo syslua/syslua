@@ -15,6 +15,3 @@ pub mod fetch;
 pub mod lock;
 pub mod resolve;
 pub mod source;
-mod types;
-
-pub use types::*;

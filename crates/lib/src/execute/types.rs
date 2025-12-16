@@ -8,9 +8,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::bind::BindHash;
-use crate::build::BuildHash;
 use crate::placeholder::PlaceholderError;
+use crate::util::hash::ObjectHash;
 
 /// Identifies what caused a build or bind to be skipped.
 ///
@@ -20,9 +19,9 @@ use crate::placeholder::PlaceholderError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailedDependency {
   /// A build dependency failed.
-  Build(BuildHash),
+  Build(ObjectHash),
   /// A bind dependency failed.
-  Bind(BindHash),
+  Bind(ObjectHash),
 }
 
 impl std::fmt::Display for FailedDependency {
@@ -67,7 +66,7 @@ pub enum ExecuteError {
 
   /// Build dependency failed, so this build was skipped.
   #[error("dependency failed: {0}")]
-  DependencyFailed(BuildHash),
+  DependencyFailed(ObjectHash),
 
   /// Cycle detected in the dependency graph.
   #[error("dependency cycle detected")]
@@ -75,11 +74,11 @@ pub enum ExecuteError {
 
   /// Build not found in manifest.
   #[error("build not found: {0}")]
-  BuildNotFound(BuildHash),
+  BuildNotFound(ObjectHash),
 
   /// Bind not found in manifest.
   #[error("bind not found: {0}")]
-  BindNotFound(BindHash),
+  BindNotFound(ObjectHash),
 
   /// Action index out of bounds.
   #[error("action index {index} out of bounds (max {max})")]
@@ -127,25 +126,25 @@ pub struct BindResult {
 pub struct DagResult {
   // === Builds ===
   /// Successfully realized builds.
-  pub realized: HashMap<BuildHash, BuildResult>,
+  pub realized: HashMap<ObjectHash, BuildResult>,
 
   /// Build that failed during execution (at most one, stops execution).
-  pub build_failed: Option<(BuildHash, ExecuteError)>,
+  pub build_failed: Option<(ObjectHash, ExecuteError)>,
 
   /// Builds that were skipped because a dependency failed.
   /// Maps skipped build hash -> the failed dependency.
-  pub build_skipped: HashMap<BuildHash, FailedDependency>,
+  pub build_skipped: HashMap<ObjectHash, FailedDependency>,
 
   // === Binds ===
   /// Successfully applied binds.
-  pub applied: HashMap<BindHash, BindResult>,
+  pub applied: HashMap<ObjectHash, BindResult>,
 
   /// Bind that failed during execution (at most one, triggers rollback).
-  pub bind_failed: Option<(BindHash, ExecuteError)>,
+  pub bind_failed: Option<(ObjectHash, ExecuteError)>,
 
   /// Binds that were skipped because a dependency failed.
   /// Maps skipped bind hash -> the failed dependency.
-  pub bind_skipped: HashMap<BindHash, FailedDependency>,
+  pub bind_skipped: HashMap<ObjectHash, FailedDependency>,
 }
 
 impl DagResult {
@@ -219,7 +218,7 @@ mod tests {
   fn dag_result_success_with_realized_build() {
     let mut result = DagResult::default();
     result.realized.insert(
-      BuildHash("abc123".to_string()),
+      ObjectHash("abc123".to_string()),
       BuildResult {
         store_path: PathBuf::from("/store/obj/test"),
         outputs: HashMap::new(),
@@ -236,7 +235,7 @@ mod tests {
   fn dag_result_success_with_applied_bind() {
     let mut result = DagResult::default();
     result.applied.insert(
-      BindHash("def456".to_string()),
+      ObjectHash("def456".to_string()),
       BindResult {
         outputs: HashMap::new(),
         action_results: vec![],
@@ -252,7 +251,7 @@ mod tests {
   fn dag_result_failure_with_build_failed() {
     let mut result = DagResult::default();
     result.build_failed = Some((
-      BuildHash("abc123".to_string()),
+      ObjectHash("abc123".to_string()),
       ExecuteError::CmdFailed {
         cmd: "make".to_string(),
         code: Some(1),
@@ -267,7 +266,7 @@ mod tests {
   fn dag_result_failure_with_bind_failed() {
     let mut result = DagResult::default();
     result.bind_failed = Some((
-      BindHash("def456".to_string()),
+      ObjectHash("def456".to_string()),
       ExecuteError::CmdFailed {
         cmd: "ln -s".to_string(),
         code: Some(1),
@@ -282,8 +281,8 @@ mod tests {
   fn dag_result_failure_with_build_skipped() {
     let mut result = DagResult::default();
     result.build_skipped.insert(
-      BuildHash("child".to_string()),
-      FailedDependency::Build(BuildHash("parent".to_string())),
+      ObjectHash("child".to_string()),
+      FailedDependency::Build(ObjectHash("parent".to_string())),
     );
     assert!(!result.is_success());
     assert_eq!(result.build_total(), 1);
@@ -294,8 +293,8 @@ mod tests {
   fn dag_result_failure_with_bind_skipped_due_to_build() {
     let mut result = DagResult::default();
     result.bind_skipped.insert(
-      BindHash("mybind".to_string()),
-      FailedDependency::Build(BuildHash("parent".to_string())),
+      ObjectHash("mybind".to_string()),
+      FailedDependency::Build(ObjectHash("parent".to_string())),
     );
     assert!(!result.is_success());
     assert_eq!(result.bind_total(), 1);
@@ -306,8 +305,8 @@ mod tests {
   fn dag_result_failure_with_bind_skipped_due_to_bind() {
     let mut result = DagResult::default();
     result.bind_skipped.insert(
-      BindHash("mybind".to_string()),
-      FailedDependency::Bind(BindHash("parentbind".to_string())),
+      ObjectHash("mybind".to_string()),
+      FailedDependency::Bind(ObjectHash("parentbind".to_string())),
     );
     assert!(!result.is_success());
     assert_eq!(result.bind_total(), 1);
@@ -316,8 +315,8 @@ mod tests {
 
   #[test]
   fn failed_dependency_display() {
-    let build_dep = FailedDependency::Build(BuildHash("abc123".to_string()));
-    let bind_dep = FailedDependency::Bind(BindHash("def456".to_string()));
+    let build_dep = FailedDependency::Build(ObjectHash("abc123".to_string()));
+    let bind_dep = FailedDependency::Bind(ObjectHash("def456".to_string()));
 
     assert_eq!(format!("{}", build_dep), "build:abc123");
     assert_eq!(format!("{}", bind_dep), "bind:def456");

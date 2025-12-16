@@ -19,17 +19,17 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
-use crate::bind::BindHash;
-use crate::build::BuildHash;
+use crate::bind::execute::destroy_bind;
+use crate::bind::state::{BindState, BindStateError, load_bind_state, remove_bind_state, save_bind_state};
 use crate::eval::{EvalError, evaluate_config};
+use crate::execute::execute_manifest;
 use crate::manifest::Manifest;
-use crate::platform::paths::store::StorePaths;
 use crate::snapshot::{Snapshot, SnapshotError, SnapshotStore, StateDiff, compute_diff, generate_snapshot_id};
-use crate::store::bind::{BindState, BindStateError, load_bind_state, remove_bind_state, save_bind_state};
+use crate::store::paths::StorePaths;
+use crate::util::hash::ObjectHash;
 
 use super::resolver::ExecutionResolver;
 use super::types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError};
-use super::{bind, execute_manifest};
 
 /// Result of an apply operation.
 #[derive(Debug)]
@@ -73,7 +73,7 @@ pub enum ApplyError {
   /// Destroy phase failed.
   #[error("failed to destroy bind {hash}: {source}")]
   DestroyFailed {
-    hash: BindHash,
+    hash: ObjectHash,
     #[source]
     source: ExecuteError,
   },
@@ -289,7 +289,7 @@ fn build_execution_manifest(desired: &Manifest, diff: &StateDiff) -> Manifest {
 ///
 /// Number of binds successfully destroyed.
 async fn destroy_removed_binds(
-  hashes: &[BindHash],
+  hashes: &[ObjectHash],
   current_manifest: Option<&Manifest>,
   config: &ExecuteConfig,
 ) -> Result<usize, ApplyError> {
@@ -303,8 +303,8 @@ async fn destroy_removed_binds(
 
   // Create an empty resolver for destroy operations
   // (destroy actions typically only need outputs from the bind itself)
-  let empty_builds: HashMap<BuildHash, BuildResult> = HashMap::new();
-  let empty_binds: HashMap<BindHash, BindResult> = HashMap::new();
+  let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
+  let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
   let empty_manifest = Manifest::default();
   let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &empty_manifest, "/tmp", config.system);
 
@@ -335,7 +335,7 @@ async fn destroy_removed_binds(
 
     // Execute destroy
     info!(bind = %hash.0, "destroying bind");
-    if let Err(e) = bind::destroy_bind(hash, bind_def, &bind_result, &resolver, config).await {
+    if let Err(e) = destroy_bind(hash, bind_def, &bind_result, &resolver, config).await {
       error!(bind = %hash.0, error = %e, "failed to destroy bind");
       return Err(ApplyError::DestroyFailed {
         hash: hash.clone(),
@@ -356,6 +356,7 @@ async fn destroy_removed_binds(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
   use tempfile::TempDir;
 
   fn test_options() -> ApplyOptions {
@@ -373,13 +374,13 @@ mod tests {
   #[test]
   fn build_execution_manifest_filters_correctly() {
     use crate::bind::BindDef;
-    use crate::build::{BuildDef, BuildHash};
+    use crate::build::BuildDef;
 
     let mut desired = Manifest::default();
 
     // Add builds
     desired.builds.insert(
-      BuildHash("cached".to_string()),
+      ObjectHash("cached".to_string()),
       BuildDef {
         name: "cached-pkg".to_string(),
         version: None,
@@ -389,7 +390,7 @@ mod tests {
       },
     );
     desired.builds.insert(
-      BuildHash("new".to_string()),
+      ObjectHash("new".to_string()),
       BuildDef {
         name: "new-pkg".to_string(),
         version: None,
@@ -401,7 +402,7 @@ mod tests {
 
     // Add binds
     desired.bindings.insert(
-      BindHash("new_bind".to_string()),
+      ObjectHash("new_bind".to_string()),
       BindDef {
         inputs: None,
         apply_actions: vec![],
@@ -410,7 +411,7 @@ mod tests {
       },
     );
     desired.bindings.insert(
-      BindHash("unchanged_bind".to_string()),
+      ObjectHash("unchanged_bind".to_string()),
       BindDef {
         inputs: None,
         apply_actions: vec![],
@@ -420,27 +421,27 @@ mod tests {
     );
 
     let diff = StateDiff {
-      builds_to_realize: vec![BuildHash("new".to_string())],
-      builds_cached: vec![BuildHash("cached".to_string())],
-      binds_to_apply: vec![BindHash("new_bind".to_string())],
+      builds_to_realize: vec![ObjectHash("new".to_string())],
+      builds_cached: vec![ObjectHash("cached".to_string())],
+      binds_to_apply: vec![ObjectHash("new_bind".to_string())],
       binds_to_destroy: vec![],
-      binds_unchanged: vec![BindHash("unchanged_bind".to_string())],
+      binds_unchanged: vec![ObjectHash("unchanged_bind".to_string())],
     };
 
     let exec_manifest = build_execution_manifest(&desired, &diff);
 
     // Should include both builds (cached needed for resolution)
     assert_eq!(exec_manifest.builds.len(), 2);
-    assert!(exec_manifest.builds.contains_key(&BuildHash("new".to_string())));
-    assert!(exec_manifest.builds.contains_key(&BuildHash("cached".to_string())));
+    assert!(exec_manifest.builds.contains_key(&ObjectHash("new".to_string())));
+    assert!(exec_manifest.builds.contains_key(&ObjectHash("cached".to_string())));
 
     // Should only include new binds
     assert_eq!(exec_manifest.bindings.len(), 1);
-    assert!(exec_manifest.bindings.contains_key(&BindHash("new_bind".to_string())));
+    assert!(exec_manifest.bindings.contains_key(&ObjectHash("new_bind".to_string())));
     assert!(
       !exec_manifest
         .bindings
-        .contains_key(&BindHash("unchanged_bind".to_string()))
+        .contains_key(&ObjectHash("unchanged_bind".to_string()))
     );
   }
 
@@ -451,6 +452,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn apply_dry_run() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("init.lua");

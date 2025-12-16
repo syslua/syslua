@@ -13,9 +13,9 @@ use std::rc::Rc;
 
 use mlua::prelude::*;
 
-use super::bind::register_sys_bind;
-use super::build::register_sys_build;
 use super::helpers;
+use crate::bind::lua::register_sys_bind;
+use crate::build::lua::register_sys_build;
 use crate::manifest::Manifest;
 use crate::platform::Platform;
 

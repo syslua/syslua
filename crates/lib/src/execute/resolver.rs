@@ -6,11 +6,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::bind::BindHash;
-use crate::build::BuildHash;
+use crate::build::store::build_path;
 use crate::manifest::Manifest;
 use crate::placeholder::{PlaceholderError, Resolver};
-use crate::store;
+use crate::util::hash::ObjectHash;
 
 use super::types::{BindResult, BuildResult};
 
@@ -28,7 +27,7 @@ pub struct BuildResolver<'a> {
   action_results: Vec<String>,
 
   /// Results of previously completed builds.
-  completed_builds: &'a HashMap<BuildHash, BuildResult>,
+  completed_builds: &'a HashMap<ObjectHash, BuildResult>,
 
   /// The manifest (for looking up build definitions).
   manifest: &'a Manifest,
@@ -43,7 +42,7 @@ pub struct BuildResolver<'a> {
 impl<'a> BuildResolver<'a> {
   /// Create a new resolver for a build.
   pub fn new(
-    completed_builds: &'a HashMap<BuildHash, BuildResult>,
+    completed_builds: &'a HashMap<ObjectHash, BuildResult>,
     manifest: &'a Manifest,
     out_dir: impl AsRef<Path>,
     system: bool,
@@ -109,10 +108,10 @@ pub struct ExecutionResolver<'a> {
   action_results: Vec<String>,
 
   /// Results of previously completed builds.
-  completed_builds: &'a HashMap<BuildHash, BuildResult>,
+  completed_builds: &'a HashMap<ObjectHash, BuildResult>,
 
   /// Results of previously completed binds.
-  completed_binds: &'a HashMap<BindHash, BindResult>,
+  completed_binds: &'a HashMap<ObjectHash, BindResult>,
 
   /// The manifest (for looking up definitions).
   manifest: &'a Manifest,
@@ -127,8 +126,8 @@ pub struct ExecutionResolver<'a> {
 impl<'a> ExecutionResolver<'a> {
   /// Create a new resolver for unified execution.
   pub fn new(
-    completed_builds: &'a HashMap<BuildHash, BuildResult>,
-    completed_binds: &'a HashMap<BindHash, BindResult>,
+    completed_builds: &'a HashMap<ObjectHash, BuildResult>,
+    completed_binds: &'a HashMap<ObjectHash, BindResult>,
     manifest: &'a Manifest,
     out_dir: impl AsRef<Path>,
     system: bool,
@@ -196,7 +195,7 @@ impl Resolver for ExecutionResolver<'_> {
 fn resolve_build_output<'a>(
   hash: &str,
   output: &str,
-  completed_builds: &'a HashMap<BuildHash, BuildResult>,
+  completed_builds: &'a HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
   system: bool,
 ) -> Result<&'a str, PlaceholderError> {
@@ -231,7 +230,7 @@ fn resolve_build_output<'a>(
     if let Some(full_hash) = full_hash
       && let Some(build_def) = manifest.builds.get(&full_hash)
     {
-      let store_path = store::build_path(&build_def.name, build_def.version.as_deref(), &full_hash, system);
+      let store_path = build_path(&build_def.name, build_def.version.as_deref(), &full_hash, system);
       // This is a bit awkward - we need to return a reference but we're computing a value.
       // For now, return an error indicating the build hasn't been realized yet.
       return Err(PlaceholderError::UnresolvedBuild {
@@ -291,7 +290,7 @@ mod tests {
 
   #[test]
   fn resolve_build_from_completed() {
-    let hash = BuildHash("abc123def456".to_string());
+    let hash = ObjectHash("abc123def456".to_string());
     let mut outputs = HashMap::new();
     outputs.insert("bin".to_string(), "/store/obj/test/bin".to_string());
 
@@ -359,7 +358,7 @@ mod tests {
 
   #[test]
   fn execution_resolver_resolve_build() {
-    let build_hash = BuildHash("build123".to_string());
+    let build_hash = ObjectHash("build123".to_string());
     let mut build_outputs = HashMap::new();
     build_outputs.insert("bin".to_string(), "/store/obj/app/bin".to_string());
 
@@ -383,7 +382,7 @@ mod tests {
 
   #[test]
   fn execution_resolver_resolve_bind() {
-    let bind_hash = BindHash("bind456".to_string());
+    let bind_hash = ObjectHash("bind456".to_string());
     let mut bind_outputs = HashMap::new();
     bind_outputs.insert("link".to_string(), "/home/user/.config/app".to_string());
 
@@ -408,7 +407,7 @@ mod tests {
 
   #[test]
   fn execution_resolver_resolve_bind_by_prefix() {
-    let bind_hash = BindHash("bind456def789".to_string());
+    let bind_hash = ObjectHash("bind456def789".to_string());
     let mut bind_outputs = HashMap::new();
     bind_outputs.insert("path".to_string(), "/some/path".to_string());
 
@@ -443,7 +442,7 @@ mod tests {
 
   #[test]
   fn execution_resolver_resolve_bind_output_not_found() {
-    let bind_hash = BindHash("bind456".to_string());
+    let bind_hash = ObjectHash("bind456".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(), // No outputs
       action_results: vec![],

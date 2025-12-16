@@ -263,7 +263,7 @@ mod tests {
   fn snapshot_to_metadata() {
     let mut manifest = Manifest::default();
     manifest.builds.insert(
-      crate::build::BuildHash("build1".to_string()),
+      crate::util::hash::ObjectHash("build1".to_string()),
       crate::build::BuildDef {
         name: "test-build".to_string(),
         version: None,

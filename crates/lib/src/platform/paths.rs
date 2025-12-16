@@ -1,5 +1,3 @@
-pub mod store;
-
 use crate::consts::APP_NAME;
 use std::path::PathBuf;
 

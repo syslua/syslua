@@ -11,12 +11,9 @@
 
 use std::collections::BTreeMap;
 
-use mlua::Function;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::consts::HASH_PREFIX_LEN;
-use crate::inputs::{InputsRef, InputsSpec};
+use crate::util::hash::{Hashable, ObjectHash};
 
 /// Marker type name for BuildRef metatables in Lua.
 ///
@@ -25,57 +22,59 @@ use crate::inputs::{InputsRef, InputsSpec};
 /// build outputs (e.g., `build.out` or `build.bin`).
 pub const BUILD_REF_TYPE: &str = "BuildRef";
 
-/// The build specification as defined in Lua.
+/// A resolved, serializable input value.
 ///
-/// This is the Lua-side representation of a build, containing the raw closure
-/// that will be evaluated to produce a [`BuildDef`]. Because it contains a
-/// Lua [`Function`], it cannot be serialized directly.
+/// This is the manifest-side representation of inputs. All values are fully
+/// resolved and can be serialized to JSON.
 ///
-/// # Fields
+/// # Primitive Types
 ///
-/// - `name`: Human-readable identifier for the build (e.g., "ripgrep", "curl")
-/// - `version`: Optional version string for display and organization
-/// - `inputs`: Optional inputs that parameterize the build
-/// - `apply`: The Lua function called with a [`BuildCtx`] to define build actions
+/// - [`String`](BuildInputs::String): Text values
+/// - [`Number`](BuildInputs::Number): Floating-point numbers
+/// - [`Boolean`](BuildInputs::Boolean): True/false values
 ///
-/// # Lifecycle
+/// # Collection Types
 ///
-/// ```text
-/// BuildSpec (Lua) → evaluate apply() → BuildDef (serializable) → BuildHash
+/// - [`Table`](BuildInputs::Table): Key-value maps (Lua tables with string keys)
+/// - [`Array`](BuildInputs::Array): Ordered sequences (Lua tables with numeric keys)
+///
+/// # Reference Types
+///
+/// - [`Build`](BuildInputs::Build): Reference to a build by its hash
+///
+/// # Reference Storage
+///
+/// When storing references to builds or bindings, only the hash is stored
+/// (not the full definition). This:
+/// - Keeps the manifest compact
+/// - Avoids circular reference issues during serialization
+/// - Enables efficient dependency tracking
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "Table": {
+///     "name": { "String": "myapp" },
+///     "debug": { "Boolean": false },
+///     "rust": { "Build": "a1b2c3d4e5f6789012ab" }
+///   }
+/// }
 /// ```
-pub struct BuildSpec {
-  /// Human-readable name for the build (e.g., "ripgrep", "neovim").
-  pub name: String,
-  /// Optional version string (e.g., "15.1.0").
-  pub version: Option<String>,
-  /// Optional inputs that parameterize the build.
-  pub inputs: Option<InputsSpec>,
-  /// The Lua function to evaluate with a [`BuildCtx`] to produce actions.
-  pub apply: Function,
-}
-
-/// A content-addressed hash identifying a unique [`BuildDef`].
-///
-/// The hash is a 20-character truncated SHA-256 of the JSON-serialized [`BuildDef`].
-/// This provides sufficient collision resistance while keeping paths readable.
-///
-/// # Format
-///
-/// The hash is a lowercase hexadecimal string, e.g., `"a1b2c3d4e5f6789012ab"`.
-///
-/// # Usage
-///
-/// BuildHash is used as:
-/// - Keys in the manifest's `builds` map for deduplication
-/// - Store paths: `~/.local/share/syslua/build/<hash>/`
-/// - References in [`InputsRef::Build`] to track dependencies
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct BuildHash(pub String);
-
-impl std::fmt::Display for BuildHash {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.0)
-  }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BuildInputs {
+  /// A string value.
+  String(String),
+  /// A numeric value (f64 to match Lua's number type).
+  Number(f64),
+  /// A boolean value.
+  Boolean(bool),
+  /// A table (map) with string keys.
+  Table(BTreeMap<String, BuildInputs>),
+  /// An array (sequence) of values.
+  Array(Vec<BuildInputs>),
+  /// A reference to a build, stored as its [`ObjectHash`].
+  Build(ObjectHash),
 }
 
 /// An action that can be performed during build execution.
@@ -144,38 +143,14 @@ pub struct BuildDef {
   /// Optional version string.
   pub version: Option<String>,
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
-  pub inputs: Option<InputsRef>,
+  pub inputs: Option<BuildInputs>,
   /// The sequence of actions to execute during `apply`.
   pub apply_actions: Vec<BuildAction>,
   /// Named outputs from the build (e.g., `{"out": "$${action:2}", "bin": "..."}`).
   pub outputs: Option<BTreeMap<String, String>>,
 }
 
-impl BuildDef {
-  /// Compute the truncated SHA-256 hash for use as manifest key.
-  ///
-  /// The hash is computed from the JSON serialization of this `BuildDef`,
-  /// then truncated to [`HASH_PREFIX_LEN`] characters (20 chars).
-  ///
-  /// # Determinism
-  ///
-  /// The hash is deterministic: identical `BuildDef` values always produce
-  /// the same hash. This is guaranteed by:
-  /// - Using `serde_json` for consistent serialization
-  /// - Using `BTreeMap` for ordered keys
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if JSON serialization fails (should not happen for
-  /// well-formed `BuildDef` values).
-  pub fn compute_hash(&self) -> Result<BuildHash, serde_json::Error> {
-    let serialized = serde_json::to_string(self)?;
-    let mut hasher = Sha256::new();
-    hasher.update(serialized.as_bytes());
-    let full = format!("{:x}", hasher.finalize());
-    Ok(BuildHash(full[..HASH_PREFIX_LEN].to_string()))
-  }
-}
+impl Hashable for BuildDef {}
 
 /// Options for executing a shell command in a build.
 ///
@@ -195,7 +170,7 @@ impl BuildDef {
 ///         .with_cwd("/build")
 /// );
 /// ```
-pub struct BuildCmdOptions {
+pub struct BuildCmdOpts {
   /// The command string to execute.
   pub cmd: String,
   /// Optional environment variables to set.
@@ -204,7 +179,7 @@ pub struct BuildCmdOptions {
   pub cwd: Option<String>,
 }
 
-impl BuildCmdOptions {
+impl BuildCmdOpts {
   /// Create a new command with default options.
   pub fn new(cmd: &str) -> Self {
     Self {
@@ -227,9 +202,9 @@ impl BuildCmdOptions {
   }
 }
 
-impl From<&str> for BuildCmdOptions {
+impl From<&str> for BuildCmdOpts {
   fn from(cmd: &str) -> Self {
-    BuildCmdOptions::new(cmd)
+    BuildCmdOpts::new(cmd)
   }
 }
 
@@ -335,7 +310,7 @@ impl BuildCtx {
   ///
   /// An opaque placeholder string (e.g., `$${action:1}`) that resolves to
   /// the command's output at execution time.
-  pub fn cmd(&mut self, opts: impl Into<BuildCmdOptions>) -> String {
+  pub fn cmd(&mut self, opts: impl Into<BuildCmdOpts>) -> String {
     let output = format!("$${{action:{}}}", self.actions.len());
     let opts = opts.into();
     self.actions.push(BuildAction::Cmd {
@@ -360,6 +335,8 @@ mod tests {
   use super::*;
 
   mod build_def {
+    use crate::consts::HASH_PREFIX_LEN;
+
     use super::*;
 
     fn simple_def() -> BuildDef {
@@ -469,7 +446,7 @@ mod tests {
       let def = BuildDef {
         name: "complex".to_string(),
         version: Some("1.0.0".to_string()),
-        inputs: Some(InputsRef::String("test".to_string())),
+        inputs: Some(BuildInputs::String("test".to_string())),
         apply_actions: vec![
           BuildAction::FetchUrl {
             url: "https://example.com/src.tar.gz".to_string(),
@@ -514,7 +491,7 @@ mod tests {
       let mut env = BTreeMap::new();
       env.insert("CC".to_string(), "clang".to_string());
 
-      ctx.cmd(BuildCmdOptions::new("make").with_env(env.clone()).with_cwd("/build"));
+      ctx.cmd(BuildCmdOpts::new("make").with_env(env.clone()).with_cwd("/build"));
 
       let actions = ctx.into_actions();
       assert_eq!(actions.len(), 1);

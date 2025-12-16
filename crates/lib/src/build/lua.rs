@@ -11,11 +11,13 @@ use std::rc::Rc;
 
 use mlua::prelude::*;
 
-use crate::build::{BUILD_REF_TYPE, BuildCmdOptions, BuildCtx, BuildDef};
-use crate::inputs::InputsRef;
-use crate::lua::inputs::{contains_bind_ref, inputs_ref_to_lua, lua_value_to_inputs_ref};
-use crate::lua::outputs::parse_outputs;
+use crate::build::BuildInputs;
 use crate::manifest::Manifest;
+use crate::outputs::lua::parse_outputs;
+use crate::util::hash::Hashable;
+use crate::{bind::BIND_REF_TYPE, util::hash::ObjectHash};
+
+use super::{BUILD_REF_TYPE, BuildCmdOpts, BuildCtx, BuildDef};
 
 impl LuaUserData for BuildCtx {
   fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
@@ -34,18 +36,18 @@ impl LuaUserData for BuildCtx {
   }
 }
 
-fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BuildCmdOptions> {
+fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BuildCmdOpts> {
   match opts {
     LuaValue::String(s) => {
       let cmd = s.to_str()?.to_string();
-      Ok(BuildCmdOptions::new(&cmd))
+      Ok(BuildCmdOpts::new(&cmd))
     }
     LuaValue::Table(table) => {
       let cmd: String = table.get("cmd")?;
       let cwd: Option<String> = table.get("cwd")?;
       let env: Option<LuaTable> = table.get("env")?;
 
-      let mut opts = BuildCmdOptions::new(&cmd);
+      let mut opts = BuildCmdOpts::new(&cmd);
       if let Some(cwd) = cwd {
         opts = opts.with_cwd(&cwd);
       }
@@ -62,6 +64,143 @@ fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BuildCmdOptions> {
     }
     _ => Err(LuaError::external("cmd() expects a string or table with 'cmd' field")),
   }
+}
+
+/// Convert a Lua value to BuildInputsRef (for resolved/static inputs).
+///
+/// Handles primitives, arrays, tables, and specially-marked BuildRef/BindRef tables
+/// (detected via metatable `__type` field).
+///
+/// Validates that any referenced builds/binds exist in the manifest.
+pub fn lua_value_to_build_inputs_ref(value: LuaValue, manifest: &Manifest) -> LuaResult<BuildInputs> {
+  match value {
+    LuaValue::String(s) => Ok(BuildInputs::String(s.to_str()?.to_string())),
+    LuaValue::Number(n) => Ok(BuildInputs::Number(n)),
+    LuaValue::Integer(i) => Ok(BuildInputs::Number(i as f64)),
+    LuaValue::Boolean(b) => Ok(BuildInputs::Boolean(b)),
+    LuaValue::Table(t) => {
+      // Check metatable for type marker (BuildRef or BindRef)
+      if let Some(mt) = t.metatable()
+        && let Ok(type_name) = mt.get::<String>("__type")
+      {
+        match type_name.as_str() {
+          BUILD_REF_TYPE => return parse_build_ref_table(&t, manifest),
+          BIND_REF_TYPE => {
+            return Err(LuaError::external(
+              "build inputs cannot reference binds: binds are side-effectful and cannot be inputs to immutable builds",
+            ));
+          }
+          _ => {}
+        }
+      }
+
+      // Check if it's an array (sequential integer keys starting at 1)
+      let len = t.raw_len();
+      let first_key: Result<LuaValue, _> = t.get(1i64);
+      if len > 0 && first_key.is_ok() && first_key.unwrap() != LuaValue::Nil {
+        // Treat as array
+        let mut arr = Vec::with_capacity(len);
+        for i in 1..=len {
+          let val: LuaValue = t.get(i)?;
+          arr.push(lua_value_to_build_inputs_ref(val, manifest)?);
+        }
+        Ok(BuildInputs::Array(arr))
+      } else {
+        // Treat as table/map
+        let mut map = BTreeMap::new();
+        for pair in t.pairs::<String, LuaValue>() {
+          let (k, v) = pair?;
+          map.insert(k, lua_value_to_build_inputs_ref(v, manifest)?);
+        }
+        Ok(BuildInputs::Table(map))
+      }
+    }
+    LuaValue::Nil => Err(LuaError::external("nil values not allowed in inputs")),
+    _ => Err(LuaError::external(format!(
+      "unsupported input type: {:?}",
+      value.type_name()
+    ))),
+  }
+}
+
+/// Parse a Lua table marked as BuildRef into InputsRef::Build.
+///
+/// Validates that the referenced build exists in the manifest.
+pub fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BuildInputs> {
+  let hash: String = t.get("hash")?;
+  let build_hash = ObjectHash(hash);
+
+  // Validate build exists in manifest
+  if !manifest.builds.contains_key(&build_hash) {
+    return Err(LuaError::external(format!(
+      "referenced build not found in manifest: {}",
+      build_hash.0
+    )));
+  }
+
+  Ok(BuildInputs::Build(build_hash))
+}
+
+/// Convert BindInputsRef to a Lua value for passing to the apply function.
+///
+/// For Build/Bind references, looks up the definition in the manifest to
+/// reconstruct the Lua table with placeholder outputs.
+pub fn build_inputs_ref_to_lua(lua: &Lua, inputs: &BuildInputs, manifest: &Manifest) -> LuaResult<LuaValue> {
+  match inputs {
+    BuildInputs::String(s) => Ok(LuaValue::String(lua.create_string(s)?)),
+    BuildInputs::Number(n) => Ok(LuaValue::Number(*n)),
+    BuildInputs::Boolean(b) => Ok(LuaValue::Boolean(*b)),
+    BuildInputs::Array(arr) => {
+      let table = lua.create_table()?;
+      for (i, val) in arr.iter().enumerate() {
+        table.set(i + 1, build_inputs_ref_to_lua(lua, val, manifest)?)?;
+      }
+      Ok(LuaValue::Table(table))
+    }
+    BuildInputs::Table(map) => {
+      let table = lua.create_table()?;
+      for (k, v) in map {
+        table.set(k.as_str(), build_inputs_ref_to_lua(lua, v, manifest)?)?;
+      }
+      Ok(LuaValue::Table(table))
+    }
+    BuildInputs::Build(hash) => build_hash_to_lua(lua, hash, manifest),
+  }
+}
+
+/// Convert a ObjectHash to a Lua table by looking up the BuildDef in the manifest.
+///
+/// Generates placeholder outputs from the BuildDef's output keys.
+pub fn build_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> LuaResult<LuaValue> {
+  let build_def = manifest
+    .builds
+    .get(hash)
+    .ok_or_else(|| LuaError::external(format!("build not found in manifest: {}", hash.0)))?;
+
+  let table = lua.create_table()?;
+  table.set("name", build_def.name.as_str())?;
+  if let Some(v) = &build_def.version {
+    table.set("version", v.as_str())?;
+  }
+  table.set("hash", hash.0.as_str())?;
+
+  // Generate placeholder outputs from BuildDef
+  let outputs = lua.create_table()?;
+  let hash = &hash.0;
+  if let Some(def_outputs) = &build_def.outputs {
+    for key in def_outputs.keys() {
+      let placeholder = format!("$${{build:{}:{}}}", hash, key);
+      outputs.set(key.as_str(), placeholder.as_str())?;
+    }
+  }
+  table.set("outputs", outputs)?;
+
+  // Set metatable with __type marker
+  let mt = lua.create_table()?;
+  mt.set("__type", BUILD_REF_TYPE)?;
+  table.set_metatable(Some(mt))?;
+
+  Ok(LuaValue::Table(table))
 }
 
 /// Register the `sys.build` function on the sys table.
@@ -87,29 +226,20 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
 
     // 2. Resolve inputs (if provided)
     let inputs_value: Option<LuaValue> = spec_table.get("inputs")?;
-    let resolved_inputs: Option<InputsRef> = match inputs_value {
+    let resolved_inputs: Option<BuildInputs> = match inputs_value {
       Some(LuaValue::Function(f)) => {
         // Dynamic inputs - call the function to get resolved value
         let result: LuaValue = f.call(())?;
         if result == LuaValue::Nil {
           None
         } else {
-          Some(lua_value_to_inputs_ref(result, &manifest.borrow())?)
+          Some(lua_value_to_build_inputs_ref(result, &manifest.borrow())?)
         }
       }
       Some(LuaValue::Nil) => None,
-      Some(v) => Some(lua_value_to_inputs_ref(v, &manifest.borrow())?),
+      Some(v) => Some(lua_value_to_build_inputs_ref(v, &manifest.borrow())?),
       None => None,
     };
-
-    // 2.5 Validate no bind references in inputs (builds cannot depend on binds)
-    if let Some(ref inputs) = resolved_inputs
-      && contains_bind_ref(inputs)
-    {
-      return Err(LuaError::external(
-        "build inputs cannot reference binds: binds are side-effectful and cannot be inputs to immutable builds",
-      ));
-    }
 
     // 3. Create BuildCtx and call the apply function
     let ctx = BuildCtx::new();
@@ -117,7 +247,7 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
 
     // Prepare inputs argument for apply function
     let inputs_arg: LuaValue = match &resolved_inputs {
-      Some(inputs) => inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
+      Some(inputs) => build_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
       None => LuaValue::Table(lua.create_table()?), // Empty table if no inputs
     };
 
@@ -185,7 +315,7 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
 
     // Add inputs to ref (nil if not specified)
     if let Some(inputs) = &resolved_inputs {
-      ref_table.set("inputs", inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
+      ref_table.set("inputs", build_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
     }
 
     // Convert outputs to Lua table with placeholders for runtime resolution
@@ -305,7 +435,7 @@ mod tests {
       let (_, build_def) = manifest.builds.iter().next().unwrap();
       let inputs = build_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
+        BuildInputs::Table(map) => {
           assert!(map.contains_key("url"));
           assert!(map.contains_key("sha256"));
         }
@@ -343,8 +473,8 @@ mod tests {
       let (_, build_def) = manifest.builds.iter().next().unwrap();
       let inputs = build_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
-          assert_eq!(map.get("computed"), Some(&InputsRef::String("value".to_string())));
+        BuildInputs::Table(map) => {
+          assert_eq!(map.get("computed"), Some(&BuildInputs::String("value".to_string())));
         }
         _ => panic!("expected Table inputs"),
       }
@@ -382,15 +512,15 @@ mod tests {
       let manifest = manifest.borrow();
       assert_eq!(manifest.builds.len(), 2);
 
-      // Check the consumer's inputs contain the BuildHash
+      // Check the consumer's inputs contain the ObjectHash
       // The consumer is the one with name = "consumer"
       let consumer = manifest.builds.values().find(|b| b.name == "consumer").unwrap();
       let inputs = consumer.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
+        BuildInputs::Table(map) => {
           let dep = map.get("dep").expect("should have dep key");
           match dep {
-            InputsRef::Build(build_hash) => {
+            BuildInputs::Build(build_hash) => {
               // Verify it's a truncated hash (HASH_PREFIX_LEN hex chars)
               assert_eq!(build_hash.0.len(), HASH_PREFIX_LEN);
               // Verify the referenced build exists

@@ -30,8 +30,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bind::BindHash;
-use crate::platform::paths::store::StorePaths;
+use crate::store::paths::StorePaths;
+use crate::util::hash::ObjectHash;
 
 /// State file name within bind directory.
 const STATE_FILENAME: &str = "state.json";
@@ -92,7 +92,7 @@ pub enum BindStateError {
 /// Get the bind state directory path for a given bind hash.
 ///
 /// Returns `store/bind/<short_hash>/` where short_hash is the truncated hash.
-pub fn bind_state_dir(hash: &BindHash, system: bool) -> PathBuf {
+pub fn bind_state_dir(hash: &ObjectHash, system: bool) -> PathBuf {
   let store = if system {
     StorePaths::system_store_path()
   } else {
@@ -102,7 +102,7 @@ pub fn bind_state_dir(hash: &BindHash, system: bool) -> PathBuf {
 }
 
 /// Get the bind state file path for a given bind hash.
-fn bind_state_path(hash: &BindHash, system: bool) -> PathBuf {
+fn bind_state_path(hash: &ObjectHash, system: bool) -> PathBuf {
   bind_state_dir(hash, system).join(STATE_FILENAME)
 }
 
@@ -110,7 +110,7 @@ fn bind_state_path(hash: &BindHash, system: bool) -> PathBuf {
 ///
 /// Creates the bind directory if it doesn't exist and writes the state file.
 /// Uses atomic write (write to temp, then rename) to prevent corruption.
-pub fn save_bind_state(hash: &BindHash, state: &BindState, system: bool) -> Result<(), BindStateError> {
+pub fn save_bind_state(hash: &ObjectHash, state: &BindState, system: bool) -> Result<(), BindStateError> {
   let dir = bind_state_dir(hash, system);
   let path = dir.join(STATE_FILENAME);
 
@@ -132,7 +132,7 @@ pub fn save_bind_state(hash: &BindHash, state: &BindState, system: bool) -> Resu
 ///
 /// Returns `Ok(None)` if the state file doesn't exist (bind was never applied
 /// or state was already cleaned up).
-pub fn load_bind_state(hash: &BindHash, system: bool) -> Result<Option<BindState>, BindStateError> {
+pub fn load_bind_state(hash: &ObjectHash, system: bool) -> Result<Option<BindState>, BindStateError> {
   let path = bind_state_path(hash, system);
 
   let content = match fs::read_to_string(&path) {
@@ -149,7 +149,7 @@ pub fn load_bind_state(hash: &BindHash, system: bool) -> Result<Option<BindState
 ///
 /// Removes the entire bind directory including the state file.
 /// Silently succeeds if the directory doesn't exist.
-pub fn remove_bind_state(hash: &BindHash, system: bool) -> Result<(), BindStateError> {
+pub fn remove_bind_state(hash: &ObjectHash, system: bool) -> Result<(), BindStateError> {
   let dir = bind_state_dir(hash, system);
 
   match fs::remove_dir_all(&dir) {
@@ -160,13 +160,16 @@ pub fn remove_bind_state(hash: &BindHash, system: bool) -> Result<(), BindStateE
 }
 
 /// Check if bind state exists for a given hash.
-pub fn bind_state_exists(hash: &BindHash, system: bool) -> bool {
+pub fn bind_state_exists(hash: &ObjectHash, system: bool) -> bool {
   bind_state_path(hash, system).exists()
 }
 
 #[cfg(test)]
 mod tests {
+  use crate::util::hash::ObjectHash;
+
   use super::*;
+  use serial_test::serial;
   use tempfile::TempDir;
 
   fn with_temp_store<F>(f: F)
@@ -180,9 +183,10 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn save_and_load_roundtrip() {
     with_temp_store(|_| {
-      let hash = BindHash("abc123def456789012345678".to_string());
+      let hash = ObjectHash("abc123def456789012345678".to_string());
       let mut outputs = HashMap::new();
       outputs.insert("link".to_string(), "/home/user/.config/nvim".to_string());
       outputs.insert("target".to_string(), "/store/obj/nvim-abc123".to_string());
@@ -196,18 +200,20 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn load_nonexistent_returns_none() {
     with_temp_store(|_| {
-      let hash = BindHash("nonexistent123456789012".to_string());
+      let hash = ObjectHash("nonexistent123456789012".to_string());
       let result = load_bind_state(&hash, false).unwrap();
       assert!(result.is_none());
     });
   }
 
   #[test]
+  #[serial]
   fn remove_cleans_up_directory() {
     with_temp_store(|_| {
-      let hash = BindHash("abc123def456789012345678".to_string());
+      let hash = ObjectHash("abc123def456789012345678".to_string());
       let state = BindState::empty();
 
       save_bind_state(&hash, &state, false).unwrap();
@@ -219,26 +225,20 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn remove_nonexistent_succeeds() {
     with_temp_store(|_| {
-      let hash = BindHash("nonexistent123456789012".to_string());
+      let hash = ObjectHash("nonexistent123456789012".to_string());
       // Should not error
       remove_bind_state(&hash, false).unwrap();
     });
   }
 
   #[test]
-  fn bind_state_dir_uses_truncated_hash() {
-    let hash = BindHash("abc123def456789012345678".to_string());
-    let dir = bind_state_dir(&hash, false);
-    // The directory name should be the truncated hash (20 chars)
-    assert!(dir.ends_with("abc123def45678901234"));
-  }
-
-  #[test]
+  #[serial]
   fn empty_outputs_serialization() {
     with_temp_store(|_| {
-      let hash = BindHash("empty123def456789012345".to_string());
+      let hash = ObjectHash("empty123def456789012345".to_string());
       let state = BindState::empty();
 
       save_bind_state(&hash, &state, false).unwrap();

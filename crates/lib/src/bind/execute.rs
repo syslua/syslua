@@ -9,11 +9,11 @@ use std::path::Path;
 use tempfile::TempDir;
 use tracing::{debug, info};
 
-use crate::bind::{BindAction, BindDef, BindHash};
+use crate::bind::{BindAction, BindDef};
+use crate::execute::actions::execute_cmd;
+use crate::execute::types::{ActionResult, BindResult, ExecuteConfig, ExecuteError};
 use crate::placeholder::{self, Resolver};
-
-use super::actions::execute_cmd;
-use super::types::{ActionResult, BindResult, ExecuteConfig, ExecuteError};
+use crate::util::hash::ObjectHash;
 
 /// Apply a single bind.
 ///
@@ -31,7 +31,7 @@ use super::types::{ActionResult, BindResult, ExecuteConfig, ExecuteError};
 ///
 /// The result of applying the bind.
 pub async fn apply_bind<R: Resolver>(
-  hash: &BindHash,
+  hash: &ObjectHash,
   bind_def: &BindDef,
   resolver: &R,
   config: &ExecuteConfig,
@@ -81,7 +81,7 @@ pub async fn apply_bind<R: Resolver>(
 ///
 /// Ok(()) on success, or an error if destruction failed.
 pub async fn destroy_bind<R: Resolver>(
-  hash: &BindHash,
+  hash: &ObjectHash,
   bind_def: &BindDef,
   bind_result: &BindResult,
   resolver: &R,
@@ -290,7 +290,7 @@ impl<R: Resolver> Resolver for BindDestroyResolver<'_, R> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::placeholder::PlaceholderError;
+  use crate::{placeholder::PlaceholderError, util::hash::Hashable};
   use serial_test::serial;
 
   /// Simple test resolver that returns fixed values.

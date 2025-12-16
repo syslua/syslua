@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{data_dir, root_dir};
+use crate::platform::paths::{data_dir, root_dir};
 
 pub struct StorePaths {
   pub system: PathBuf,

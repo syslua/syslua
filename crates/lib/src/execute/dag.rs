@@ -9,10 +9,10 @@ use petgraph::Direction;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use crate::bind::{BindDef, BindHash};
-use crate::build::BuildHash;
-use crate::inputs::InputsRef;
+use crate::bind::{BindDef, BindInputs};
+use crate::build::BuildInputs;
 use crate::manifest::Manifest;
+use crate::util::hash::ObjectHash;
 
 use super::types::ExecuteError;
 
@@ -24,9 +24,9 @@ use super::types::ExecuteError;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DagNode {
   /// A build to be realized.
-  Build(BuildHash),
+  Build(ObjectHash),
   /// A bind to be applied.
-  Bind(BindHash),
+  Bind(ObjectHash),
 }
 
 /// A DAG representing build and bind dependencies for execution planning.
@@ -40,10 +40,10 @@ pub struct ExecutionDag {
   graph: DiGraph<DagNode, ()>,
 
   /// Map from build hash to node index.
-  build_nodes: HashMap<BuildHash, NodeIndex>,
+  build_nodes: HashMap<ObjectHash, NodeIndex>,
 
   /// Map from bind hash to node index.
-  bind_nodes: HashMap<BindHash, NodeIndex>,
+  bind_nodes: HashMap<ObjectHash, NodeIndex>,
 }
 
 impl ExecutionDag {
@@ -62,18 +62,6 @@ impl ExecutionDag {
     let mut build_nodes = HashMap::new();
     let mut bind_nodes = HashMap::new();
 
-    // Validate: builds cannot have bind references in inputs
-    for (hash, build_def) in &manifest.builds {
-      if let Some(ref inputs) = build_def.inputs
-        && Self::inputs_contain_bind_ref(inputs)
-      {
-        return Err(ExecuteError::InvalidManifest(format!(
-          "build {} has bind references in inputs: builds cannot depend on binds",
-          hash.0
-        )));
-      }
-    }
-
     // First pass: create nodes for all builds
     for hash in manifest.builds.keys() {
       let idx = graph.add_node(DagNode::Build(hash.clone()));
@@ -86,32 +74,29 @@ impl ExecutionDag {
       bind_nodes.insert(hash.clone(), idx);
     }
 
-    // Second pass: add edges for build dependencies (builds can only depend on builds)
+    // Second pass: add edges for build dependencies
+    // Note: BuildInputs can only contain Build references (enforced at type level),
+    // so we only need to check for build dependencies here.
     for (hash, build_def) in &manifest.builds {
       let dependent_idx = build_nodes[hash];
 
       if let Some(inputs) = &build_def.inputs {
-        let deps = extract_dependencies(inputs);
-        for dep in deps {
-          if let DagNode::Build(dep_hash) = dep
-            && let Some(&dep_idx) = build_nodes.get(&dep_hash)
-          {
+        for dep_hash in extract_build_dependencies(inputs) {
+          if let Some(&dep_idx) = build_nodes.get(&dep_hash) {
             // Edge from dependency to dependent
             graph.add_edge(dep_idx, dependent_idx, ());
           }
-          // Note: Bind deps are not allowed for builds (validated above)
           // If dependency not found, it might be external - ignore for now
         }
       }
     }
 
-    // Also process bind dependencies (binds can depend on builds and other binds)
+    // Process bind dependencies (binds can depend on builds and other binds)
     for (hash, bind_def) in &manifest.bindings {
       let dependent_idx = bind_nodes[hash];
 
       if let Some(inputs) = &bind_def.inputs {
-        let deps = extract_dependencies(inputs);
-        for dep in deps {
+        for dep in extract_bind_dependencies(inputs) {
           match dep {
             DagNode::Build(dep_hash) => {
               if let Some(&dep_idx) = build_nodes.get(&dep_hash) {
@@ -146,22 +131,10 @@ impl ExecutionDag {
     Ok(())
   }
 
-  /// Check if inputs contain any bind references (recursive).
-  ///
-  /// Used for validating that builds don't depend on binds.
-  fn inputs_contain_bind_ref(inputs: &InputsRef) -> bool {
-    match inputs {
-      InputsRef::Bind(_) => true,
-      InputsRef::Table(map) => map.values().any(Self::inputs_contain_bind_ref),
-      InputsRef::Array(arr) => arr.iter().any(Self::inputs_contain_bind_ref),
-      InputsRef::String(_) | InputsRef::Number(_) | InputsRef::Boolean(_) | InputsRef::Build(_) => false,
-    }
-  }
-
   /// Get builds in topological order.
   ///
   /// Returns build hashes in an order where dependencies come before dependents.
-  pub fn topological_builds(&self) -> Result<Vec<BuildHash>, ExecuteError> {
+  pub fn topological_builds(&self) -> Result<Vec<ObjectHash>, ExecuteError> {
     let sorted = toposort(&self.graph, None).map_err(|_| ExecuteError::CycleDetected)?;
 
     Ok(
@@ -182,7 +155,7 @@ impl ExecutionDag {
   ///
   /// Each wave contains builds that can be executed in parallel because
   /// all their dependencies are in previous waves.
-  pub fn build_waves(&self) -> Result<Vec<Vec<BuildHash>>, ExecuteError> {
+  pub fn build_waves(&self) -> Result<Vec<Vec<ObjectHash>>, ExecuteError> {
     // Use Kahn's algorithm variant to compute levels
     let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
     let mut node_level: HashMap<NodeIndex, usize> = HashMap::new();
@@ -222,7 +195,7 @@ impl ExecutionDag {
 
     // Group builds by level
     let max_level = node_level.values().copied().max().unwrap_or(0);
-    let mut waves: Vec<Vec<BuildHash>> = vec![Vec::new(); max_level + 1];
+    let mut waves: Vec<Vec<ObjectHash>> = vec![Vec::new(); max_level + 1];
 
     for (hash, &idx) in &self.build_nodes {
       if let Some(&level) = node_level.get(&idx) {
@@ -237,7 +210,7 @@ impl ExecutionDag {
   }
 
   /// Get the direct build dependencies of a build.
-  pub fn build_dependencies(&self, hash: &BuildHash) -> Vec<BuildHash> {
+  pub fn build_dependencies(&self, hash: &ObjectHash) -> Vec<ObjectHash> {
     let Some(&idx) = self.build_nodes.get(hash) else {
       return Vec::new();
     };
@@ -256,7 +229,7 @@ impl ExecutionDag {
   }
 
   /// Get the direct bind dependencies of a build.
-  pub fn bind_dependencies(&self, hash: &BuildHash) -> Vec<BindHash> {
+  pub fn bind_dependencies(&self, hash: &ObjectHash) -> Vec<ObjectHash> {
     let Some(&idx) = self.build_nodes.get(hash) else {
       return Vec::new();
     };
@@ -275,7 +248,7 @@ impl ExecutionDag {
   }
 
   /// Check if a build has any dependencies.
-  pub fn has_dependencies(&self, hash: &BuildHash) -> bool {
+  pub fn has_dependencies(&self, hash: &ObjectHash) -> bool {
     let Some(&idx) = self.build_nodes.get(hash) else {
       return false;
     };
@@ -284,7 +257,7 @@ impl ExecutionDag {
   }
 
   /// Get all build hashes in the DAG.
-  pub fn all_builds(&self) -> Vec<BuildHash> {
+  pub fn all_builds(&self) -> Vec<ObjectHash> {
     self.build_nodes.keys().cloned().collect()
   }
 
@@ -299,12 +272,12 @@ impl ExecutionDag {
   }
 
   /// Get all bind hashes in the DAG.
-  pub fn all_binds(&self) -> impl Iterator<Item = &BindHash> {
+  pub fn all_binds(&self) -> impl Iterator<Item = &ObjectHash> {
     self.bind_nodes.keys()
   }
 
   /// Get a bind definition by hash.
-  pub fn get_bind<'a>(&self, hash: &BindHash, manifest: &'a Manifest) -> Option<&'a BindDef> {
+  pub fn get_bind<'a>(&self, hash: &ObjectHash, manifest: &'a Manifest) -> Option<&'a BindDef> {
     if self.bind_nodes.contains_key(hash) {
       manifest.bindings.get(hash)
     } else {
@@ -313,7 +286,7 @@ impl ExecutionDag {
   }
 
   /// Get the direct build dependencies of a bind.
-  pub fn bind_build_dependencies(&self, hash: &BindHash) -> Vec<BuildHash> {
+  pub fn bind_build_dependencies(&self, hash: &ObjectHash) -> Vec<ObjectHash> {
     let Some(&idx) = self.bind_nodes.get(hash) else {
       return Vec::new();
     };
@@ -332,7 +305,7 @@ impl ExecutionDag {
   }
 
   /// Get the direct bind dependencies of a bind.
-  pub fn bind_bind_dependencies(&self, hash: &BindHash) -> Vec<BindHash> {
+  pub fn bind_bind_dependencies(&self, hash: &ObjectHash) -> Vec<ObjectHash> {
     let Some(&idx) = self.bind_nodes.get(hash) else {
       return Vec::new();
     };
@@ -426,33 +399,65 @@ impl ExecutionDag {
   }
 }
 
-/// Extract build and bind dependencies from an InputsRef.
-fn extract_dependencies(inputs: &InputsRef) -> Vec<DagNode> {
+/// Extract build dependencies from BuildInputs.
+///
+/// Since BuildInputs can only contain Build references (no Bind variant),
+/// this only returns build hashes.
+fn extract_build_dependencies(inputs: &BuildInputs) -> Vec<ObjectHash> {
   let mut deps = Vec::new();
-  collect_dependencies(inputs, &mut deps);
+  collect_build_dependencies(inputs, &mut deps);
   deps
 }
 
-/// Recursively collect dependencies from nested InputsRef.
-fn collect_dependencies(inputs: &InputsRef, deps: &mut Vec<DagNode>) {
+/// Recursively collect build dependencies from nested BuildInputs.
+fn collect_build_dependencies(inputs: &BuildInputs, deps: &mut Vec<ObjectHash>) {
   match inputs {
-    InputsRef::Build(hash) => {
+    BuildInputs::Build(hash) => {
+      deps.push(hash.clone());
+    }
+    BuildInputs::Table(map) => {
+      for value in map.values() {
+        collect_build_dependencies(value, deps);
+      }
+    }
+    BuildInputs::Array(arr) => {
+      for value in arr {
+        collect_build_dependencies(value, deps);
+      }
+    }
+    BuildInputs::String(_) | BuildInputs::Number(_) | BuildInputs::Boolean(_) => {}
+  }
+}
+
+/// Extract build and bind dependencies from BindInputs.
+///
+/// BindInputs can contain both Build and Bind references.
+fn extract_bind_dependencies(inputs: &BindInputs) -> Vec<DagNode> {
+  let mut deps = Vec::new();
+  collect_bind_dependencies(inputs, &mut deps);
+  deps
+}
+
+/// Recursively collect dependencies from nested BindInputs.
+fn collect_bind_dependencies(inputs: &BindInputs, deps: &mut Vec<DagNode>) {
+  match inputs {
+    BindInputs::Build(hash) => {
       deps.push(DagNode::Build(hash.clone()));
     }
-    InputsRef::Bind(hash) => {
+    BindInputs::Bind(hash) => {
       deps.push(DagNode::Bind(hash.clone()));
     }
-    InputsRef::Table(map) => {
+    BindInputs::Table(map) => {
       for value in map.values() {
-        collect_dependencies(value, deps);
+        collect_bind_dependencies(value, deps);
       }
     }
-    InputsRef::Array(arr) => {
+    BindInputs::Array(arr) => {
       for value in arr {
-        collect_dependencies(value, deps);
+        collect_bind_dependencies(value, deps);
       }
     }
-    InputsRef::String(_) | InputsRef::Number(_) | InputsRef::Boolean(_) => {}
+    BindInputs::String(_) | BindInputs::Number(_) | BindInputs::Boolean(_) => {}
   }
 }
 
@@ -463,8 +468,9 @@ mod tests {
   use super::*;
   use crate::bind::BindDef;
   use crate::build::{BuildAction, BuildDef};
+  use crate::util::hash::Hashable;
 
-  fn make_build(name: &str, inputs: Option<InputsRef>) -> BuildDef {
+  fn make_build(name: &str, inputs: Option<BuildInputs>) -> BuildDef {
     BuildDef {
       name: name.to_string(),
       version: None,
@@ -478,7 +484,7 @@ mod tests {
     }
   }
 
-  fn make_bind(inputs: Option<InputsRef>) -> BindDef {
+  fn make_bind(inputs: Option<BindInputs>) -> BindDef {
     use crate::bind::BindAction;
     BindDef {
       inputs,
@@ -529,10 +535,10 @@ mod tests {
     let build_a = make_build("a", None);
     let hash_a = build_a.compute_hash().unwrap();
 
-    let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+    let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
     let hash_b = build_b.compute_hash().unwrap();
 
-    let build_c = make_build("c", Some(InputsRef::Build(hash_b.clone())));
+    let build_c = make_build("c", Some(BuildInputs::Build(hash_b.clone())));
     let hash_c = build_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -576,17 +582,17 @@ mod tests {
     let build_a = make_build("a", None);
     let hash_a = build_a.compute_hash().unwrap();
 
-    let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+    let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
     let hash_b = build_b.compute_hash().unwrap();
 
-    let build_c = make_build("c", Some(InputsRef::Build(hash_a.clone())));
+    let build_c = make_build("c", Some(BuildInputs::Build(hash_a.clone())));
     let hash_c = build_c.compute_hash().unwrap();
 
     // D depends on both B and C
     let mut d_inputs = BTreeMap::new();
-    d_inputs.insert("b".to_string(), InputsRef::Build(hash_b.clone()));
-    d_inputs.insert("c".to_string(), InputsRef::Build(hash_c.clone()));
-    let build_d = make_build("d", Some(InputsRef::Table(d_inputs)));
+    d_inputs.insert("b".to_string(), BuildInputs::Build(hash_b.clone()));
+    d_inputs.insert("c".to_string(), BuildInputs::Build(hash_c.clone()));
+    let build_d = make_build("d", Some(BuildInputs::Table(d_inputs)));
     let hash_d = build_d.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -661,13 +667,13 @@ mod tests {
 
     // C has nested dependencies in a table and array
     let mut table = BTreeMap::new();
-    table.insert("dep".to_string(), InputsRef::Build(hash_a.clone()));
+    table.insert("dep".to_string(), BuildInputs::Build(hash_a.clone()));
     table.insert(
       "nested".to_string(),
-      InputsRef::Array(vec![InputsRef::Build(hash_b.clone())]),
+      BuildInputs::Array(vec![BuildInputs::Build(hash_b.clone())]),
     );
 
-    let build_c = make_build("c", Some(InputsRef::Table(table)));
+    let build_c = make_build("c", Some(BuildInputs::Table(table)));
     let hash_c = build_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -693,7 +699,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(InputsRef::String("different".to_string())));
+    let bind_b = make_bind(Some(BindInputs::String("different".to_string())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -715,7 +721,7 @@ mod tests {
     let build = make_build("dep", None);
     let build_hash = build.compute_hash().unwrap();
 
-    let bind = make_bind(Some(InputsRef::Build(build_hash.clone())));
+    let bind = make_bind(Some(BindInputs::Build(build_hash.clone())));
     let bind_hash = bind.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -736,7 +742,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(InputsRef::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -758,10 +764,10 @@ mod tests {
     let build_a = make_build("a", None);
     let hash_a = build_a.compute_hash().unwrap();
 
-    let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+    let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
     let hash_b = build_b.compute_hash().unwrap();
 
-    let build_c = make_build("c", Some(InputsRef::Build(hash_b.clone())));
+    let build_c = make_build("c", Some(BuildInputs::Build(hash_b.clone())));
     let hash_c = build_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -784,7 +790,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(InputsRef::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -836,7 +842,7 @@ mod tests {
     assert_eq!(retrieved.unwrap(), &bind);
 
     // Non-existent bind
-    let fake_hash = BindHash("nonexistent".to_string());
+    let fake_hash = ObjectHash("nonexistent".to_string());
     assert!(dag.get_bind(&fake_hash, &manifest).is_none());
   }
 }

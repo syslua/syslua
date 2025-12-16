@@ -10,11 +10,14 @@ use std::rc::Rc;
 
 use mlua::prelude::*;
 
-use crate::bind::{BIND_REF_TYPE, BindCmdOptions, BindCtx, BindDef};
-use crate::inputs::InputsRef;
-use crate::lua::inputs::{inputs_ref_to_lua, lua_value_to_inputs_ref};
-use crate::lua::outputs::{outputs_to_lua_table, parse_outputs};
+use crate::bind::BindInputs;
+use crate::build::BUILD_REF_TYPE;
+use crate::build::lua::build_hash_to_lua;
 use crate::manifest::Manifest;
+use crate::outputs::lua::{outputs_to_lua_table, parse_outputs};
+use crate::util::hash::{Hashable, ObjectHash};
+
+use super::{BIND_REF_TYPE, BindCmdOpts, BindCtx, BindDef};
 
 impl LuaUserData for BindCtx {
   fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
@@ -29,18 +32,18 @@ impl LuaUserData for BindCtx {
   }
 }
 
-fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BindCmdOptions> {
+fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BindCmdOpts> {
   match opts {
     LuaValue::String(s) => {
       let cmd = s.to_str()?.to_string();
-      Ok(BindCmdOptions::new(&cmd))
+      Ok(BindCmdOpts::new(&cmd))
     }
     LuaValue::Table(table) => {
       let cmd: String = table.get("cmd")?;
       let cwd: Option<String> = table.get("cwd")?;
       let env: Option<LuaTable> = table.get("env")?;
 
-      let mut opts = BindCmdOptions::new(&cmd);
+      let mut opts = BindCmdOpts::new(&cmd);
       if let Some(cwd) = cwd {
         opts = opts.with_cwd(&cwd);
       }
@@ -57,6 +60,154 @@ fn parse_cmd_opts(opts: LuaValue) -> LuaResult<BindCmdOptions> {
     }
     _ => Err(LuaError::external("cmd() expects a string or table with 'cmd' field")),
   }
+}
+
+/// Convert a Lua value to BindInputsRef (for resolved/static inputs).
+///
+/// Handles primitives, arrays, tables, and specially-marked BuildRef/BindRef tables
+/// (detected via metatable `__type` field).
+///
+/// Validates that any referenced builds/binds exist in the manifest.
+pub fn lua_value_to_bind_inputs_ref(value: LuaValue, manifest: &Manifest) -> LuaResult<BindInputs> {
+  match value {
+    LuaValue::String(s) => Ok(BindInputs::String(s.to_str()?.to_string())),
+    LuaValue::Number(n) => Ok(BindInputs::Number(n)),
+    LuaValue::Integer(i) => Ok(BindInputs::Number(i as f64)),
+    LuaValue::Boolean(b) => Ok(BindInputs::Boolean(b)),
+    LuaValue::Table(t) => {
+      // Check metatable for type marker (BuildRef or BindRef)
+      if let Some(mt) = t.metatable()
+        && let Ok(type_name) = mt.get::<String>("__type")
+      {
+        match type_name.as_str() {
+          BUILD_REF_TYPE => return parse_build_ref_table(&t, manifest),
+          BIND_REF_TYPE => return parse_bind_ref_table(&t, manifest),
+          _ => {}
+        }
+      }
+
+      // Check if it's an array (sequential integer keys starting at 1)
+      let len = t.raw_len();
+      let first_key: Result<LuaValue, _> = t.get(1i64);
+      if len > 0 && first_key.is_ok() && first_key.unwrap() != LuaValue::Nil {
+        // Treat as array
+        let mut arr = Vec::with_capacity(len);
+        for i in 1..=len {
+          let val: LuaValue = t.get(i)?;
+          arr.push(lua_value_to_bind_inputs_ref(val, manifest)?);
+        }
+        Ok(BindInputs::Array(arr))
+      } else {
+        // Treat as table/map
+        let mut map = BTreeMap::new();
+        for pair in t.pairs::<String, LuaValue>() {
+          let (k, v) = pair?;
+          map.insert(k, lua_value_to_bind_inputs_ref(v, manifest)?);
+        }
+        Ok(BindInputs::Table(map))
+      }
+    }
+    LuaValue::Nil => Err(LuaError::external("nil values not allowed in inputs")),
+    _ => Err(LuaError::external(format!(
+      "unsupported input type: {:?}",
+      value.type_name()
+    ))),
+  }
+}
+
+/// Parse a Lua table marked as BuildRef into InputsRef::Build.
+///
+/// Validates that the referenced build exists in the manifest.
+fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputs> {
+  let hash: String = t.get("hash")?;
+  let build_hash = ObjectHash(hash);
+
+  // Validate build exists in manifest
+  if !manifest.builds.contains_key(&build_hash) {
+    return Err(LuaError::external(format!(
+      "referenced build not found in manifest: {}",
+      build_hash.0
+    )));
+  }
+
+  Ok(BindInputs::Build(build_hash))
+}
+
+/// Parse a Lua table marked as BindRef into InputsRef::Bind.
+///
+/// Validates that the referenced bind exists in the manifest.
+fn parse_bind_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputs> {
+  let hash: String = t.get("hash")?;
+  let bind_hash = ObjectHash(hash);
+
+  // Validate bind exists in manifest
+  if !manifest.bindings.contains_key(&bind_hash) {
+    return Err(LuaError::external(format!(
+      "referenced bind not found in manifest: {}",
+      bind_hash.0
+    )));
+  }
+
+  Ok(BindInputs::Bind(bind_hash))
+}
+
+/// Convert BindInputsRef to a Lua value for passing to the apply function.
+///
+/// For Build/Bind references, looks up the definition in the manifest to
+/// reconstruct the Lua table with placeholder outputs.
+pub fn bind_inputs_ref_to_lua(lua: &Lua, inputs: &BindInputs, manifest: &Manifest) -> LuaResult<LuaValue> {
+  match inputs {
+    BindInputs::String(s) => Ok(LuaValue::String(lua.create_string(s)?)),
+    BindInputs::Number(n) => Ok(LuaValue::Number(*n)),
+    BindInputs::Boolean(b) => Ok(LuaValue::Boolean(*b)),
+    BindInputs::Array(arr) => {
+      let table = lua.create_table()?;
+      for (i, val) in arr.iter().enumerate() {
+        table.set(i + 1, bind_inputs_ref_to_lua(lua, val, manifest)?)?;
+      }
+      Ok(LuaValue::Table(table))
+    }
+    BindInputs::Table(map) => {
+      let table = lua.create_table()?;
+      for (k, v) in map {
+        table.set(k.as_str(), bind_inputs_ref_to_lua(lua, v, manifest)?)?;
+      }
+      Ok(LuaValue::Table(table))
+    }
+    BindInputs::Build(hash) => build_hash_to_lua(lua, hash, manifest),
+    BindInputs::Bind(hash) => bind_hash_to_lua(lua, hash, manifest),
+  }
+}
+
+/// Convert a BindHash to a Lua table by looking up the BindDef in the manifest.
+///
+/// Generates placeholder outputs from the BindDef's output keys (if present).
+pub fn bind_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> LuaResult<LuaValue> {
+  let bind_def = manifest
+    .bindings
+    .get(hash)
+    .ok_or_else(|| LuaError::external(format!("bind not found in manifest: {}", hash.0)))?;
+
+  let table = lua.create_table()?;
+  table.set("hash", hash.0.as_str())?;
+
+  // Generate placeholder outputs from BindDef (if present)
+  if let Some(def_outputs) = &bind_def.outputs {
+    let outputs = lua.create_table()?;
+    let hash = &hash.0;
+    for key in def_outputs.keys() {
+      let placeholder = format!("$${{bind:{}:{}}}", hash, key);
+      outputs.set(key.as_str(), placeholder.as_str())?;
+    }
+    table.set("outputs", outputs)?;
+  }
+
+  // Set metatable with __type marker
+  let mt = lua.create_table()?;
+  mt.set("__type", BIND_REF_TYPE)?;
+  table.set_metatable(Some(mt))?;
+
+  Ok(LuaValue::Table(table))
 }
 
 /// Register the `sys.bind` function on the sys table.
@@ -79,18 +230,18 @@ pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<M
 
     // 2. Resolve inputs (if provided)
     let inputs_value: Option<LuaValue> = spec_table.get("inputs")?;
-    let resolved_inputs: Option<InputsRef> = match inputs_value {
+    let resolved_inputs: Option<BindInputs> = match inputs_value {
       Some(LuaValue::Function(f)) => {
         // Dynamic inputs - call the function to get resolved value
         let result: LuaValue = f.call(())?;
         if result == LuaValue::Nil {
           None
         } else {
-          Some(lua_value_to_inputs_ref(result, &manifest.borrow())?)
+          Some(lua_value_to_bind_inputs_ref(result, &manifest.borrow())?)
         }
       }
       Some(LuaValue::Nil) => None,
-      Some(v) => Some(lua_value_to_inputs_ref(v, &manifest.borrow())?),
+      Some(v) => Some(lua_value_to_bind_inputs_ref(v, &manifest.borrow())?),
       None => None,
     };
 
@@ -100,7 +251,7 @@ pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<M
 
     // Prepare inputs argument for apply function
     let inputs_arg: LuaValue = match &resolved_inputs {
-      Some(inputs) => inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
+      Some(inputs) => bind_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
       None => LuaValue::Table(lua.create_table()?), // Empty table if no inputs
     };
 
@@ -180,7 +331,7 @@ pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<M
 
     // Add inputs to ref (nil if not specified)
     if let Some(inputs) = &resolved_inputs {
-      ref_table.set("inputs", inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
+      ref_table.set("inputs", bind_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
     }
 
     // Convert outputs to Lua table with placeholders for runtime resolution (if present)
@@ -356,10 +507,10 @@ mod tests {
       let (_, bind) = manifest.bindings.iter().next().unwrap();
       let inputs = bind.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
+        BindInputs::Table(map) => {
           let pkg = map.get("pkg").expect("should have pkg key");
           match pkg {
-            InputsRef::Build(build_hash) => {
+            BindInputs::Build(build_hash) => {
               // Verify it's a truncated hash (HASH_PREFIX_LEN hex chars)
               assert_eq!(build_hash.0.len(), HASH_PREFIX_LEN);
               // Verify the referenced build exists
@@ -395,9 +546,9 @@ mod tests {
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
       let inputs = bind_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
-          assert_eq!(map.get("src"), Some(&InputsRef::String("/path/to/source".to_string())));
-          assert_eq!(map.get("dest"), Some(&InputsRef::String("/path/to/dest".to_string())));
+        BindInputs::Table(map) => {
+          assert_eq!(map.get("src"), Some(&BindInputs::String("/path/to/source".to_string())));
+          assert_eq!(map.get("dest"), Some(&BindInputs::String("/path/to/dest".to_string())));
         }
         _ => panic!("expected Table inputs"),
       }
@@ -428,10 +579,10 @@ mod tests {
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
       let inputs = bind_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        InputsRef::Table(map) => {
+        BindInputs::Table(map) => {
           assert_eq!(
             map.get("computed"),
-            Some(&InputsRef::String("dynamic-value".to_string()))
+            Some(&BindInputs::String("dynamic-value".to_string()))
           );
         }
         _ => panic!("expected Table inputs"),

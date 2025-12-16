@@ -12,14 +12,14 @@
 pub mod bind;
 pub mod build;
 pub mod consts;
-pub mod error;
 pub mod eval;
 pub mod execute;
 pub mod inputs;
 pub mod lua;
 pub mod manifest;
+pub mod outputs;
 pub mod placeholder;
 pub mod platform;
 pub mod snapshot;
 pub mod store;
-pub mod types;
+pub mod util;

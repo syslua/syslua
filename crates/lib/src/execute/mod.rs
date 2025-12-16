@@ -9,8 +9,6 @@
 
 pub mod actions;
 pub mod apply;
-pub mod bind;
-pub mod build;
 pub mod dag;
 pub mod resolver;
 pub mod types;
@@ -20,9 +18,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
-use crate::bind::BindHash;
-use crate::build::BuildHash;
-use crate::manifest::Manifest;
+use crate::{manifest::Manifest, util::hash::ObjectHash};
 
 use dag::DagNode;
 use resolver::ExecutionResolver;
@@ -60,7 +56,7 @@ pub async fn execute_builds(manifest: &Manifest, config: &ExecuteConfig) -> Resu
 
   // Track results
   let mut result = DagResult::default();
-  let mut failed_builds: HashSet<BuildHash> = HashSet::new();
+  let mut failed_builds: HashSet<ObjectHash> = HashSet::new();
 
   // Create semaphore for parallelism control
   let semaphore = std::sync::Arc::new(Semaphore::new(config.parallelism));
@@ -172,7 +168,7 @@ pub async fn execute_manifest(manifest: &Manifest, config: &ExecuteConfig) -> Re
   let mut failed_nodes: HashSet<DagNode> = HashSet::new();
 
   // Track applied binds in order for rollback
-  let mut applied_binds_order: Vec<BindHash> = Vec::new();
+  let mut applied_binds_order: Vec<ObjectHash> = Vec::new();
 
   // Create semaphore for parallelism control
   let semaphore = std::sync::Arc::new(Semaphore::new(config.parallelism));
@@ -339,13 +335,13 @@ fn find_failed_dependency(
 
 /// Execute a wave of builds in parallel (unified execution version).
 async fn execute_build_wave(
-  builds: &[BuildHash],
+  builds: &[ObjectHash],
   manifest: &Manifest,
   config: &ExecuteConfig,
-  completed_builds: &HashMap<BuildHash, BuildResult>,
-  completed_binds: &HashMap<BindHash, BindResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
+  completed_binds: &HashMap<ObjectHash, BindResult>,
   semaphore: std::sync::Arc<Semaphore>,
-) -> Vec<(BuildHash, Result<BuildResult, ExecuteError>)> {
+) -> Vec<(ObjectHash, Result<BuildResult, ExecuteError>)> {
   use tokio::task::JoinSet;
 
   let mut join_set = JoinSet::new();
@@ -367,7 +363,7 @@ async fn execute_build_wave(
         .ok_or_else(|| ExecuteError::BuildNotFound(hash.clone()))?;
 
       // Use ExecutionResolver which supports both build and bind resolution
-      let result = build::realize_build_with_resolver(
+      let result = crate::build::execute::realize_build_with_resolver(
         &hash,
         build_def,
         &completed_builds,
@@ -386,13 +382,13 @@ async fn execute_build_wave(
 
 /// Execute a wave of binds in parallel.
 async fn execute_bind_wave(
-  binds: &[BindHash],
+  binds: &[ObjectHash],
   manifest: &Manifest,
   config: &ExecuteConfig,
-  completed_builds: &HashMap<BuildHash, BuildResult>,
-  completed_binds: &HashMap<BindHash, BindResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
+  completed_binds: &HashMap<ObjectHash, BindResult>,
   semaphore: std::sync::Arc<Semaphore>,
-) -> Vec<(BindHash, Result<BindResult, ExecuteError>)> {
+) -> Vec<(ObjectHash, Result<BindResult, ExecuteError>)> {
   use tokio::task::JoinSet;
 
   let mut join_set = JoinSet::new();
@@ -422,7 +418,7 @@ async fn execute_bind_wave(
         config.system,
       );
 
-      let result = bind::apply_bind(&hash, bind_def, &resolver, &config).await;
+      let result = crate::bind::execute::apply_bind(&hash, bind_def, &resolver, &config).await;
 
       Ok::<_, ExecuteError>((hash, result))
     });
@@ -433,8 +429,8 @@ async fn execute_bind_wave(
 
 /// Collect results from a JoinSet of build tasks.
 async fn collect_join_results(
-  mut join_set: tokio::task::JoinSet<Result<(BuildHash, Result<BuildResult, ExecuteError>), ExecuteError>>,
-) -> Vec<(BuildHash, Result<BuildResult, ExecuteError>)> {
+  mut join_set: tokio::task::JoinSet<Result<(ObjectHash, Result<BuildResult, ExecuteError>), ExecuteError>>,
+) -> Vec<(ObjectHash, Result<BuildResult, ExecuteError>)> {
   let mut results = Vec::new();
 
   while let Some(join_result) = join_set.join_next().await {
@@ -456,8 +452,8 @@ async fn collect_join_results(
 
 /// Collect results from a JoinSet of bind tasks.
 async fn collect_bind_join_results(
-  mut join_set: tokio::task::JoinSet<Result<(BindHash, Result<BindResult, ExecuteError>), ExecuteError>>,
-) -> Vec<(BindHash, Result<BindResult, ExecuteError>)> {
+  mut join_set: tokio::task::JoinSet<Result<(ObjectHash, Result<BindResult, ExecuteError>), ExecuteError>>,
+) -> Vec<(ObjectHash, Result<BindResult, ExecuteError>)> {
   let mut results = Vec::new();
 
   while let Some(join_result) = join_set.join_next().await {
@@ -482,8 +478,8 @@ async fn collect_bind_join_results(
 /// This is called when a build or bind fails to undo all side effects
 /// from previously applied binds.
 async fn rollback_binds(
-  applied_order: &[BindHash],
-  applied_results: &HashMap<BindHash, BindResult>,
+  applied_order: &[ObjectHash],
+  applied_results: &HashMap<ObjectHash, BindResult>,
   manifest: &Manifest,
   config: &ExecuteConfig,
 ) {
@@ -505,7 +501,7 @@ async fn rollback_binds(
       && let Some(bind_result) = applied_results.get(hash)
     {
       info!(bind = %hash.0, "destroying bind");
-      if let Err(e) = bind::destroy_bind(hash, bind_def, bind_result, &resolver, config).await {
+      if let Err(e) = crate::bind::execute::destroy_bind(hash, bind_def, bind_result, &resolver, config).await {
         // Log but continue - we want to try to rollback as much as possible
         error!(bind = %hash.0, error = %e, "failed to destroy bind during rollback");
       }
@@ -517,12 +513,12 @@ async fn rollback_binds(
 
 /// Execute a wave of builds in parallel.
 async fn execute_wave(
-  builds: &[BuildHash],
+  builds: &[ObjectHash],
   manifest: &Manifest,
   config: &ExecuteConfig,
-  completed: &HashMap<BuildHash, BuildResult>,
+  completed: &HashMap<ObjectHash, BuildResult>,
   semaphore: std::sync::Arc<Semaphore>,
-) -> Vec<(BuildHash, Result<BuildResult, ExecuteError>)> {
+) -> Vec<(ObjectHash, Result<BuildResult, ExecuteError>)> {
   use tokio::task::JoinSet;
 
   let mut join_set = JoinSet::new();
@@ -543,7 +539,7 @@ async fn execute_wave(
         .get(&hash)
         .ok_or_else(|| ExecuteError::BuildNotFound(hash.clone()))?;
 
-      let result = build::realize_build(&hash, build_def, &completed, &manifest, &config).await;
+      let result = crate::build::execute::realize_build(&hash, build_def, &completed, &manifest, &config).await;
 
       Ok::<_, ExecuteError>((hash, result))
     });
@@ -575,29 +571,32 @@ async fn execute_wave(
 /// This is a convenience function for executing a single build without
 /// computing the full DAG. Dependencies must already be built.
 pub async fn execute_single_build(
-  hash: &BuildHash,
+  hash: &ObjectHash,
   manifest: &Manifest,
   config: &ExecuteConfig,
-  completed: &HashMap<BuildHash, BuildResult>,
+  completed: &HashMap<ObjectHash, BuildResult>,
 ) -> Result<BuildResult, ExecuteError> {
   let build_def = manifest
     .builds
     .get(hash)
     .ok_or_else(|| ExecuteError::BuildNotFound(hash.clone()))?;
 
-  build::realize_build(hash, build_def, completed, manifest, config).await
+  crate::build::execute::realize_build(hash, build_def, completed, manifest, config).await
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::build::{BuildAction, BuildDef};
-  use crate::inputs::InputsRef;
+  use crate::{
+    bind::BindInputs,
+    build::{BuildAction, BuildDef, BuildInputs},
+    util::hash::Hashable,
+  };
   use serial_test::serial;
   use std::collections::BTreeMap;
   use tempfile::TempDir;
 
-  fn make_build(name: &str, inputs: Option<InputsRef>) -> BuildDef {
+  fn make_build(name: &str, inputs: Option<BuildInputs>) -> BuildDef {
     BuildDef {
       name: name.to_string(),
       version: None,
@@ -703,7 +702,7 @@ mod tests {
       let build_a = make_build("a", None);
       let hash_a = build_a.compute_hash().unwrap();
 
-      let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+      let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
       let hash_b = build_b.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -770,7 +769,7 @@ mod tests {
       };
       let hash_a = build_a.compute_hash().unwrap();
 
-      let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+      let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
       let hash_b = build_b.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -803,16 +802,16 @@ mod tests {
       let build_a = make_build("a", None);
       let hash_a = build_a.compute_hash().unwrap();
 
-      let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+      let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
       let hash_b = build_b.compute_hash().unwrap();
 
-      let build_c = make_build("c", Some(InputsRef::Build(hash_a.clone())));
+      let build_c = make_build("c", Some(BuildInputs::Build(hash_a.clone())));
       let hash_c = build_c.compute_hash().unwrap();
 
       let mut d_inputs = BTreeMap::new();
-      d_inputs.insert("b".to_string(), InputsRef::Build(hash_b.clone()));
-      d_inputs.insert("c".to_string(), InputsRef::Build(hash_c.clone()));
-      let build_d = make_build("d", Some(InputsRef::Table(d_inputs)));
+      d_inputs.insert("b".to_string(), BuildInputs::Build(hash_b.clone()));
+      d_inputs.insert("c".to_string(), BuildInputs::Build(hash_c.clone()));
+      let build_d = make_build("d", Some(BuildInputs::Table(d_inputs)));
       let hash_d = build_d.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -835,7 +834,7 @@ mod tests {
 
   use crate::bind::{BindAction, BindDef};
 
-  fn make_bind(cmd: &str, inputs: Option<InputsRef>) -> BindDef {
+  fn make_bind(cmd: &str, inputs: Option<BindInputs>) -> BindDef {
     BindDef {
       inputs,
       apply_actions: vec![BindAction::Cmd {
@@ -856,7 +855,7 @@ mod tests {
       let build = make_build("app", None);
       let build_hash = build.compute_hash().unwrap();
 
-      let bind = make_bind("echo linking", Some(InputsRef::Build(build_hash.clone())));
+      let bind = make_bind("echo linking", Some(BindInputs::Build(build_hash.clone())));
       let bind_hash = bind.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -882,10 +881,10 @@ mod tests {
       let bind_a = make_bind("echo step_a", None);
       let hash_a = bind_a.compute_hash().unwrap();
 
-      let bind_b = make_bind("echo step_b", Some(InputsRef::Bind(hash_a.clone())));
+      let bind_b = make_bind("echo step_b", Some(BindInputs::Bind(hash_a.clone())));
       let hash_b = bind_b.compute_hash().unwrap();
 
-      let bind_c = make_bind("echo step_c", Some(InputsRef::Bind(hash_b.clone())));
+      let bind_c = make_bind("echo step_c", Some(BindInputs::Bind(hash_b.clone())));
       let hash_c = bind_c.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -926,7 +925,7 @@ mod tests {
       // Bind that references the build output via placeholder
       // Using the full hash in the command to test placeholder resolution
       let bind = BindDef {
-        inputs: Some(InputsRef::Build(build_hash.clone())),
+        inputs: Some(BindInputs::Build(build_hash.clone())),
         apply_actions: vec![BindAction::Cmd {
           cmd: format!("echo using $$${{build:{}:bin}}", build_hash.0),
           env: None,
@@ -983,7 +982,7 @@ mod tests {
 
       // Bind B depends on A and fails
       let bind_b = BindDef {
-        inputs: Some(InputsRef::Bind(hash_a.clone())),
+        inputs: Some(BindInputs::Bind(hash_a.clone())),
         apply_actions: vec![BindAction::Cmd {
           cmd: "exit 1".to_string(),
           env: None,
@@ -1037,7 +1036,7 @@ mod tests {
       };
       let build_hash = build.compute_hash().unwrap();
 
-      let bind = make_bind("echo should-not-run", Some(InputsRef::Build(build_hash.clone())));
+      let bind = make_bind("echo should-not-run", Some(BindInputs::Build(build_hash.clone())));
       let bind_hash = bind.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -1067,13 +1066,13 @@ mod tests {
       let build_a = make_build("a", None);
       let hash_a = build_a.compute_hash().unwrap();
 
-      let build_b = make_build("b", Some(InputsRef::Build(hash_a.clone())));
+      let build_b = make_build("b", Some(BuildInputs::Build(hash_a.clone())));
       let hash_b = build_b.compute_hash().unwrap();
 
       let bind_x = make_bind("echo x", None);
       let hash_x = bind_x.compute_hash().unwrap();
 
-      let bind_y = make_bind("echo y", Some(InputsRef::Bind(hash_x.clone())));
+      let bind_y = make_bind("echo y", Some(BindInputs::Bind(hash_x.clone())));
       let hash_y = bind_y.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();

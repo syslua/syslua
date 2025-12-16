@@ -7,10 +7,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::bind::BindHash;
-use crate::build::BuildHash;
+use crate::build::store::build_dir_name;
 use crate::manifest::Manifest;
-use crate::store::build_dir_name;
+use crate::util::hash::ObjectHash;
 
 /// Diff between desired and current state.
 ///
@@ -19,19 +18,19 @@ use crate::store::build_dir_name;
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct StateDiff {
   /// Builds that need to be realized (not in store).
-  pub builds_to_realize: Vec<BuildHash>,
+  pub builds_to_realize: Vec<ObjectHash>,
 
   /// Builds that are already cached (in store).
-  pub builds_cached: Vec<BuildHash>,
+  pub builds_cached: Vec<ObjectHash>,
 
   /// Binds to apply (in desired, not in current).
-  pub binds_to_apply: Vec<BindHash>,
+  pub binds_to_apply: Vec<ObjectHash>,
 
   /// Binds to destroy (in current, not in desired).
-  pub binds_to_destroy: Vec<BindHash>,
+  pub binds_to_destroy: Vec<ObjectHash>,
 
   /// Binds unchanged (same hash in both).
-  pub binds_unchanged: Vec<BindHash>,
+  pub binds_unchanged: Vec<ObjectHash>,
 }
 
 impl StateDiff {
@@ -90,8 +89,8 @@ pub fn compute_diff(desired: &Manifest, current: Option<&Manifest>, store_path: 
   }
 
   // Compute bind diff
-  let desired_binds: HashSet<&BindHash> = desired.bindings.keys().collect();
-  let current_binds: HashSet<&BindHash> = current.map(|m| m.bindings.keys().collect()).unwrap_or_default();
+  let desired_binds: HashSet<&ObjectHash> = desired.bindings.keys().collect();
+  let current_binds: HashSet<&ObjectHash> = current.map(|m| m.bindings.keys().collect()).unwrap_or_default();
 
   // Binds to apply: in desired but not in current
   for hash in desired_binds.difference(&current_binds) {
@@ -112,7 +111,7 @@ pub fn compute_diff(desired: &Manifest, current: Option<&Manifest>, store_path: 
 }
 
 /// Check if a build's output directory exists in the store.
-fn build_exists_in_store(name: &str, version: Option<&str>, hash: &BuildHash, store_path: &Path) -> bool {
+fn build_exists_in_store(name: &str, version: Option<&str>, hash: &ObjectHash, store_path: &Path) -> bool {
   let dir_name = build_dir_name(name, version, hash);
   let build_path = store_path.join("obj").join(dir_name);
   build_path.exists()
@@ -162,8 +161,10 @@ mod tests {
     let mut desired = Manifest::default();
     desired
       .builds
-      .insert(BuildHash("build1".to_string()), make_build_def("pkg1"));
-    desired.bindings.insert(BindHash("bind1".to_string()), make_bind_def());
+      .insert(ObjectHash("build1".to_string()), make_build_def("pkg1"));
+    desired
+      .bindings
+      .insert(ObjectHash("bind1".to_string()), make_bind_def());
 
     let diff = compute_diff(&desired, None, temp_dir.path());
 
@@ -180,7 +181,7 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
 
     // Create the build directory to simulate cached build
-    let build_hash = BuildHash("abc123def45678901234".to_string());
+    let build_hash = ObjectHash("abc123def45678901234".to_string());
     let build_dir = temp_dir.path().join("obj").join("pkg1-abc123def45678901234");
     std::fs::create_dir_all(&build_dir).unwrap();
 
@@ -199,11 +200,11 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
 
     // Create cached build
-    let build_hash = BuildHash("abc123def45678901234".to_string());
+    let build_hash = ObjectHash("abc123def45678901234".to_string());
     let build_dir = temp_dir.path().join("obj").join("pkg1-abc123def45678901234");
     std::fs::create_dir_all(&build_dir).unwrap();
 
-    let bind_hash = BindHash("bind1".to_string());
+    let bind_hash = ObjectHash("bind1".to_string());
 
     let mut manifest = Manifest::default();
     manifest.builds.insert(build_hash, make_build_def("pkg1"));
@@ -223,13 +224,13 @@ mod tests {
     let mut current = Manifest::default();
     current
       .bindings
-      .insert(BindHash("existing".to_string()), make_bind_def());
+      .insert(ObjectHash("existing".to_string()), make_bind_def());
 
     let mut desired = Manifest::default();
     desired
       .bindings
-      .insert(BindHash("existing".to_string()), make_bind_def());
-    desired.bindings.insert(BindHash("new".to_string()), make_bind_def());
+      .insert(ObjectHash("existing".to_string()), make_bind_def());
+    desired.bindings.insert(ObjectHash("new".to_string()), make_bind_def());
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -243,18 +244,20 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
 
     let mut current = Manifest::default();
-    current.bindings.insert(BindHash("keep".to_string()), make_bind_def());
-    current.bindings.insert(BindHash("remove".to_string()), make_bind_def());
+    current.bindings.insert(ObjectHash("keep".to_string()), make_bind_def());
+    current
+      .bindings
+      .insert(ObjectHash("remove".to_string()), make_bind_def());
 
     let mut desired = Manifest::default();
-    desired.bindings.insert(BindHash("keep".to_string()), make_bind_def());
+    desired.bindings.insert(ObjectHash("keep".to_string()), make_bind_def());
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
     assert_eq!(diff.binds_to_apply.len(), 0);
     assert_eq!(diff.binds_unchanged.len(), 1);
     assert_eq!(diff.binds_to_destroy.len(), 1);
-    assert!(diff.binds_to_destroy.contains(&BindHash("remove".to_string())));
+    assert!(diff.binds_to_destroy.contains(&ObjectHash("remove".to_string())));
   }
 
   #[test]
@@ -265,12 +268,12 @@ mod tests {
     let mut current = Manifest::default();
     current
       .bindings
-      .insert(BindHash("old_hash".to_string()), make_bind_def());
+      .insert(ObjectHash("old_hash".to_string()), make_bind_def());
 
     let mut desired = Manifest::default();
     desired
       .bindings
-      .insert(BindHash("new_hash".to_string()), make_bind_def());
+      .insert(ObjectHash("new_hash".to_string()), make_bind_def());
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -289,28 +292,28 @@ mod tests {
     let mut current = Manifest::default();
     current
       .builds
-      .insert(BuildHash("abc123def45678901234".to_string()), make_build_def("cached"));
+      .insert(ObjectHash("abc123def45678901234".to_string()), make_build_def("cached"));
     current
       .bindings
-      .insert(BindHash("unchanged_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def());
     current
       .bindings
-      .insert(BindHash("removed_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("removed_bind".to_string()), make_bind_def());
 
     let mut desired = Manifest::default();
     desired
       .builds
-      .insert(BuildHash("abc123def45678901234".to_string()), make_build_def("cached"));
+      .insert(ObjectHash("abc123def45678901234".to_string()), make_build_def("cached"));
     desired.builds.insert(
-      BuildHash("new_build_hash12345678".to_string()),
+      ObjectHash("new_build_hash12345678".to_string()),
       make_build_def("new_pkg"),
     );
     desired
       .bindings
-      .insert(BindHash("unchanged_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def());
     desired
       .bindings
-      .insert(BindHash("new_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("new_bind".to_string()), make_bind_def());
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -327,31 +330,31 @@ mod tests {
     assert!(diff.is_empty());
 
     let diff_with_cached = StateDiff {
-      builds_cached: vec![BuildHash("x".to_string())],
+      builds_cached: vec![ObjectHash("x".to_string())],
       ..Default::default()
     };
     assert!(diff_with_cached.is_empty()); // Cached builds don't count as changes
 
     let diff_with_unchanged = StateDiff {
-      binds_unchanged: vec![BindHash("x".to_string())],
+      binds_unchanged: vec![ObjectHash("x".to_string())],
       ..Default::default()
     };
     assert!(diff_with_unchanged.is_empty()); // Unchanged binds don't count as changes
 
     let diff_with_realize = StateDiff {
-      builds_to_realize: vec![BuildHash("x".to_string())],
+      builds_to_realize: vec![ObjectHash("x".to_string())],
       ..Default::default()
     };
     assert!(!diff_with_realize.is_empty());
 
     let diff_with_apply = StateDiff {
-      binds_to_apply: vec![BindHash("x".to_string())],
+      binds_to_apply: vec![ObjectHash("x".to_string())],
       ..Default::default()
     };
     assert!(!diff_with_apply.is_empty());
 
     let diff_with_destroy = StateDiff {
-      binds_to_destroy: vec![BindHash("x".to_string())],
+      binds_to_destroy: vec![ObjectHash("x".to_string())],
       ..Default::default()
     };
     assert!(!diff_with_destroy.is_empty());

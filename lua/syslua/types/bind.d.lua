@@ -12,7 +12,7 @@
 
 ---@class BindCtx
 ---@field out string returns the store path
----@field cmd fun(self: BindCtx, opts: BindCmdOptions): string Performs a command during application, returns outputs
+---@field cmd fun(self: BindCtx, opts: string | BindCmdOptions): string Performs a command during application, returns outputs
 
 ---@class BindSpec
 ---@field inputs? table|fun(): table Optional: input data

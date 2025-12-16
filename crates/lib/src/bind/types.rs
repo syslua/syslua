@@ -14,12 +14,9 @@
 
 use std::collections::BTreeMap;
 
-use mlua::Function;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::consts::HASH_PREFIX_LEN;
-use crate::inputs::{InputsRef, InputsSpec};
+use crate::util::hash::{Hashable, ObjectHash};
 
 /// Marker type name for BindRef metatables in Lua.
 ///
@@ -28,54 +25,62 @@ use crate::inputs::{InputsRef, InputsSpec};
 /// bind outputs (e.g., `bind.status` or `bind.path`).
 pub const BIND_REF_TYPE: &str = "BindRef";
 
-/// The bind specification as defined in Lua.
+/// A resolved, serializable input value.
 ///
-/// This is the Lua-side representation of a binding, containing the raw closures
-/// that will be evaluated to produce a [`BindDef`]. Because it contains Lua
-/// [`Function`]s, it cannot be serialized directly.
+/// This is the manifest-side representation of inputs. All values are fully
+/// resolved and can be serialized to JSON.
 ///
-/// # Fields
+/// # Primitive Types
 ///
-/// - `inputs`: Optional inputs that parameterize the binding
-/// - `apply`: The Lua function called with a [`BindCtx`] to define apply actions
-/// - `destroy`: Optional Lua function for cleanup when the binding is removed
+/// - [`String`](BindInputs::String): Text values
+/// - [`Number`](BindInputs::Number): Floating-point numbers
+/// - [`Boolean`](BindInputs::Boolean): True/false values
 ///
-/// # Lifecycle
+/// # Collection Types
 ///
-/// ```text
-/// BindSpec (Lua) → evaluate apply()/destroy() → BindDef (serializable) → BindHash
+/// - [`Table`](BindInputs::Table): Key-value maps (Lua tables with string keys)
+/// - [`Array`](BindInputs::Array): Ordered sequences (Lua tables with numeric keys)
+///
+/// # Reference Types
+///
+/// - [`Build`](BindInputs::Build): Reference to a build by its hash
+/// - [`Bind`](BindInputs::Bind): Reference to a binding by its hash
+///
+/// # Reference Storage
+///
+/// When storing references to builds or bindings, only the hash is stored
+/// (not the full definition). This:
+/// - Keeps the manifest compact
+/// - Avoids circular reference issues during serialization
+/// - Enables efficient dependency tracking
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "Table": {
+///     "name": { "String": "myapp" },
+///     "debug": { "Boolean": false },
+///     "rust": { "Build": "a1b2c3d4e5f6789012ab" }
+///   }
+/// }
 /// ```
-pub struct BindSpec {
-  /// Optional inputs that parameterize the binding.
-  pub inputs: Option<InputsSpec>,
-  /// The Lua function to evaluate with a [`BindCtx`] to produce apply actions.
-  pub apply: Function,
-  /// Optional Lua function for cleanup when the binding is removed.
-  pub destroy: Option<Function>,
-}
-
-/// A content-addressed hash identifying a unique [`BindDef`].
-///
-/// The hash is a 20-character truncated SHA-256 of the JSON-serialized [`BindDef`].
-/// This provides sufficient collision resistance while keeping paths readable.
-///
-/// # Format
-///
-/// The hash is a lowercase hexadecimal string, e.g., `"a1b2c3d4e5f6789012ab"`.
-///
-/// # Usage
-///
-/// BindHash is used as:
-/// - Keys in the manifest's `bindings` map for deduplication
-/// - Store paths: `~/.local/share/syslua/bind/<hash>/`
-/// - References in [`InputsRef::Bind`] to track dependencies
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct BindHash(pub String);
-
-impl std::fmt::Display for BindHash {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.0)
-  }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BindInputs {
+  /// A string value.
+  String(String),
+  /// A numeric value (f64 to match Lua's number type).
+  Number(f64),
+  /// A boolean value.
+  Boolean(bool),
+  /// A table (map) with string keys.
+  Table(BTreeMap<String, BindInputs>),
+  /// An array (sequence) of values.
+  Array(Vec<BindInputs>),
+  /// A reference to a build, stored as its [`ObjectHash`].
+  Build(ObjectHash),
+  /// A reference to a binding, stored as its [`ObjectHash`].
+  Bind(ObjectHash),
 }
 
 /// An action that can be performed during bind execution.
@@ -135,7 +140,7 @@ pub enum BindAction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BindDef {
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
-  pub inputs: Option<InputsRef>,
+  pub inputs: Option<BindInputs>,
   /// The sequence of actions to execute during `apply`.
   pub apply_actions: Vec<BindAction>,
   /// Named outputs from the binding (e.g., `{"path": "$${action:0}"}`).
@@ -144,30 +149,7 @@ pub struct BindDef {
   pub destroy_actions: Option<Vec<BindAction>>,
 }
 
-impl BindDef {
-  /// Compute the truncated SHA-256 hash for use as manifest key.
-  ///
-  /// The hash is computed from the JSON serialization of this `BindDef`,
-  /// then truncated to [`HASH_PREFIX_LEN`] characters (20 chars).
-  ///
-  /// # Determinism
-  ///
-  /// The hash is deterministic: identical `BindDef` values always produce
-  /// the same hash. This includes `destroy_actions` - adding cleanup logic
-  /// changes the hash.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if JSON serialization fails (should not happen for
-  /// well-formed `BindDef` values).
-  pub fn compute_hash(&self) -> Result<BindHash, serde_json::Error> {
-    let serialized = serde_json::to_string(self)?;
-    let mut hasher = Sha256::new();
-    hasher.update(serialized.as_bytes());
-    let full = format!("{:x}", hasher.finalize());
-    Ok(BindHash(full[..HASH_PREFIX_LEN].to_string()))
-  }
-}
+impl Hashable for BindDef {}
 
 /// Options for executing a shell command in a binding.
 ///
@@ -187,7 +169,7 @@ impl BindDef {
 ///         .with_cwd("/etc/systemd")
 /// );
 /// ```
-pub struct BindCmdOptions {
+pub struct BindCmdOpts {
   /// The command string to execute.
   pub cmd: String,
   /// Optional environment variables to set.
@@ -196,7 +178,7 @@ pub struct BindCmdOptions {
   pub cwd: Option<String>,
 }
 
-impl BindCmdOptions {
+impl BindCmdOpts {
   /// Create a new command with default options.
   pub fn new(cmd: &str) -> Self {
     Self {
@@ -219,9 +201,9 @@ impl BindCmdOptions {
   }
 }
 
-impl From<&str> for BindCmdOptions {
+impl From<&str> for BindCmdOpts {
   fn from(cmd: &str) -> Self {
-    BindCmdOptions::new(cmd)
+    BindCmdOpts::new(cmd)
   }
 }
 
@@ -304,7 +286,7 @@ impl BindCtx {
   ///
   /// An opaque placeholder string (e.g., `$${action:0}`) that resolves to
   /// the command's output at execution time.
-  pub fn cmd(&mut self, opts: impl Into<BindCmdOptions>) -> String {
+  pub fn cmd(&mut self, opts: impl Into<BindCmdOpts>) -> String {
     let output = format!("$${{action:{}}}", self.actions.len());
     let opts = opts.into();
     self.actions.push(BindAction::Cmd {
@@ -329,6 +311,8 @@ mod tests {
   use super::*;
 
   mod bind_def {
+    use crate::consts::HASH_PREFIX_LEN;
+
     use super::*;
 
     fn simple_def() -> BindDef {
@@ -438,7 +422,7 @@ mod tests {
       env.insert("HOME".to_string(), "/home/user".to_string());
 
       let def = BindDef {
-        inputs: Some(InputsRef::String("test".to_string())),
+        inputs: Some(BindInputs::String("test".to_string())),
         apply_actions: vec![BindAction::Cmd {
           cmd: "ln -s /src /dest".to_string(),
           env: Some(env),
@@ -482,7 +466,7 @@ mod tests {
       env.insert("HOME".to_string(), "/home/user".to_string());
 
       ctx.cmd(
-        BindCmdOptions::new("ln -s /src /dest")
+        BindCmdOpts::new("ln -s /src /dest")
           .with_env(env.clone())
           .with_cwd("/home"),
       );

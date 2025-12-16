@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 
 use syslua_lib::eval::evaluate_config;
 use syslua_lib::platform::paths;
+use syslua_lib::util::hash::Hashable;
 
 /// Execute the plan command.
 ///
@@ -28,14 +29,14 @@ pub fn cmd_plan(file: &str) -> Result<()> {
   let hash = manifest.compute_hash().context("Failed to compute manifest hash")?;
 
   // Determine base directory based on privileges
-  let base_dir = if is_elevated() {
+  let base_dir = if syslua_lib::platform::is_elevated() {
     paths::root_dir()
   } else {
     paths::data_dir()
   };
 
   // Create plan directory
-  let plan_dir = base_dir.join("plans").join(&hash);
+  let plan_dir = base_dir.join("plans").join(&hash.0);
   fs::create_dir_all(&plan_dir).with_context(|| format!("Failed to create plan directory: {}", plan_dir.display()))?;
 
   // Write manifest as pretty-printed JSON
@@ -51,43 +52,4 @@ pub fn cmd_plan(file: &str) -> Result<()> {
   println!("Path: {}", manifest_path.display());
 
   Ok(())
-}
-
-/// Check if the current process is running with elevated privileges.
-///
-/// On Unix systems, this checks if the effective user ID is root (0).
-/// On Windows, this checks if the process has administrator privileges.
-#[cfg(unix)]
-fn is_elevated() -> bool {
-  rustix::process::geteuid().is_root()
-}
-
-#[cfg(windows)]
-fn is_elevated() -> bool {
-  use std::mem::{size_of, zeroed};
-  use windows_sys::Win32::{
-    Foundation::CloseHandle,
-    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
-  };
-
-  unsafe {
-    let mut token = 0;
-    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-      return false;
-    }
-
-    let mut elevation: TOKEN_ELEVATION = zeroed();
-    let mut size: u32 = 0;
-    let result = GetTokenInformation(
-      token,
-      TokenElevation,
-      &mut elevation as *mut _ as *mut _,
-      size_of::<TOKEN_ELEVATION>() as u32,
-      &mut size,
-    );
-
-    CloseHandle(token);
-    result != 0 && elevation.TokenIsElevated != 0
-  }
 }

@@ -2450,13 +2450,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "rustix",
  "serde_json",
  "syslua-lib",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2468,6 +2466,7 @@ dependencies = [
  "mlua",
  "petgraph",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "serial_test",
@@ -2477,6 +2476,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

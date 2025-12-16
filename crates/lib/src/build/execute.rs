@@ -9,15 +9,15 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info};
 
-use crate::bind::BindHash;
-use crate::build::{BuildDef, BuildHash};
+use crate::build::BuildDef;
+use crate::build::store::build_path;
 use crate::manifest::Manifest;
 use crate::placeholder;
-use crate::store;
 
-use super::actions::execute_action;
-use super::resolver::{BuildResolver, ExecutionResolver};
-use super::types::{ActionResult, BindResult, BuildResult, ExecuteConfig, ExecuteError};
+use crate::execute::actions::execute_action;
+use crate::execute::resolver::{BuildResolver, ExecutionResolver};
+use crate::execute::types::{ActionResult, BindResult, BuildResult, ExecuteConfig, ExecuteError};
+use crate::util::hash::ObjectHash;
 
 /// Realize a single build.
 ///
@@ -36,9 +36,9 @@ use super::types::{ActionResult, BindResult, BuildResult, ExecuteConfig, Execute
 ///
 /// The result of realizing the build.
 pub async fn realize_build(
-  hash: &BuildHash,
+  hash: &ObjectHash,
   build_def: &BuildDef,
-  completed_builds: &HashMap<BuildHash, BuildResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
   config: &ExecuteConfig,
 ) -> Result<BuildResult, ExecuteError> {
@@ -50,7 +50,7 @@ pub async fn realize_build(
   );
 
   // Compute the store path for this build
-  let store_path = store::build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
+  let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -130,10 +130,10 @@ pub async fn realize_build(
 ///
 /// The result of realizing the build.
 pub async fn realize_build_with_resolver(
-  hash: &BuildHash,
+  hash: &ObjectHash,
   build_def: &BuildDef,
-  completed_builds: &HashMap<BuildHash, BuildResult>,
-  completed_binds: &HashMap<BindHash, BindResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
+  completed_binds: &HashMap<ObjectHash, BindResult>,
   manifest: &Manifest,
   config: &ExecuteConfig,
 ) -> Result<BuildResult, ExecuteError> {
@@ -145,7 +145,7 @@ pub async fn realize_build_with_resolver(
   );
 
   // Compute the store path for this build
-  let store_path = store::build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
+  let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -219,7 +219,7 @@ fn resolve_outputs(
   build_def: &BuildDef,
   store_path: &PathBuf,
   action_results: &[ActionResult],
-  completed_builds: &HashMap<BuildHash, BuildResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
   config: &ExecuteConfig,
 ) -> Result<HashMap<String, String>, ExecuteError> {
@@ -253,8 +253,8 @@ fn resolve_outputs_with_resolver(
   build_def: &BuildDef,
   store_path: &PathBuf,
   action_results: &[ActionResult],
-  completed_builds: &HashMap<BuildHash, BuildResult>,
-  completed_binds: &HashMap<BindHash, BindResult>,
+  completed_builds: &HashMap<ObjectHash, BuildResult>,
+  completed_binds: &HashMap<ObjectHash, BindResult>,
   manifest: &Manifest,
   config: &ExecuteConfig,
 ) -> Result<HashMap<String, String>, ExecuteError> {
@@ -283,7 +283,7 @@ fn resolve_outputs_with_resolver(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::build::BuildAction;
+  use crate::{build::BuildAction, util::hash::Hashable};
   use serial_test::serial;
   use tempfile::TempDir;
 

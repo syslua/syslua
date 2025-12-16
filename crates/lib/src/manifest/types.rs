@@ -25,10 +25,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::bind::{BindDef, BindHash};
-use crate::build::{BuildDef, BuildHash};
+use crate::bind::BindDef;
+use crate::build::BuildDef;
+use crate::util::hash::{Hashable, ObjectHash};
 
 /// The complete desired state manifest.
 ///
@@ -63,35 +63,9 @@ use crate::build::{BuildDef, BuildHash};
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
   /// All builds in the manifest, keyed by their content hash.
-  pub builds: BTreeMap<BuildHash, BuildDef>,
+  pub builds: BTreeMap<ObjectHash, BuildDef>,
   /// All bindings in the manifest, keyed by their content hash.
-  pub bindings: BTreeMap<BindHash, BindDef>,
+  pub bindings: BTreeMap<ObjectHash, BindDef>,
 }
 
-impl Manifest {
-  /// Compute a SHA-256 hash of the entire manifest content.
-  ///
-  /// The hash is computed from the JSON serialization of the manifest,
-  /// providing a stable, content-based identifier for the complete state.
-  ///
-  /// # Use Cases
-  ///
-  /// - Quick equality checks between manifests
-  /// - Snapshot identification
-  /// - Change detection
-  ///
-  /// # Note
-  ///
-  /// Unlike [`BuildHash`] and [`BindHash`], this returns the full 64-character
-  /// hash (not truncated) since it's used less frequently in paths.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if JSON serialization fails (should not happen for
-  /// well-formed manifests).
-  pub fn compute_hash(&self) -> Result<String, serde_json::Error> {
-    let serialized = serde_json::to_string(self)?;
-    let hash = Sha256::digest(serialized.as_bytes());
-    Ok(format!("{:x}", hash))
-  }
-}
+impl Hashable for Manifest {}
