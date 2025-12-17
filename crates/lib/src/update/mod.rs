@@ -238,6 +238,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn config_dir_fallback() {
       let temp = TempDir::new().unwrap();
       let syslua_config = temp.path().join("syslua");
@@ -254,6 +255,35 @@ mod tests {
         [
           ("XDG_CONFIG_HOME", Some(temp.path().to_str().unwrap())),
           ("HOME", Some(temp.path().to_str().unwrap())),
+        ],
+        || {
+          let result = find_config_path(None);
+          assert!(result.is_ok());
+        },
+      );
+
+      std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(windows)]
+    fn config_dir_fallback() {
+      let temp = TempDir::new().unwrap();
+      let syslua_config = temp.path().join("syslua");
+      fs::create_dir_all(&syslua_config).unwrap();
+      fs::write(syslua_config.join("init.lua"), "return {}").unwrap();
+
+      // Use a directory without init.lua as cwd
+      let cwd = temp.path().join("empty");
+      fs::create_dir_all(&cwd).unwrap();
+      let original_dir = std::env::current_dir().unwrap();
+      std::env::set_current_dir(&cwd).unwrap();
+
+      temp_env::with_vars(
+        [
+          ("APPDATA", Some(temp.path().to_str().unwrap())),
+          ("USERPROFILE", Some(temp.path().to_str().unwrap())),
         ],
         || {
           let result = find_config_path(None);

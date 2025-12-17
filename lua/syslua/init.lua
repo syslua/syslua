@@ -6,16 +6,16 @@ local M = {}
 
 setmetatable(M, {
   __index = function(t, k)
-    if t[k] == nil then
-      local ok, mod = pcall(require, 'syslua.' .. k)
-      if ok then
-        t[k] = mod
-        return mod
-      else
-        error("Module 'syslua." .. k .. "' not found")
-      end
+    local cached = rawget(t, k)
+    if cached ~= nil then
+      return cached
+    end
+    local ok, mod = pcall(require, 'syslua.' .. k)
+    if ok then
+      rawset(t, k, mod)
+      return mod
     else
-      return t[k]
+      error("Module 'syslua." .. k .. "' not found")
     end
   end,
 })
