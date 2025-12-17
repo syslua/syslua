@@ -992,17 +992,29 @@ mod tests {
       let temp_dir = TempDir::new().unwrap();
       let marker_file = temp_dir.path().join("bind_a_applied");
 
+      // Debug logging for Windows path issues
+      let touch = touch_cmd(&marker_file);
+      let rm = rm_cmd(&marker_file);
+      eprintln!("=== DEBUG: manifest_bind_failure_rollback ===");
+      eprintln!("temp_dir: {:?}", temp_dir.path());
+      eprintln!("temp_dir length: {}", temp_dir.path().display().to_string().len());
+      eprintln!("marker_file: {:?}", marker_file);
+      eprintln!("marker_file length: {}", marker_file.display().to_string().len());
+      eprintln!("touch_cmd: {}", touch);
+      eprintln!("rm_cmd: {}", rm);
+      eprintln!("==============================================");
+
       // Use platform-specific commands since PATH is isolated
       let bind_a = BindDef {
         inputs: None,
         apply_actions: vec![BindAction::Cmd {
-          cmd: touch_cmd(&marker_file),
+          cmd: touch,
           env: None,
           cwd: None,
         }],
         outputs: None,
         destroy_actions: Some(vec![BindAction::Cmd {
-          cmd: rm_cmd(&marker_file),
+          cmd: rm,
           env: None,
           cwd: None,
         }]),
@@ -1029,11 +1041,24 @@ mod tests {
       let config = test_config();
       let result = execute_manifest(&manifest, &config).await.unwrap();
 
+      // Debug: print full result details
+      eprintln!("=== DEBUG: Result details ===");
+      eprintln!("is_success: {}", result.is_success());
+      eprintln!("bind_failed: {:?}", result.bind_failed);
+      eprintln!("applied keys: {:?}", result.applied.keys().collect::<Vec<_>>());
+      eprintln!("hash_a: {:?}", hash_a);
+      eprintln!("hash_b: {:?}", hash_b);
+      eprintln!("=============================");
+
       assert!(!result.is_success());
       assert!(result.bind_failed.is_some());
 
       // The failing bind should be hash_b (which depends on hash_a)
-      let (failed_hash, _) = result.bind_failed.as_ref().unwrap();
+      let (failed_hash, failed_err) = result.bind_failed.as_ref().unwrap();
+      eprintln!("=== DEBUG: Failed bind details ===");
+      eprintln!("failed_hash: {:?}", failed_hash);
+      eprintln!("failed_err: {:?}", failed_err);
+      eprintln!("==================================");
       assert_eq!(failed_hash, &hash_b, "Bind B should have failed, not Bind A");
 
       // Bind A should have been applied (before failure)
