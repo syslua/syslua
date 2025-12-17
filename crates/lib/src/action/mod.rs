@@ -7,12 +7,15 @@ pub use types::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::action::actions::exec::ExecOpts;
-use crate::action::actions::write_file::execute_write_file;
 use crate::execute::types::{ActionResult, ExecuteError};
 use crate::placeholder::{self, Resolver};
+use actions::exec::ExecOpts;
 use actions::exec::execute_cmd;
 use actions::fetch_url::execute_fetch_url;
+use actions::write_file::execute_write_file;
+
+/// Names of built-in methods on ActionCtx that cannot be overwritten.
+pub const BUILTIN_CTX_METHODS: &[&str] = &["exec", "fetch_url", "write_file", "out"];
 
 /// Execute a single build action.
 ///

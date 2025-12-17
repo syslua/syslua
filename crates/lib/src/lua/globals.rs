@@ -16,14 +16,11 @@ use std::rc::Rc;
 use mlua::prelude::*;
 
 use super::helpers;
-use crate::action::CTX_METHODS_REGISTRY_KEY;
+use crate::action::{BUILTIN_CTX_METHODS, CTX_METHODS_REGISTRY_KEY};
 use crate::bind::lua::register_sys_bind;
 use crate::build::lua::register_sys_build;
 use crate::manifest::Manifest;
 use crate::platform::Platform;
-
-/// Names of built-in methods on ActionCtx that cannot be overwritten.
-const BUILTIN_CTX_METHODS: &[&str] = &["exec", "fetch_url", "write_file", "out"];
 
 /// Register the `sys` global table in the Lua runtime.
 ///
