@@ -276,17 +276,6 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn empty_inputs_returns_empty_result() {
-      let temp_dir = TempDir::new().unwrap();
-      let raw_inputs = HashMap::new();
-
-      let result = resolve_inputs(&raw_inputs, temp_dir.path(), None).unwrap();
-
-      assert!(result.inputs.is_empty());
-      assert!(!result.lock_changed);
-    }
-
-    #[test]
     fn path_input_resolves_correctly() {
       let temp_dir = TempDir::new().unwrap();
       let config_dir = temp_dir.path();

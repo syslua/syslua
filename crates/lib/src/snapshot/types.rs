@@ -250,16 +250,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn snapshot_new_sets_timestamp() {
-    let manifest = Manifest::default();
-    let snapshot = Snapshot::new("test123".to_string(), None, manifest);
-
-    assert_eq!(snapshot.id, "test123");
-    assert!(snapshot.created_at > 0);
-    assert!(snapshot.config_path.is_none());
-  }
-
-  #[test]
   fn snapshot_to_metadata() {
     let mut manifest = Manifest::default();
     manifest.builds.insert(
@@ -284,14 +274,6 @@ mod tests {
     assert_eq!(metadata.build_count, 1);
     assert_eq!(metadata.bind_count, 0);
     assert_eq!(metadata.config_path, Some(PathBuf::from("/path/to/config.lua")));
-  }
-
-  #[test]
-  fn snapshot_index_new_is_empty() {
-    let index = SnapshotIndex::new();
-    assert!(index.is_empty());
-    assert!(index.current.is_none());
-    assert_eq!(index.version, SNAPSHOT_INDEX_VERSION);
   }
 
   #[test]

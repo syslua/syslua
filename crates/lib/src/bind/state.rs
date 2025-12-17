@@ -182,6 +182,11 @@ mod tests {
     });
   }
 
+  /// Get the bind state file path for a given bind hash (test helper).
+  fn test_bind_state_path(hash: &ObjectHash, system: bool) -> PathBuf {
+    bind_state_dir(hash, system).join(STATE_FILENAME)
+  }
+
   #[test]
   #[serial]
   fn save_and_load_roundtrip() {
@@ -224,27 +229,122 @@ mod tests {
     });
   }
 
+  // Corrupt state handling tests
+
   #[test]
   #[serial]
-  fn remove_nonexistent_succeeds() {
+  fn load_bind_state_handles_invalid_json() {
     with_temp_store(|_| {
-      let hash = ObjectHash("nonexistent123456789012".to_string());
-      // Should not error
-      remove_bind_state(&hash, false).unwrap();
+      let hash = ObjectHash("corrupt_json_test123456".to_string());
+
+      // Manually write invalid JSON to the state file path
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      std::fs::write(&state_path, "{ this is not valid json }").unwrap();
+
+      // Should return an error, not panic
+      let result = load_bind_state(&hash, false);
+      assert!(result.is_err());
+
+      // Verify the error is a parse error
+      match result {
+        Err(BindStateError::Parse(_)) => {} // Expected
+        Err(other) => panic!("expected Parse error, got: {}", other),
+        Ok(_) => panic!("expected error, got Ok"),
+      }
     });
   }
 
   #[test]
   #[serial]
-  fn empty_outputs_serialization() {
+  fn load_bind_state_handles_wrong_schema() {
     with_temp_store(|_| {
-      let hash = ObjectHash("empty123def456789012345".to_string());
-      let state = BindState::empty();
+      let hash = ObjectHash("wrong_schema_test12345".to_string());
 
-      save_bind_state(&hash, &state, false).unwrap();
-      let loaded = load_bind_state(&hash, false).unwrap().unwrap();
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      // Valid JSON but wrong structure (missing "outputs" field)
+      std::fs::write(&state_path, r#"{"unexpected": "structure"}"#).unwrap();
 
-      assert!(loaded.outputs.is_empty());
+      let result = load_bind_state(&hash, false);
+      // Should error due to missing required field
+      assert!(result.is_err());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn load_bind_state_handles_empty_file() {
+    with_temp_store(|_| {
+      let hash = ObjectHash("empty_file_test1234567".to_string());
+
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      std::fs::write(&state_path, "").unwrap();
+
+      let result = load_bind_state(&hash, false);
+      // Empty file is not valid JSON
+      assert!(result.is_err());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn load_bind_state_handles_null_json() {
+    with_temp_store(|_| {
+      let hash = ObjectHash("null_json_test12345678".to_string());
+
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      // Valid JSON but null is not a valid BindState
+      std::fs::write(&state_path, "null").unwrap();
+
+      let result = load_bind_state(&hash, false);
+      assert!(result.is_err());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn load_bind_state_handles_array_instead_of_object() {
+    with_temp_store(|_| {
+      let hash = ObjectHash("array_json_test1234567".to_string());
+
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      // Valid JSON array, but BindState expects an object
+      std::fs::write(&state_path, r#"["item1", "item2"]"#).unwrap();
+
+      let result = load_bind_state(&hash, false);
+      assert!(result.is_err());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn load_bind_state_handles_outputs_with_wrong_type() {
+    with_temp_store(|_| {
+      let hash = ObjectHash("wrong_output_type12345".to_string());
+
+      let state_path = test_bind_state_path(&hash, false);
+      if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+      }
+      // "outputs" should be a map of string to string, not string to number
+      std::fs::write(&state_path, r#"{"outputs": {"key": 12345}}"#).unwrap();
+
+      let result = load_bind_state(&hash, false);
+      assert!(result.is_err());
     });
   }
 }

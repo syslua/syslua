@@ -346,6 +346,204 @@ mod tests {
     }
   }
 
-  // NOTE: Git clone/fetch tests require network access and are better suited
-  // for integration tests. The core logic is tested via the path resolution tests.
+  mod git_fetch_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Create a local git repository with an initial commit.
+    /// Returns the commit hash of the initial commit.
+    fn create_local_repo(path: &Path) -> String {
+      // Initialize repo
+      let output = Command::new("git")
+        .args(["init"])
+        .current_dir(path)
+        .output()
+        .expect("git init failed");
+      assert!(output.status.success(), "git init failed: {:?}", output);
+
+      // Configure git for the test (avoid using system user config)
+      Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(path)
+        .output()
+        .expect("git config email failed");
+      Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(path)
+        .output()
+        .expect("git config name failed");
+
+      // Create initial commit
+      fs::write(path.join("README.md"), "# Test Repo\n").unwrap();
+      Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(path)
+        .output()
+        .expect("git add failed");
+      let output = Command::new("git")
+        .args(["commit", "-m", "Initial commit"])
+        .current_dir(path)
+        .output()
+        .expect("git commit failed");
+      assert!(output.status.success(), "git commit failed: {:?}", output);
+
+      // Get the commit hash
+      let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()
+        .expect("git rev-parse failed");
+      String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// Create a tagged commit in a repo.
+    /// Returns the commit hash of the tagged commit.
+    fn create_tag(path: &Path, tag_name: &str) -> String {
+      fs::write(path.join("CHANGELOG.md"), format!("# {}\n", tag_name)).unwrap();
+      Command::new("git")
+        .args(["add", "CHANGELOG.md"])
+        .current_dir(path)
+        .output()
+        .expect("git add failed");
+      Command::new("git")
+        .args(["commit", "-m", &format!("Release {}", tag_name)])
+        .current_dir(path)
+        .output()
+        .expect("git commit failed");
+      Command::new("git")
+        .args(["tag", tag_name])
+        .current_dir(path)
+        .output()
+        .expect("git tag failed");
+
+      let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()
+        .expect("git rev-parse failed");
+      String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn fetch_git_clones_local_repo() {
+      let temp = TempDir::new().unwrap();
+      let source_repo = temp.path().join("source");
+      let cache_dir = temp.path().join("cache");
+
+      fs::create_dir(&source_repo).unwrap();
+      let commit_hash = create_local_repo(&source_repo);
+
+      // Fetch using file:// URL
+      let url = format!("file://{}", source_repo.display());
+      let (path, rev) = fetch_git("test-input", &url, None, &cache_dir).unwrap();
+
+      // Verify the repo was cloned
+      assert!(path.exists());
+      assert!(path.join("README.md").exists());
+      // The resolved revision should be the commit hash
+      assert_eq!(rev, commit_hash);
+    }
+
+    #[test]
+    fn fetch_git_checks_out_specific_tag() {
+      let temp = TempDir::new().unwrap();
+      let source_repo = temp.path().join("source");
+      let cache_dir = temp.path().join("cache");
+
+      fs::create_dir(&source_repo).unwrap();
+      let _initial = create_local_repo(&source_repo);
+      let v1_hash = create_tag(&source_repo, "v1.0.0");
+
+      // Create more commits after the tag
+      fs::write(source_repo.join("NEW.md"), "new content").unwrap();
+      Command::new("git")
+        .args(["add", "NEW.md"])
+        .current_dir(&source_repo)
+        .output()
+        .unwrap();
+      Command::new("git")
+        .args(["commit", "-m", "Post-release commit"])
+        .current_dir(&source_repo)
+        .output()
+        .unwrap();
+
+      // Fetch the v1.0.0 tag specifically
+      let url = format!("file://{}", source_repo.display());
+      let (_path, rev) = fetch_git("test-input", &url, Some("v1.0.0"), &cache_dir).unwrap();
+
+      // Should resolve to the v1.0.0 commit, not HEAD
+      assert_eq!(rev, v1_hash);
+    }
+
+    #[test]
+    fn fetch_git_resolves_branch_name() {
+      let temp = TempDir::new().unwrap();
+      let source_repo = temp.path().join("source");
+      let cache_dir = temp.path().join("cache");
+
+      fs::create_dir(&source_repo).unwrap();
+      let _initial = create_local_repo(&source_repo);
+
+      // Get the current branch name (usually "main" or "master")
+      let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&source_repo)
+        .output()
+        .expect("git rev-parse failed");
+      let branch_name = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+      // Create another commit on the branch
+      fs::write(source_repo.join("EXTRA.md"), "extra").unwrap();
+      Command::new("git")
+        .args(["add", "EXTRA.md"])
+        .current_dir(&source_repo)
+        .output()
+        .unwrap();
+      Command::new("git")
+        .args(["commit", "-m", "Second commit"])
+        .current_dir(&source_repo)
+        .output()
+        .unwrap();
+
+      let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&source_repo)
+        .output()
+        .unwrap();
+      let expected_hash = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+      // Fetch by branch name
+      let url = format!("file://{}", source_repo.display());
+      let (_path, rev) = fetch_git("test-input", &url, Some(&branch_name), &cache_dir).unwrap();
+
+      assert_eq!(rev, expected_hash);
+    }
+
+    #[test]
+    fn fetch_git_returns_error_for_invalid_revision() {
+      let temp = TempDir::new().unwrap();
+      let source_repo = temp.path().join("source");
+      let cache_dir = temp.path().join("cache");
+
+      fs::create_dir(&source_repo).unwrap();
+      create_local_repo(&source_repo);
+
+      let url = format!("file://{}", source_repo.display());
+      let result = fetch_git("test-input", &url, Some("nonexistent-tag"), &cache_dir);
+
+      assert!(matches!(result, Err(FetchError::RevisionNotFound { .. })));
+    }
+
+    #[test]
+    fn fetch_git_returns_error_for_invalid_url() {
+      let temp = TempDir::new().unwrap();
+      let cache_dir = temp.path().join("cache");
+
+      // Try to clone from a non-existent path
+      let result = fetch_git("test-input", "file:///nonexistent/path/to/repo", None, &cache_dir);
+
+      // Should fail with a clone error
+      assert!(result.is_err());
+    }
+  }
 }

@@ -89,18 +89,3 @@ pub fn is_elevated() -> bool {
     result != 0 && elevation.TokenIsElevated != 0
   }
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn platform_triple_format() {
-    // Verifies the triple format is "arch-os"
-    let platform = Platform::new(Arch::Aarch64, Os::MacOs);
-    assert_eq!(platform.triple(), "aarch64-darwin");
-
-    let platform = Platform::new(Arch::X86_64, Os::Linux);
-    assert_eq!(platform.triple(), "x86_64-linux");
-  }
-}

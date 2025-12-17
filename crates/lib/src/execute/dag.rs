@@ -848,4 +848,206 @@ mod tests {
     let fake_hash = ObjectHash("nonexistent".to_string());
     assert!(dag.get_bind(&fake_hash, &manifest).is_none());
   }
+
+  // Destroy ordering tests
+  // These tests verify that binds can be destroyed in reverse dependency order
+  // by reversing the execution waves.
+
+  #[test]
+  fn linear_bind_chain_destroy_order() {
+    // Create bind dependency chain: A -> B -> C
+    // Apply order should be: A, B, C (wave 0, 1, 2)
+    // Destroy order should be: C, B, A (reverse waves: 2, 1, 0)
+
+    let bind_a = make_bind(None);
+    let hash_a = bind_a.compute_hash().unwrap();
+
+    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let hash_b = bind_b.compute_hash().unwrap();
+
+    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let hash_c = bind_c.compute_hash().unwrap();
+
+    let mut manifest = Manifest::default();
+    manifest.bindings.insert(hash_a.clone(), bind_a);
+    manifest.bindings.insert(hash_b.clone(), bind_b);
+    manifest.bindings.insert(hash_c.clone(), bind_c);
+
+    let dag = ExecutionDag::from_manifest(&manifest).unwrap();
+    let waves = dag.execution_waves().unwrap();
+
+    // Verify apply order: A first, then B, then C
+    assert_eq!(waves.len(), 3);
+    assert_eq!(waves[0], vec![DagNode::Bind(hash_a.clone())]);
+    assert_eq!(waves[1], vec![DagNode::Bind(hash_b.clone())]);
+    assert_eq!(waves[2], vec![DagNode::Bind(hash_c.clone())]);
+
+    // Verify destroy order by reversing waves: C first, then B, then A
+    let destroy_waves: Vec<_> = waves.iter().rev().collect();
+    assert_eq!(destroy_waves[0], &vec![DagNode::Bind(hash_c.clone())]);
+    assert_eq!(destroy_waves[1], &vec![DagNode::Bind(hash_b.clone())]);
+    assert_eq!(destroy_waves[2], &vec![DagNode::Bind(hash_a.clone())]);
+  }
+
+  #[test]
+  fn diamond_bind_dependency_destroy_order() {
+    // Diamond pattern: D depends on B and C, B and C depend on A
+    //     A       (wave 0, destroy last)
+    //    / \
+    //   B   C     (wave 1, destroy second)
+    //    \ /
+    //     D       (wave 2, destroy first)
+
+    let bind_a = make_bind(None);
+    let hash_a = bind_a.compute_hash().unwrap();
+
+    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let hash_b = bind_b.compute_hash().unwrap();
+
+    let bind_c = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let hash_c = bind_c.compute_hash().unwrap();
+
+    // D depends on both B and C
+    let mut d_inputs = BTreeMap::new();
+    d_inputs.insert("b".to_string(), BindInputs::Bind(hash_b.clone()));
+    d_inputs.insert("c".to_string(), BindInputs::Bind(hash_c.clone()));
+    let bind_d = make_bind(Some(BindInputs::Table(d_inputs)));
+    let hash_d = bind_d.compute_hash().unwrap();
+
+    let mut manifest = Manifest::default();
+    manifest.bindings.insert(hash_a.clone(), bind_a);
+    manifest.bindings.insert(hash_b.clone(), bind_b);
+    manifest.bindings.insert(hash_c.clone(), bind_c);
+    manifest.bindings.insert(hash_d.clone(), bind_d);
+
+    let dag = ExecutionDag::from_manifest(&manifest).unwrap();
+    let waves = dag.execution_waves().unwrap();
+
+    // Find which wave each bind is in
+    let wave_of = |hash: &ObjectHash| -> usize {
+      waves
+        .iter()
+        .position(|w| w.contains(&DagNode::Bind(hash.clone())))
+        .unwrap()
+    };
+
+    let wave_a = wave_of(&hash_a);
+    let wave_b = wave_of(&hash_b);
+    let wave_c = wave_of(&hash_c);
+    let wave_d = wave_of(&hash_d);
+
+    // Apply order: A must be before B and C, B and C must be before D
+    assert!(wave_a < wave_b);
+    assert!(wave_a < wave_c);
+    assert!(wave_b < wave_d);
+    assert!(wave_c < wave_d);
+
+    // B and C can be in the same wave (parallel)
+    assert_eq!(wave_b, wave_c);
+
+    // For destroy: reverse order - D first (leaf), then B and C, then A (root)
+    // This is safe because D is the only thing depending on B and C
+    let destroy_waves: Vec<_> = waves.iter().rev().collect();
+
+    // D should be in the first destroy wave (last apply wave reversed)
+    assert!(destroy_waves[0].contains(&DagNode::Bind(hash_d.clone())));
+
+    // A should be in the last destroy wave (first apply wave reversed)
+    let last_wave_idx = destroy_waves.len() - 1;
+    assert!(destroy_waves[last_wave_idx].contains(&DagNode::Bind(hash_a.clone())));
+  }
+
+  #[test]
+  fn mixed_builds_and_binds_destroy_order() {
+    // Build -> Bind chain: Build A -> Bind B -> Bind C
+    // When destroying, C should be destroyed before B
+    // (Build A is never "destroyed", just cleaned from store)
+
+    let build_a = make_build("a", None);
+    let build_hash_a = build_a.compute_hash().unwrap();
+
+    let bind_b = make_bind(Some(BindInputs::Build(build_hash_a.clone())));
+    let hash_b = bind_b.compute_hash().unwrap();
+
+    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let hash_c = bind_c.compute_hash().unwrap();
+
+    let mut manifest = Manifest::default();
+    manifest.builds.insert(build_hash_a.clone(), build_a);
+    manifest.bindings.insert(hash_b.clone(), bind_b);
+    manifest.bindings.insert(hash_c.clone(), bind_c);
+
+    let dag = ExecutionDag::from_manifest(&manifest).unwrap();
+    let waves = dag.execution_waves().unwrap();
+
+    // Find waves for each node
+    let wave_of = |node: &DagNode| -> usize { waves.iter().position(|w| w.contains(node)).unwrap() };
+
+    let wave_build_a = wave_of(&DagNode::Build(build_hash_a.clone()));
+    let wave_bind_b = wave_of(&DagNode::Bind(hash_b.clone()));
+    let wave_bind_c = wave_of(&DagNode::Bind(hash_c.clone()));
+
+    // Apply order: Build A, then Bind B, then Bind C
+    assert!(wave_build_a < wave_bind_b);
+    assert!(wave_bind_b < wave_bind_c);
+
+    // For destroy (binds only): C first, then B
+    // Build A is not in destroy order (builds don't have destroy actions)
+    let bind_destroy_order: Vec<_> = waves
+      .iter()
+      .rev()
+      .flat_map(|w| {
+        w.iter().filter_map(|node| {
+          if let DagNode::Bind(hash) = node {
+            Some(hash.clone())
+          } else {
+            None
+          }
+        })
+      })
+      .collect();
+
+    // C should come before B in destroy order
+    let pos_c = bind_destroy_order.iter().position(|h| h == &hash_c).unwrap();
+    let pos_b = bind_destroy_order.iter().position(|h| h == &hash_b).unwrap();
+    assert!(
+      pos_c < pos_b,
+      "Bind C should be destroyed before Bind B (reverse dependency order)"
+    );
+  }
+
+  #[test]
+  fn parallel_binds_can_destroy_in_same_wave() {
+    // Independent binds A, B, C should all be in wave 0
+    // and can be destroyed in parallel (any order)
+
+    let bind_a = make_bind(None);
+    let hash_a = bind_a.compute_hash().unwrap();
+
+    // Make B different from A
+    let bind_b = make_bind(Some(BindInputs::String("different_b".to_string())));
+    let hash_b = bind_b.compute_hash().unwrap();
+
+    // Make C different from both
+    let bind_c = make_bind(Some(BindInputs::String("different_c".to_string())));
+    let hash_c = bind_c.compute_hash().unwrap();
+
+    let mut manifest = Manifest::default();
+    manifest.bindings.insert(hash_a.clone(), bind_a);
+    manifest.bindings.insert(hash_b.clone(), bind_b);
+    manifest.bindings.insert(hash_c.clone(), bind_c);
+
+    let dag = ExecutionDag::from_manifest(&manifest).unwrap();
+    let waves = dag.execution_waves().unwrap();
+
+    // All should be in the same wave (parallel execution allowed)
+    assert_eq!(waves.len(), 1);
+    assert_eq!(waves[0].len(), 3);
+    assert!(waves[0].contains(&DagNode::Bind(hash_a)));
+    assert!(waves[0].contains(&DagNode::Bind(hash_b)));
+    assert!(waves[0].contains(&DagNode::Bind(hash_c)));
+
+    // For destroy: all can be destroyed in parallel (same wave)
+    // Order within the wave doesn't matter
+  }
 }

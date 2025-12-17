@@ -359,4 +359,213 @@ mod tests {
     };
     assert!(!diff_with_destroy.is_empty());
   }
+
+  // Build cache invalidation tests
+
+  #[test]
+  fn changed_build_hash_requires_rebuild() {
+    // When a build's hash changes (due to input changes), the new build
+    // should be in builds_to_realize, even if a stale cache entry exists
+    // for the old hash.
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create a cached build with the OLD hash
+    let old_hash = ObjectHash("old_hash_12345678901234".to_string());
+    let old_dir = temp_dir.path().join("obj").join("pkg-old_hash_12345678901234");
+    std::fs::create_dir_all(&old_dir).unwrap();
+
+    // Current manifest has the old build
+    let mut current = Manifest::default();
+    current.builds.insert(old_hash.clone(), make_build_def("pkg"));
+
+    // Desired manifest has a NEW hash for the same package name
+    // (simulating changed inputs)
+    let new_hash = ObjectHash("new_hash_12345678901234".to_string());
+    let mut desired = Manifest::default();
+    desired.builds.insert(new_hash.clone(), make_build_def("pkg"));
+
+    let diff = compute_diff(&desired, Some(&current), temp_dir.path());
+
+    // The new build should be in builds_to_realize (not cached)
+    assert_eq!(diff.builds_to_realize.len(), 1);
+    assert!(diff.builds_to_realize.contains(&new_hash));
+    // Old build is not in cached (it's from current, not desired)
+    assert!(diff.builds_cached.is_empty());
+  }
+
+  #[test]
+  fn dependent_builds_have_different_hashes_when_dependency_changes() {
+    // This test verifies that the hash computation correctly incorporates
+    // dependency hashes, so changing a dependency produces a different dependent hash.
+    use crate::build::BuildInputs;
+    use crate::util::hash::Hashable;
+
+    // Base build (no deps), version 1.0.0
+    let base_v1 = BuildDef {
+      name: "base".to_string(),
+      version: Some("1.0.0".to_string()),
+      inputs: None,
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let base_v1_hash = base_v1.compute_hash().unwrap();
+
+    // Base build with different version
+    let base_v2 = BuildDef {
+      name: "base".to_string(),
+      version: Some("2.0.0".to_string()),
+      inputs: None,
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let base_v2_hash = base_v2.compute_hash().unwrap();
+
+    // Hashes for different versions must be different
+    assert_ne!(
+      base_v1_hash, base_v2_hash,
+      "Different versions should produce different hashes"
+    );
+
+    // Dependent build referencing v1
+    let dependent_on_v1 = BuildDef {
+      name: "dependent".to_string(),
+      version: None,
+      inputs: Some(BuildInputs::Build(base_v1_hash.clone())),
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let dep_v1_hash = dependent_on_v1.compute_hash().unwrap();
+
+    // Same dependent build referencing v2
+    let dependent_on_v2 = BuildDef {
+      name: "dependent".to_string(),
+      version: None,
+      inputs: Some(BuildInputs::Build(base_v2_hash.clone())),
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let dep_v2_hash = dependent_on_v2.compute_hash().unwrap();
+
+    // Hashes must differ when dependency changes
+    assert_ne!(
+      dep_v1_hash, dep_v2_hash,
+      "Dependent build hash should change when dependency hash changes"
+    );
+  }
+
+  #[test]
+  fn version_change_invalidates_cache() {
+    // Changing a build's version should produce a different hash
+    // and require a rebuild even if the old version is cached.
+    use crate::util::hash::Hashable;
+
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create build with version 1.0.0
+    let build_v1 = BuildDef {
+      name: "pkg".to_string(),
+      version: Some("1.0.0".to_string()),
+      inputs: None,
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let hash_v1 = build_v1.compute_hash().unwrap();
+
+    // Cache the v1 build
+    let v1_dir = temp_dir.path().join("obj").join(format!("pkg-1.0.0-{}", &hash_v1.0));
+    std::fs::create_dir_all(&v1_dir).unwrap();
+
+    // Current manifest has v1
+    let mut current = Manifest::default();
+    current.builds.insert(hash_v1.clone(), build_v1);
+
+    // Desired manifest has v2
+    let build_v2 = BuildDef {
+      name: "pkg".to_string(),
+      version: Some("2.0.0".to_string()),
+      inputs: None,
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let hash_v2 = build_v2.compute_hash().unwrap();
+
+    let mut desired = Manifest::default();
+    desired.builds.insert(hash_v2.clone(), build_v2);
+
+    let diff = compute_diff(&desired, Some(&current), temp_dir.path());
+
+    // v2 should need realization (not cached)
+    assert_eq!(diff.builds_to_realize.len(), 1);
+    assert!(diff.builds_to_realize.contains(&hash_v2));
+  }
+
+  #[test]
+  fn action_change_invalidates_cache() {
+    // Changing a build's actions should produce a different hash
+    use crate::action::Action;
+    use crate::action::actions::exec::ExecOpts;
+    use crate::util::hash::Hashable;
+
+    // Build with one action
+    let build_action1 = BuildDef {
+      name: "pkg".to_string(),
+      version: None,
+      inputs: None,
+      apply_actions: vec![Action::Exec(ExecOpts {
+        bin: "echo".to_string(),
+        args: Some(vec!["hello".to_string()]),
+        env: None,
+        cwd: None,
+      })],
+      outputs: None,
+    };
+    let hash1 = build_action1.compute_hash().unwrap();
+
+    // Build with different action
+    let build_action2 = BuildDef {
+      name: "pkg".to_string(),
+      version: None,
+      inputs: None,
+      apply_actions: vec![Action::Exec(ExecOpts {
+        bin: "echo".to_string(),
+        args: Some(vec!["world".to_string()]), // Different argument
+        env: None,
+        cwd: None,
+      })],
+      outputs: None,
+    };
+    let hash2 = build_action2.compute_hash().unwrap();
+
+    // Hashes must be different
+    assert_ne!(hash1, hash2, "Changing action arguments should produce different hash");
+  }
+
+  #[test]
+  fn inputs_change_invalidates_cache() {
+    // Changing a build's string inputs should produce a different hash
+    use crate::build::BuildInputs;
+    use crate::util::hash::Hashable;
+
+    // Build with input "foo"
+    let build_input1 = BuildDef {
+      name: "pkg".to_string(),
+      version: None,
+      inputs: Some(BuildInputs::String("foo".to_string())),
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let hash1 = build_input1.compute_hash().unwrap();
+
+    // Build with input "bar"
+    let build_input2 = BuildDef {
+      name: "pkg".to_string(),
+      version: None,
+      inputs: Some(BuildInputs::String("bar".to_string())),
+      apply_actions: vec![],
+      outputs: None,
+    };
+    let hash2 = build_input2.compute_hash().unwrap();
+
+    assert_ne!(hash1, hash2, "Changing inputs should produce different hash");
+  }
 }

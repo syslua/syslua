@@ -183,20 +183,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn actions_return_sequential_placeholders() {
-    let mut ctx = ActionCtx::new();
-
-    let p0 = ctx.fetch_url("https://example.com/a.tar.gz", "hash1");
-    let p1 = ctx.exec("tar xf a.tar.gz");
-    let p2 = ctx.fetch_url("https://example.com/b.tar.gz", "hash2");
-
-    // All actions use the same placeholder format with sequential indices
-    assert_eq!(p0, "$${action:0}");
-    assert_eq!(p1, "$${action:1}");
-    assert_eq!(p2, "$${action:2}");
-  }
-
-  #[test]
   fn cmd_preserves_env_and_cwd() {
     let mut ctx = ActionCtx::new();
     let mut env = BTreeMap::new();

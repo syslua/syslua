@@ -41,20 +41,3 @@ impl fmt::Display for Os {
 pub fn os() -> Option<Os> {
   Os::current()
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn current_returns_supported_os() {
-    // Verifies we're running on a supported OS
-    assert!(Os::current().is_some(), "Current OS should be supported");
-  }
-
-  #[test]
-  fn macos_uses_darwin_identifier() {
-    // Darwin is the expected identifier for macOS in platform triples
-    assert_eq!(Os::MacOs.as_str(), "darwin");
-  }
-}

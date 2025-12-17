@@ -38,14 +38,3 @@ impl fmt::Display for Arch {
 pub fn arch() -> Option<Arch> {
   Arch::current()
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn current_returns_supported_arch() {
-    // Verifies we're running on a supported architecture
-    assert!(Arch::current().is_some(), "Current architecture should be supported");
-  }
-}

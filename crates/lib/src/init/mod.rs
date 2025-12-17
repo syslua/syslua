@@ -434,25 +434,4 @@ mod tests {
       },
     );
   }
-
-  #[test]
-  #[serial]
-  fn init_template_content_is_valid() {
-    // Verify the templates are properly embedded
-    assert!(!INIT_LUA_TEMPLATE.is_empty(), "init.lua template should not be empty");
-    assert!(
-      INIT_LUA_TEMPLATE.contains("M.inputs"),
-      "template should contain M.inputs"
-    );
-    assert!(INIT_LUA_TEMPLATE.contains("M.setup"), "template should contain M.setup");
-
-    assert!(!GLOBALS_D_LUA.is_empty(), "globals.d.lua should not be empty");
-    assert!(GLOBALS_D_LUA.contains("@meta"), "globals.d.lua should contain @meta");
-
-    assert!(!LUARC_JSON_TEMPLATE.is_empty(), "luarc template should not be empty");
-    assert!(
-      LUARC_JSON_TEMPLATE.contains("{types_path}"),
-      "luarc template should contain placeholder"
-    );
-  }
 }

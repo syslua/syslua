@@ -429,4 +429,139 @@ mod tests {
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, "test123");
   }
+
+  // Corrupt snapshot handling tests
+
+  #[test]
+  fn load_index_handles_corrupted_json() {
+    let (temp, store) = temp_store();
+
+    // Create the snapshots directory and write corrupted index
+    fs::create_dir_all(&store.base_path).unwrap();
+    let index_path = temp.path().join(INDEX_FILENAME);
+    fs::write(&index_path, "not valid json {{{").unwrap();
+
+    // Should return an error, not panic
+    let result = store.load_index();
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn load_index_handles_wrong_schema() {
+    let (temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    let index_path = temp.path().join(INDEX_FILENAME);
+    // Valid JSON but wrong structure (missing version and snapshots fields)
+    fs::write(&index_path, r#"{"foo": "bar"}"#).unwrap();
+
+    let result = store.load_index();
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn load_index_handles_empty_file() {
+    let (temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    let index_path = temp.path().join(INDEX_FILENAME);
+    fs::write(&index_path, "").unwrap();
+
+    let result = store.load_index();
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn load_index_handles_unsupported_version() {
+    let (temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    let index_path = temp.path().join(INDEX_FILENAME);
+    // Valid index structure but unsupported version
+    fs::write(&index_path, r#"{"version": 99999, "snapshots": [], "current": null}"#).unwrap();
+
+    let result = store.load_index();
+    assert!(matches!(result, Err(SnapshotError::UnsupportedVersion(99999))));
+  }
+
+  #[test]
+  fn load_current_handles_missing_snapshot_file() {
+    let (_temp, store) = temp_store();
+
+    // Create a valid index pointing to a non-existent snapshot
+    let mut index = SnapshotIndex::new();
+    index.add(SnapshotMetadata {
+      id: "nonexistent123".to_string(),
+      created_at: 12345,
+      config_path: None,
+      build_count: 0,
+      bind_count: 0,
+    });
+    index.current = Some("nonexistent123".to_string());
+
+    // Save the index directly
+    fs::create_dir_all(&store.base_path).unwrap();
+    let index_content = serde_json::to_string_pretty(&index).unwrap();
+    fs::write(store.base_path.join(INDEX_FILENAME), &index_content).unwrap();
+
+    // load_current should fail because the snapshot file doesn't exist
+    let result = store.load_current();
+    assert!(matches!(result, Err(SnapshotError::NotFound(_))));
+  }
+
+  #[test]
+  fn load_snapshot_handles_corrupted_json() {
+    let (_temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    // Write a corrupted snapshot file
+    fs::write(store.base_path.join("corrupt123.json"), "garbage data").unwrap();
+
+    let result = store.load_snapshot("corrupt123");
+    assert!(result.is_err());
+    // Should be a parse error, not NotFound
+    match result {
+      Err(SnapshotError::Parse(_)) => {} // Expected
+      Err(other) => panic!("expected Parse error, got: {}", other),
+      Ok(_) => panic!("expected error, got Ok"),
+    }
+  }
+
+  #[test]
+  fn load_snapshot_handles_wrong_schema() {
+    let (_temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    // Valid JSON but wrong structure
+    fs::write(
+      store.base_path.join("wrongschema.json"),
+      r#"{"unexpected": "structure"}"#,
+    )
+    .unwrap();
+
+    let result = store.load_snapshot("wrongschema");
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn load_snapshot_handles_empty_file() {
+    let (_temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    fs::write(store.base_path.join("empty.json"), "").unwrap();
+
+    let result = store.load_snapshot("empty");
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn load_snapshot_handles_null_json() {
+    let (_temp, store) = temp_store();
+
+    fs::create_dir_all(&store.base_path).unwrap();
+    fs::write(store.base_path.join("nullsnap.json"), "null").unwrap();
+
+    let result = store.load_snapshot("nullsnap");
+    assert!(result.is_err());
+  }
 }

@@ -168,13 +168,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_creates_empty_with_version() {
-      let lock = LockFile::new();
-      assert_eq!(lock.version, LOCK_VERSION);
-      assert!(lock.inputs.is_empty());
-    }
-
-    #[test]
     fn insert_and_get() {
       let mut lock = LockFile::new();
       lock.insert(

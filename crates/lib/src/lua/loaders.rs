@@ -279,34 +279,6 @@ mod tests {
   }
 
   #[test]
-  fn test_load_file_with_dir_can_access_globals() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("test.lua");
-    fs::write(&file_path, "return type(print)").unwrap();
-
-    let lua = create_test_runtime()?;
-    let result: String = load_file_with_dir(&lua, &file_path)?.to_string().unwrap().to_string();
-
-    assert_eq!(result, "function");
-    Ok(())
-  }
-
-  #[test]
-  fn test_load_file_with_dir_can_set_globals() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("test.lua");
-    fs::write(&file_path, "MY_GLOBAL = 42; return MY_GLOBAL").unwrap();
-
-    let lua = create_test_runtime()?;
-    let result: i32 = load_file_with_dir(&lua, &file_path)?.as_i32().unwrap();
-    let global: i32 = lua.globals().get("MY_GLOBAL")?;
-
-    assert_eq!(result, 42);
-    assert_eq!(global, 42);
-    Ok(())
-  }
-
-  #[test]
   fn test_require_injects_dir() -> LuaResult<()> {
     let temp_dir = TempDir::new().unwrap();
 

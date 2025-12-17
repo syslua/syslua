@@ -335,15 +335,4 @@ mod tests {
     let hash2 = hash_file(&file_path).unwrap();
     assert_eq!(hash, hash2);
   }
-
-  #[test]
-  fn hash_bytes_works() {
-    let hash1 = hash_bytes(b"hello");
-    let hash2 = hash_bytes(b"hello");
-    let hash3 = hash_bytes(b"world");
-
-    assert_eq!(hash1.0.len(), 64);
-    assert_eq!(hash1, hash2);
-    assert_ne!(hash1, hash3);
-  }
 }

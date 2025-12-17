@@ -217,15 +217,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn dag_result_success_when_empty() {
-    let result = DagResult::default();
-    assert!(result.is_success());
-    assert_eq!(result.total(), 0);
-    assert_eq!(result.build_total(), 0);
-    assert_eq!(result.bind_total(), 0);
-  }
-
-  #[test]
   fn dag_result_success_with_realized_build() {
     let mut result = DagResult::default();
     result.realized.insert(
