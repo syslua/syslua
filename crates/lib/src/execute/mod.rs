@@ -646,7 +646,7 @@ mod tests {
 
   /// Returns a command and args to create an empty file at the given path.
   /// Unix: /usr/bin/touch {path}
-  /// Windows: cmd /C copy nul "{path}"
+  /// Windows: powershell New-Item
   #[cfg(unix)]
   fn touch_cmd(path: &std::path::Path) -> (String, Vec<String>) {
     ("/usr/bin/touch".to_string(), vec![path.display().to_string()])
@@ -654,14 +654,20 @@ mod tests {
 
   #[cfg(windows)]
   fn touch_cmd(path: &std::path::Path) -> (String, Vec<String>) {
-    // Use 'copy /y nul' to create an empty file, wrapped in shell
-    let (cmd, args) = shell_cmd(&format!("copy /y nul \"{}\"", path.display()));
-    (cmd.to_string(), args)
+    // Use PowerShell to create an empty file - more reliable than cmd.exe approaches
+    (
+      "powershell.exe".to_string(),
+      vec![
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        format!("New-Item -ItemType File -Path '{}' -Force | Out-Null", path.display()),
+      ],
+    )
   }
 
   /// Returns a command and args to remove a file at the given path.
   /// Unix: /bin/rm -f {path}
-  /// Windows: cmd /C del /f /q "{path}"
+  /// Windows: powershell Remove-Item
   #[cfg(unix)]
   fn rm_cmd(path: &std::path::Path) -> (String, Vec<String>) {
     (
@@ -672,8 +678,18 @@ mod tests {
 
   #[cfg(windows)]
   fn rm_cmd(path: &std::path::Path) -> (String, Vec<String>) {
-    let (cmd, args) = shell_cmd(&format!("del /f /q \"{}\" 2>nul", path.display()));
-    (cmd.to_string(), args)
+    // Use PowerShell to remove file - more reliable than cmd.exe approaches
+    (
+      "powershell.exe".to_string(),
+      vec![
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        format!(
+          "Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue",
+          path.display()
+        ),
+      ],
+    )
   }
 
   #[test]

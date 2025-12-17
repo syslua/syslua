@@ -36,10 +36,14 @@ pub fn touch_file(filename: &str) -> (&'static str, Vec<String>) {
 
 #[cfg(windows)]
 pub fn touch_file(filename: &str) -> (&'static str, Vec<String>) {
-  // Use copy with nul device to create empty file
+  // Use PowerShell to create an empty file - more reliable than cmd.exe approaches
   (
-    "cmd.exe",
-    vec!["/C".to_string(), format!("copy nul \"{}\" >nul", filename)],
+    "powershell.exe",
+    vec![
+      "-NoProfile".to_string(),
+      "-Command".to_string(),
+      format!("New-Item -ItemType File -Path '{}' -Force | Out-Null", filename),
+    ],
   )
 }
 
