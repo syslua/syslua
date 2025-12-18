@@ -4,6 +4,7 @@
 //! producing the final BindResult.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 
 use tempfile::TempDir;
@@ -44,7 +45,7 @@ pub async fn apply_bind<R: Resolver>(
   // Create a resolver that wraps the provided one but overrides $${out}
   let bind_resolver = BindApplyResolver {
     inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
+    out_dir: fs::canonicalize(out_dir)?.to_string_lossy().to_string(),
     action_results: Vec::new(),
   };
 
@@ -97,7 +98,7 @@ pub async fn destroy_bind<R: Resolver>(
   // so that destroy commands can reference them
   let bind_resolver = BindDestroyResolver {
     inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
+    out_dir: fs::canonicalize(out_dir)?.to_string_lossy().to_string(),
     applied_outputs: &bind_result.outputs,
     action_results: Vec::new(),
   };
@@ -151,7 +152,7 @@ pub async fn update_bind<R: Resolver>(
   // Create a resolver that has access to old outputs for placeholder resolution
   let bind_resolver = BindUpdateResolver {
     inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
+    out_dir: fs::canonicalize(out_dir)?.to_string_lossy().to_string(),
     old_outputs: &old_bind_result.outputs,
     action_results: Vec::new(),
   };

@@ -415,7 +415,13 @@ async fn destroy_removed_binds(
   let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
   let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
   let empty_manifest = Manifest::default();
-  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &empty_manifest, "/tmp", config.system);
+  let resolver = ExecutionResolver::new(
+    &empty_builds,
+    &empty_binds,
+    &empty_manifest,
+    "/tmp".to_string(),
+    config.system,
+  );
 
   for hash in hashes {
     // Load bind state (outputs from when it was applied)
@@ -566,7 +572,13 @@ async fn update_modified_binds(
     };
 
     // Create resolver for update
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, desired, "/tmp", config.system);
+    let resolver = ExecutionResolver::new(
+      &completed_builds,
+      &completed_binds,
+      desired,
+      "/tmp".to_string(),
+      config.system,
+    );
 
     // Create old bind result from saved state
     let old_bind_result = BindResult {
@@ -731,7 +743,13 @@ async fn restore_destroyed_binds(
       join_set.spawn(async move {
         let _permit = semaphore.acquire().await.unwrap();
 
-        let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/tmp", system);
+        let resolver = ExecutionResolver::new(
+          &completed_builds,
+          &completed_binds,
+          &manifest,
+          "/tmp".to_string(),
+          system,
+        );
 
         let result = apply_bind(&hash, &bind_def, &resolver)
           .await

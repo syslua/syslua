@@ -417,7 +417,7 @@ async fn execute_bind_wave(
         &completed_builds,
         &completed_binds,
         &manifest,
-        "/tmp", // Temporary; apply_bind creates its own working dir
+        "/tmp".to_string(), // Temporary; apply_bind creates its own working dir
         config.system,
       );
 
@@ -496,7 +496,7 @@ async fn rollback_binds(
   // (destroy actions typically don't need to reference other completed nodes)
   let empty_builds = HashMap::new();
   let empty_binds = HashMap::new();
-  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, "/tmp", config.system);
+  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, "/tmp".to_string(), config.system);
 
   // Rollback in reverse order
   for hash in applied_order.iter().rev() {

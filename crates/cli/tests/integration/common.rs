@@ -61,14 +61,17 @@ impl TestEnv {
   /// Get a pre-configured Command for the sys binary.
   ///
   /// Sets environment variables for isolated testing:
+  /// - `SYSLUA_SYSTEM_STORE`: Isolated store path
   /// - `SYSLUA_USER_STORE`: Isolated store path
   /// - `XDG_DATA_HOME`: Isolated data path (for snapshots)
+  /// - `APPDATA`: Isolated data path (for Windows)
   /// - `TEST_OUTPUT_DIR`: Output path for test artifacts
   pub fn sys_cmd(&self) -> Command {
     let mut cmd: Command = cargo_bin_cmd!("sys");
     cmd.env("SYSLUA_SYSTEM_STORE", self.store_path());
     cmd.env("SYSLUA_USER_STORE", self.store_path());
     cmd.env("XDG_DATA_HOME", self.data_path());
+    cmd.env("APPDATA", self.data_path()); // For Windows
     cmd.env("TEST_OUTPUT_DIR", self.output_path());
     cmd
   }

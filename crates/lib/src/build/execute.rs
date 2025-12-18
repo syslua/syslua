@@ -4,7 +4,7 @@
 //! producing the final BuildResult.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -180,7 +180,12 @@ pub async fn realize_build(
   fs::create_dir_all(&store_path).await?;
 
   // Create resolver for this build
-  let mut resolver = BuildResolver::new(completed_builds, manifest, &store_path, config.system);
+  let mut resolver = BuildResolver::new(
+    completed_builds,
+    manifest,
+    store_path.to_string_lossy().to_string(),
+    config.system,
+  );
 
   // Execute actions in order
   let mut action_results = Vec::new();
@@ -298,7 +303,13 @@ pub async fn realize_build_with_resolver(
   fs::create_dir_all(&store_path).await?;
 
   // Create unified resolver for this build
-  let mut resolver = ExecutionResolver::new(completed_builds, completed_binds, manifest, &store_path, config.system);
+  let mut resolver = ExecutionResolver::new(
+    completed_builds,
+    completed_binds,
+    manifest,
+    store_path.to_string_lossy().to_string(),
+    config.system,
+  );
 
   // Execute actions in order
   let mut action_results = Vec::new();
@@ -345,7 +356,7 @@ pub async fn realize_build_with_resolver(
 /// This substitutes placeholders in the output values with actual paths.
 fn resolve_outputs(
   build_def: &BuildDef,
-  store_path: &PathBuf,
+  store_path: &Path,
   action_results: &[ActionResult],
   completed_builds: &HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
@@ -359,7 +370,12 @@ fn resolve_outputs(
   // Resolve user-defined outputs
   if let Some(def_outputs) = &build_def.outputs {
     // Create a resolver with the action results
-    let mut resolver = BuildResolver::new(completed_builds, manifest, store_path, config.system);
+    let mut resolver = BuildResolver::new(
+      completed_builds,
+      manifest,
+      store_path.to_string_lossy().to_string(),
+      config.system,
+    );
     for result in action_results {
       resolver.push_action_result(result.output.clone());
     }
@@ -379,7 +395,7 @@ fn resolve_outputs(
 /// supports both build and bind placeholder resolution.
 fn resolve_outputs_with_resolver(
   build_def: &BuildDef,
-  store_path: &PathBuf,
+  store_path: &Path,
   action_results: &[ActionResult],
   completed_builds: &HashMap<ObjectHash, BuildResult>,
   completed_binds: &HashMap<ObjectHash, BindResult>,
@@ -388,13 +404,21 @@ fn resolve_outputs_with_resolver(
 ) -> Result<HashMap<String, String>, ExecuteError> {
   let mut outputs = HashMap::new();
 
+  let canonical_store_path = std::fs::canonicalize(store_path)?;
+
   // Always include "out" pointing to the store path
-  outputs.insert("out".to_string(), store_path.to_string_lossy().to_string());
+  outputs.insert("out".to_string(), canonical_store_path.to_string_lossy().to_string());
 
   // Resolve user-defined outputs
   if let Some(def_outputs) = &build_def.outputs {
     // Create a unified resolver with the action results
-    let mut resolver = ExecutionResolver::new(completed_builds, completed_binds, manifest, store_path, config.system);
+    let mut resolver = ExecutionResolver::new(
+      completed_builds,
+      completed_binds,
+      manifest,
+      canonical_store_path.to_string_lossy().to_string(),
+      config.system,
+    );
     for result in action_results {
       resolver.push_action_result(result.output.clone());
     }
