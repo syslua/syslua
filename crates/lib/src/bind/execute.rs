@@ -50,7 +50,7 @@ pub async fn apply_bind<R: Resolver>(
 
   // Execute actions in order
   let (action_results, outputs) =
-    execute_bind_actions(&bind_def.apply_actions, bind_resolver, bind_def, out_dir).await?;
+    execute_bind_actions(&bind_def.create_actions, bind_resolver, bind_def, out_dir).await?;
 
   info!(hash = %hash.0, "bind applied");
 
@@ -85,10 +85,7 @@ pub async fn destroy_bind<R: Resolver>(
   bind_result: &BindResult,
   resolver: &R,
 ) -> Result<(), ExecuteError> {
-  let Some(destroy_actions) = &bind_def.destroy_actions else {
-    debug!(hash = %hash.0, "bind has no destroy_actions, skipping");
-    return Ok(());
-  };
+  let destroy_actions = &bind_def.destroy_actions;
 
   info!(hash = %hash.0, "destroying bind");
 
@@ -243,6 +240,8 @@ impl<R: Resolver> Resolver for BindDestroyResolver<'_, R> {
 
 #[cfg(test)]
 mod tests {
+  use std::vec;
+
   use super::*;
   use crate::util::testutil::{echo_msg, shell_cmd};
   use crate::{action::actions::exec::ExecOpts, placeholder::PlaceholderError, util::hash::Hashable};
@@ -314,15 +313,17 @@ mod tests {
   fn make_simple_bind() -> BindDef {
     let (cmd, args) = echo_msg("applied");
     BindDef {
+      id: "simple".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: None,
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
         cwd: None,
       })],
-      outputs: None,
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     }
   }
 
@@ -344,15 +345,17 @@ mod tests {
   async fn apply_bind_with_outputs() {
     let (cmd, args) = echo_msg("/path/to/link");
     let bind_def = BindDef {
+      id: "with-outputs".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: Some([("link".to_string(), "$${action:0}".to_string())].into_iter().collect()),
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
         cwd: None,
       })],
-      outputs: Some([("link".to_string(), "$${action:0}".to_string())].into_iter().collect()),
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -367,15 +370,17 @@ mod tests {
   async fn apply_bind_with_out_placeholder() {
     let (cmd, args) = echo_msg("$${out}");
     let bind_def = BindDef {
+      id: "with-out".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: Some([("dir".to_string(), "$${out}".to_string())].into_iter().collect()),
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
         cwd: None,
       })],
-      outputs: Some([("dir".to_string(), "$${out}".to_string())].into_iter().collect()),
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -398,15 +403,17 @@ mod tests {
   async fn apply_bind_with_build_dependency() {
     let (cmd, args) = echo_msg("$${build:abc123:bin}");
     let bind_def = BindDef {
+      id: "with-build".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: None,
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
         cwd: None,
       })],
-      outputs: None,
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     };
     let hash = bind_def.compute_hash().unwrap();
 
@@ -425,24 +432,26 @@ mod tests {
     let (apply_cmd, apply_args) = echo_msg("applied");
     let (destroy_cmd, destroy_args) = echo_msg("destroyed");
     let bind_def = BindDef {
+      id: "to-destroy".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
-        bin: apply_cmd.to_string(),
-        args: Some(apply_args),
-        env: None,
-        cwd: None,
-      })],
       outputs: Some(
         [("path".to_string(), "/created/path".to_string())]
           .into_iter()
           .collect(),
       ),
-      destroy_actions: Some(vec![Action::Exec(ExecOpts {
+      create_actions: vec![Action::Exec(ExecOpts {
+        bin: apply_cmd.to_string(),
+        args: Some(apply_args),
+        env: None,
+        cwd: None,
+      })],
+      update_actions: None,
+      destroy_actions: vec![Action::Exec(ExecOpts {
         bin: destroy_cmd.to_string(),
         args: Some(destroy_args),
         env: None,
         cwd: None,
-      })]),
+      })],
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -478,15 +487,17 @@ mod tests {
   async fn apply_bind_action_failure() {
     let (cmd, args) = shell_cmd("exit 1");
     let bind_def = BindDef {
+      id: "failing-bind".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: None,
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
         cwd: None,
       })],
-      outputs: None,
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -503,8 +514,14 @@ mod tests {
     let (cmd2, args2) = echo_msg("step2");
     let (cmd3, args3) = echo_msg("$${action:0} $${action:1}");
     let bind_def = BindDef {
+      id: "multi-action".to_string(),
       inputs: None,
-      apply_actions: vec![
+      outputs: Some(
+        [("combined".to_string(), "$${action:2}".to_string())]
+          .into_iter()
+          .collect(),
+      ),
+      create_actions: vec![
         Action::Exec(ExecOpts {
           bin: cmd1.to_string(),
           args: Some(args1),
@@ -524,12 +541,8 @@ mod tests {
           cwd: None,
         }),
       ],
-      outputs: Some(
-        [("combined".to_string(), "$${action:2}".to_string())]
-          .into_iter()
-          .collect(),
-      ),
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();

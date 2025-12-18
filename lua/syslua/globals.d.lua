@@ -13,27 +13,30 @@
 ---returns the store path
 ---@field exec fun(self: ActionCtx, opts: string | ExecOpts, args?: string[]): string Performs a command during application, returns stdout
 
----@class BuildRef @field name string Build name
----@field version? string Version string
+---@class BuildRef
+---@field id string Build id
 ---@field inputs? table All inputs to the build
 ---@field outputs table All outputs from the build
 ---@field hash string Content-addressed hash
 
 ---@class BuildSpec
----@field name string Required: build name
----@field version? string Optional: version string
+---@field id string Required: build id, must be unique
 ---@field inputs? table|fun(): table Optional: input data
----@field apply fun(inputs: table, ctx: ActionCtx): table Required: build logic, returns outputs
+---@field create fun(inputs: table, ctx: ActionCtx): table Required: build logic, returns outputs
 
 ---@class BindRef
+---@field id string Binding id
 ---@field inputs? table All inputs to the binding
 ---@field outputs? table All outputs from the binding
 ---@field hash string Hash of actions for deduplication
 
 ---@class BindSpec
+---@field id string Required: binding id, must be unique
 ---@field inputs? table|fun(): table Optional: input data
----@field apply fun(inputs: table, ctx: ActionCtx): table | nil Required: binding logic, optionally returns outputs
----@field destroy? fun(outputs: table, ctx: ActionCtx): nil Optional: cleanup logic, receives outputs from apply
+---@field create fun(inputs: table, ctx: ActionCtx): table | nil Required: binding logic, optionally returns outputs
+---@field update? fun(outputs: table, inputs: table, ctx: ActionCtx): table | nil Optional: update logic, optionally returns outputs
+---@field destroy fun(outputs: table, ctx: ActionCtx): nil Optional: cleanup logic, receives outputs from create or
+---update
 
 ---@class PathHelpers
 ---@field resolve fun(...: string): string Resolves a sequence of path segments into an absolute path

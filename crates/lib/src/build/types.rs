@@ -101,16 +101,14 @@ pub enum BuildInputs {
 /// Shell variables like `$HOME` pass through unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BuildDef {
-  /// Human-readable name for the build.
-  pub name: String,
-  /// Optional version string.
-  pub version: Option<String>,
+  /// Human-readable identifier for the build. Does not need to be unique.
+  pub id: String,
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
   pub inputs: Option<BuildInputs>,
-  /// The sequence of actions to execute during `apply`.
-  pub apply_actions: Vec<Action>,
   /// Named outputs from the build (e.g., `{"out": "$${action:2}", "bin": "..."}`).
   pub outputs: Option<BTreeMap<String, String>>,
+  /// The sequence of actions to execute during `create`.
+  pub create_actions: Vec<Action>,
 }
 
 impl Hashable for BuildDef {}
@@ -126,10 +124,9 @@ mod tests {
 
     fn simple_def() -> BuildDef {
       BuildDef {
-        name: "ripgrep".to_string(),
-        version: Some("15.1.0".to_string()),
+        id: "ripgrep-15.1.0".to_string(),
         inputs: None,
-        apply_actions: vec![Action::FetchUrl {
+        create_actions: vec![Action::FetchUrl {
           url: "https://example.com/rg.tar.gz".to_string(),
           sha256: "abc123".to_string(),
         }],
@@ -159,7 +156,7 @@ mod tests {
       let def1 = simple_def();
 
       let mut def2 = simple_def();
-      def2.name = "fd".to_string();
+      def2.id = "fd".to_string();
 
       assert_ne!(def1.compute_hash().unwrap(), def2.compute_hash().unwrap());
     }
@@ -169,7 +166,7 @@ mod tests {
       let def1 = simple_def();
 
       let mut def2 = simple_def();
-      def2.apply_actions.push(Action::Exec(ExecOpts {
+      def2.create_actions.push(Action::Exec(ExecOpts {
         bin: "make".to_string(),
         args: None,
         env: None,
@@ -184,10 +181,9 @@ mod tests {
       // Action order matters for reproducibility - same actions in different
       // order should produce different hashes
       let def1 = BuildDef {
-        name: "test".to_string(),
-        version: None,
+        id: "test".to_string(),
         inputs: None,
-        apply_actions: vec![
+        create_actions: vec![
           Action::Exec(ExecOpts {
             bin: "step1".to_string(),
             args: None,
@@ -205,10 +201,9 @@ mod tests {
       };
 
       let def2 = BuildDef {
-        name: "test".to_string(),
-        version: None,
+        id: "test".to_string(),
         inputs: None,
-        apply_actions: vec![
+        create_actions: vec![
           Action::Exec(ExecOpts {
             bin: "step2".to_string(),
             args: None,
@@ -234,10 +229,9 @@ mod tests {
       env.insert("CC".to_string(), "gcc".to_string());
 
       let def = BuildDef {
-        name: "complex".to_string(),
-        version: Some("1.0.0".to_string()),
+        id: "complex".to_string(),
         inputs: Some(BuildInputs::String("test".to_string())),
-        apply_actions: vec![
+        create_actions: vec![
           Action::FetchUrl {
             url: "https://example.com/src.tar.gz".to_string(),
             sha256: "abc123".to_string(),

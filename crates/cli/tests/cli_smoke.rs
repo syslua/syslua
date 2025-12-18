@@ -35,9 +35,8 @@ return {
     inputs = {},
     setup = function(_)
         sys.build({
-            name = "test-pkg",
-            version = "1.0.0",
-            apply = function(_, ctx)
+            id = "test-pkg",
+            create = function(_, ctx)
                 return { out = ctx.out }
             end,
         })

@@ -95,7 +95,7 @@ pub fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<Bui
   Ok(BuildInputs::Build(build_hash))
 }
 
-/// Convert BindInputsRef to a Lua value for passing to the apply function.
+/// Convert BindInputsRef to a Lua value for passing to the create function.
 ///
 /// For Build/Bind references, looks up the definition in the manifest to
 /// reconstruct the Lua table with placeholder outputs.
@@ -132,10 +132,7 @@ pub fn build_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> L
     .ok_or_else(|| LuaError::external(format!("build not found in manifest: {}", hash.0)))?;
 
   let table = lua.create_table()?;
-  table.set("name", build_def.name.as_str())?;
-  if let Some(v) = &build_def.version {
-    table.set("version", v.as_str())?;
-  }
+  table.set("id", build_def.id.as_str())?;
   table.set("hash", hash.0.as_str())?;
 
   // Generate placeholder outputs from BuildDef
@@ -160,23 +157,22 @@ pub fn build_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> L
 /// Register the `sys.build` function on the sys table.
 ///
 /// The `sys.build{}` function:
-/// 1. Parses a BuildSpec from the Lua table (name, version, inputs, apply)
+/// 1. Parses a BuildSpec from the Lua table (id, inputs, create)
 /// 2. Resolves inputs (calls function if dynamic, uses table directly if static)
-/// 3. Creates a BuildCtx and calls the apply function
+/// 3. Creates a BuildCtx and calls the create function
 /// 4. Captures the returned outputs (must be non-empty)
 /// 5. Creates a BuildDef, computes its hash, and adds it to the manifest
 /// 6. Returns a BuildRef as a Lua table with metatable marker
 pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<Manifest>>) -> LuaResult<()> {
   let build_fn = lua.create_function(move |lua, spec_table: LuaTable| {
     // 1. Parse the BuildSpec from the Lua table
-    let name: String = spec_table
-      .get("name")
-      .map_err(|_| LuaError::external("build spec requires 'name' field"))?;
+    let id: String = spec_table
+      .get("id")
+      .map_err(|_| LuaError::external("build spec requires 'id' field"))?;
 
-    let version: Option<String> = spec_table.get("version")?;
-    let apply_fn: LuaFunction = spec_table
-      .get("apply")
-      .map_err(|_| LuaError::external("build spec requires 'apply' function"))?;
+    let create_fn: LuaFunction = spec_table
+      .get("create")
+      .map_err(|_| LuaError::external("build spec requires 'create' function"))?;
 
     // 2. Resolve inputs (if provided)
     let inputs_value: Option<LuaValue> = spec_table.get("inputs")?;
@@ -195,48 +191,47 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
       None => None,
     };
 
-    // 3. Create BuildCtx and call the apply function
+    // 3. Create BuildCtx and call the create function
     let ctx = ActionCtx::new();
     let ctx_userdata = lua.create_userdata(ctx)?;
 
-    // Prepare inputs argument for apply function
+    // Prepare inputs argument for create function
     let inputs_arg: LuaValue = match &resolved_inputs {
       Some(inputs) => build_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
       None => LuaValue::Table(lua.create_table()?), // Empty table if no inputs
     };
 
-    // Call: apply(inputs, ctx) -> outputs
-    let result: LuaValue = apply_fn.call((inputs_arg, &ctx_userdata))?;
+    // Call: create(inputs, ctx) -> outputs
+    let result: LuaValue = create_fn.call((inputs_arg, &ctx_userdata))?;
 
     // 4. Extract outputs from return value (must be non-empty table)
     let outputs: BTreeMap<String, String> = match result {
       LuaValue::Table(t) => {
         let parsed = parse_outputs(t)?;
         if parsed.is_empty() {
-          return Err(LuaError::external("build apply must return a non-empty outputs table"));
+          return Err(LuaError::external("build create must return a non-empty outputs table"));
         }
         parsed
       }
       LuaValue::Nil => {
         return Err(LuaError::external(
-          "build apply must return a non-empty outputs table, got nil",
+          "build create must return a non-empty outputs table, got nil",
         ));
       }
       _ => {
-        return Err(LuaError::external("build apply must return a table of outputs"));
+        return Err(LuaError::external("build create must return a table of outputs"));
       }
     };
 
     // 5. Extract actions from ActionCtx
     let ctx: ActionCtx = ctx_userdata.take()?;
-    let apply_actions = ctx.into_actions();
+    let create_actions = ctx.into_actions();
 
     // 6. Create BuildDef
     let build_def = BuildDef {
-      name: name.clone(),
-      version: version.clone(),
+      id: id.clone(),
       inputs: resolved_inputs.clone(),
-      apply_actions,
+      create_actions,
       outputs: Some(outputs.clone()),
     };
 
@@ -251,7 +246,7 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
       if manifest.builds.contains_key(&hash) {
         tracing::warn!(
           hash = %hash.0,
-          name = %name,
+          id = %id,
           "duplicate build detected, skipping insertion"
         );
       } else {
@@ -261,10 +256,7 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
 
     // 9. Create and return BuildRef as Lua table
     let ref_table = lua.create_table()?;
-    ref_table.set("name", name.as_str())?;
-    if let Some(v) = &version {
-      ref_table.set("version", v.as_str())?;
-    }
+    ref_table.set("id", id.as_str())?;
     ref_table.set("hash", hash.0.as_str())?;
 
     // Add inputs to ref (nil if not specified)
@@ -321,9 +313,8 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "test-pkg",
-                    version = "1.0.0",
-                    apply = function(inputs, ctx)
+                    id = "test-pkg",
+                    create = function(inputs, ctx)
                         ctx:exec("make install")
                         return { out = "/path/to/output" }
                     end,
@@ -333,11 +324,8 @@ mod tests {
         .eval()?;
 
       // Check returned BuildRef
-      let name: String = result.get("name")?;
-      assert_eq!(name, "test-pkg");
-
-      let version: String = result.get("version")?;
-      assert_eq!(version, "1.0.0");
+      let id: String = result.get("id")?;
+      assert_eq!(id, "test-pkg");
 
       let hash: String = result.get("hash")?;
       assert!(!hash.is_empty(), "hash should not be empty");
@@ -357,7 +345,7 @@ mod tests {
       let manifest = manifest.borrow();
       assert_eq!(manifest.builds.len(), 1);
       let (_, build_def) = manifest.builds.iter().next().unwrap();
-      assert_eq!(build_def.name, "test-pkg");
+      assert_eq!(build_def.id, "test-pkg");
 
       Ok(())
     }
@@ -370,9 +358,9 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "with-inputs",
+                    id = "with-inputs",
                     inputs = { url = "https://example.com/src.tar.gz", sha256 = "abc123" },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         local archive = ctx:fetch_url(inputs.url, inputs.sha256)
                         ctx:exec("tar -xzf " .. archive)
                         return { out = "/build/output" }
@@ -397,7 +385,7 @@ mod tests {
       }
 
       // Check actions were recorded
-      assert_eq!(build_def.apply_actions.len(), 2); // fetch_url + cmd
+      assert_eq!(build_def.create_actions.len(), 2); // fetch_url + cmd
 
       Ok(())
     }
@@ -410,11 +398,11 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "dynamic-inputs",
+                    id = "dynamic-inputs",
                     inputs = function()
                         return { computed = "value" }
                     end,
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:exec("echo " .. inputs.computed)
                         return { out = "/output" }
                     end,
@@ -444,17 +432,17 @@ mod tests {
         .load(
           r#"
                 local dep = sys.build({
-                    name = "dependency",
-                    apply = function(inputs, ctx)
+                    id = "dependency",
+                    create = function(inputs, ctx)
                         ctx:exec("make dep")
                         return { out = "/dep/output" }
                     end,
                 })
 
                 return sys.build({
-                    name = "consumer",
+                    id = "consumer",
                     inputs = { dep = dep },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:exec("make -I " .. inputs.dep.outputs.out)
                         return { out = "/consumer/output" }
                     end,
@@ -467,8 +455,8 @@ mod tests {
       assert_eq!(manifest.builds.len(), 2);
 
       // Check the consumer's inputs contain the ObjectHash
-      // The consumer is the one with name = "consumer"
-      let consumer = manifest.builds.values().find(|b| b.name == "consumer").unwrap();
+      // The consumer is the one with id = "consumer"
+      let consumer = manifest.builds.values().find(|b| b.id == "consumer").unwrap();
       let inputs = consumer.inputs.as_ref().expect("should have inputs");
       match inputs {
         BuildInputs::Table(map) => {
@@ -490,14 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn build_without_name_fails() -> LuaResult<()> {
+    fn build_without_id_fails() -> LuaResult<()> {
       let (lua, _) = create_test_lua_with_manifest()?;
 
       let result = lua
         .load(
           r#"
                 return sys.build({
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         return { out = "/output" }
                     end,
                 })
@@ -507,20 +495,20 @@ mod tests {
 
       assert!(result.is_err());
       let err = result.unwrap_err().to_string();
-      assert!(err.contains("name"), "error should mention 'name': {}", err);
+      assert!(err.contains("id"), "error should mention 'id': {}", err);
 
       Ok(())
     }
 
     #[test]
-    fn build_without_apply_fails() -> LuaResult<()> {
+    fn build_without_create_fails() -> LuaResult<()> {
       let (lua, _) = create_test_lua_with_manifest()?;
 
       let result = lua
         .load(
           r#"
                 return sys.build({
-                    name = "no-apply",
+                    id = "no-create",
                 })
             "#,
         )
@@ -528,7 +516,7 @@ mod tests {
 
       assert!(result.is_err());
       let err = result.unwrap_err().to_string();
-      assert!(err.contains("apply"), "error should mention 'apply': {}", err);
+      assert!(err.contains("create"), "error should mention 'create': {}", err);
 
       Ok(())
     }
@@ -541,8 +529,8 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "empty-outputs",
-                    apply = function(inputs, ctx)
+                    id = "empty-outputs",
+                    create = function(inputs, ctx)
                         return {}
                     end,
                 })
@@ -565,8 +553,8 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "nil-outputs",
-                    apply = function(inputs, ctx)
+                    id = "nil-outputs",
+                    create = function(inputs, ctx)
                         return nil
                     end,
                 })
@@ -592,9 +580,9 @@ mod tests {
       lua
         .load(
           r#"
-                sys.build({ name = "pkg1", apply = function(i, c) c:exec("a"); return { out = "x" } end })
-                sys.build({ name = "pkg2", apply = function(i, c) c:exec("b"); return { out = "y" } end })
-                sys.build({ name = "pkg3", apply = function(i, c) c:exec("c"); return { out = "z" } end })
+                sys.build({ id = "pkg1", create = function(i, c) c:exec("a"); return { out = "x" } end })
+                sys.build({ id = "pkg2", create = function(i, c) c:exec("b"); return { out = "y" } end })
+                sys.build({ id = "pkg3", create = function(i, c) c:exec("c"); return { out = "z" } end })
             "#,
         )
         .exec()?;
@@ -603,10 +591,10 @@ mod tests {
       assert_eq!(manifest.builds.len(), 3);
 
       // Check all names are present (order in BTreeMap is by hash, not insertion order)
-      let names: Vec<_> = manifest.builds.values().map(|b| b.name.as_str()).collect();
-      assert!(names.contains(&"pkg1"));
-      assert!(names.contains(&"pkg2"));
-      assert!(names.contains(&"pkg3"));
+      let ids: Vec<_> = manifest.builds.values().map(|b| b.id.as_str()).collect();
+      assert!(ids.contains(&"pkg1"));
+      assert!(ids.contains(&"pkg2"));
+      assert!(ids.contains(&"pkg3"));
 
       Ok(())
     }
@@ -619,10 +607,9 @@ mod tests {
 
       let code = r#"
                 return sys.build({
-                    name = "deterministic",
-                    version = "1.0.0",
+                    id = "deterministic-1.0.0",
                     inputs = { key = "value" },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,
@@ -649,17 +636,15 @@ mod tests {
         .load(
           r#"
                 sys.build({
-                    name = "same-pkg",
-                    version = "1.0.0",
-                    apply = function(inputs, ctx)
+                    id = "same-pkg",
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,
                 })
                 sys.build({
-                    name = "same-pkg",
-                    version = "1.0.0",
-                    apply = function(inputs, ctx)
+                    id = "same-pkg",
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,
@@ -683,9 +668,9 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "with-inputs",
+                    id = "with-inputs",
                     inputs = { url = "https://example.com/src.tar.gz", sha256 = "abc123" },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:fetch_url(inputs.url, inputs.sha256)
                         return { out = "/output" }
                     end,
@@ -713,8 +698,8 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "no-inputs",
-                    apply = function(inputs, ctx)
+                    id = "no-inputs",
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,
@@ -739,8 +724,8 @@ mod tests {
         .load(
           r#"
                 return sys.build({
-                    name = "test-out",
-                    apply = function(inputs, ctx)
+                    id = "test-out",
+                    create = function(inputs, ctx)
                         -- ctx.out should return $${out} placeholder
                         ctx:exec("mkdir -p " .. ctx.out .. "/bin")
                         return { out = ctx.out }
@@ -770,8 +755,8 @@ mod tests {
         .load(
           r#"
                 sys.build({
-                    name = "uses-out",
-                    apply = function(inputs, ctx)
+                    id = "uses-out",
+                    create = function(inputs, ctx)
                         ctx:exec("mkdir -p " .. ctx.out .. "/bin")
                         ctx:exec("cp binary " .. ctx.out .. "/bin/")
                         return { out = ctx.out }
@@ -785,9 +770,9 @@ mod tests {
       let (_, build_def) = manifest.builds.iter().next().unwrap();
 
       // Check that the commands contain the $${out} placeholder
-      assert_eq!(build_def.apply_actions.len(), 2);
+      assert_eq!(build_def.create_actions.len(), 2);
 
-      match &build_def.apply_actions[0] {
+      match &build_def.create_actions[0] {
         Action::Exec(opts) => {
           assert!(
             opts.bin.contains("$${out}"),
@@ -799,7 +784,7 @@ mod tests {
         _ => panic!("expected Cmd action"),
       }
 
-      match &build_def.apply_actions[1] {
+      match &build_def.create_actions[1] {
         Action::Exec(opts) => {
           assert!(
             opts.bin.contains("$${out}"),
@@ -822,15 +807,19 @@ mod tests {
         .load(
           r#"
                 local link = sys.bind({
-                    apply = function(inputs, ctx)
+                    id = "symlink-src-dest",
+                    create = function(inputs, ctx)
                         ctx:exec("ln -sf /src /dest")
+                    end,
+                    destroy = function(inputs, ctx)
+                        ctx:exec("rm /dest")
                     end,
                 })
 
                 return sys.build({
-                    name = "invalid-build",
+                    id = "invalid-build",
                     inputs = { bind_dep = link },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,
@@ -859,19 +848,23 @@ mod tests {
         .load(
           r#"
                 local link = sys.bind({
-                    apply = function(inputs, ctx)
+                    id = "symlink-src-dest",
+                    create = function(inputs, ctx)
                         ctx:exec("ln -sf /src /dest")
+                    end,
+                    destroy = function(inputs, ctx)
+                        ctx:exec("rm /dest")
                     end,
                 })
 
                 return sys.build({
-                    name = "invalid-build",
+                    id = "invalid-build",
                     inputs = {
                         nested = {
                             deep = { bind_dep = link }
                         }
                     },
-                    apply = function(inputs, ctx)
+                    create = function(inputs, ctx)
                         ctx:exec("make")
                         return { out = "/output" }
                     end,

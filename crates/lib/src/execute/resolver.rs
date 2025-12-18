@@ -230,7 +230,7 @@ fn resolve_build_output<'a>(
     if let Some(full_hash) = full_hash
       && let Some(build_def) = manifest.builds.get(&full_hash)
     {
-      let store_path = build_path(&build_def.name, build_def.version.as_deref(), &full_hash, system);
+      let store_path = build_path(&build_def.id, &full_hash, system);
       // This is a bit awkward - we need to return a reference but we're computing a value.
       // For now, return an error indicating the build hasn't been realized yet.
       return Err(PlaceholderError::UnresolvedBuild {

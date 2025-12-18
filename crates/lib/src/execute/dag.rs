@@ -472,14 +472,13 @@ mod tests {
   use crate::build::BuildDef;
   use crate::util::hash::Hashable;
 
-  fn make_build(name: &str, inputs: Option<BuildInputs>) -> BuildDef {
+  fn make_build(id: &str, inputs: Option<BuildInputs>) -> BuildDef {
     BuildDef {
-      name: name.to_string(),
-      version: None,
+      id: id.to_string(),
       inputs,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: "echo".to_string(),
-        args: Some(vec![name.to_string()]),
+        args: Some(vec![id.to_string()]),
         env: None,
         cwd: None,
       })],
@@ -487,17 +486,19 @@ mod tests {
     }
   }
 
-  fn make_bind(inputs: Option<BindInputs>) -> BindDef {
+  fn make_bind(id: &str, inputs: Option<BindInputs>) -> BindDef {
     BindDef {
+      id: id.to_string(),
       inputs,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      outputs: None,
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: "echo".to_string(),
         args: Some(vec!["test".to_string()]),
         env: None,
         cwd: None,
       })],
-      outputs: None,
-      destroy_actions: None,
+      update_actions: None,
+      destroy_actions: vec![],
     }
   }
 
@@ -699,10 +700,10 @@ mod tests {
 
   #[test]
   fn bind_count_and_all_binds() {
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::String("different".to_string())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::String("different".to_string())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -724,7 +725,7 @@ mod tests {
     let build = make_build("dep", None);
     let build_hash = build.compute_hash().unwrap();
 
-    let bind = make_bind(Some(BindInputs::Build(build_hash.clone())));
+    let bind = make_bind("bind", Some(BindInputs::Build(build_hash.clone())));
     let bind_hash = bind.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -742,10 +743,10 @@ mod tests {
 
   #[test]
   fn bind_depends_on_bind() {
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -790,10 +791,10 @@ mod tests {
   #[test]
   fn execution_waves_with_binds_only() {
     // Linear chain: Bind A -> Bind B
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -814,7 +815,7 @@ mod tests {
     let build_a = make_build("a", None);
     let build_hash_a = build_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(None);
+    let bind_b = make_bind("b", None);
     let bind_hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -832,7 +833,7 @@ mod tests {
 
   #[test]
   fn get_bind_from_manifest() {
-    let bind = make_bind(None);
+    let bind = make_bind("bind", None);
     let bind_hash = bind.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -859,13 +860,13 @@ mod tests {
     // Apply order should be: A, B, C (wave 0, 1, 2)
     // Destroy order should be: C, B, A (reverse waves: 2, 1, 0)
 
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let bind_c = make_bind("bind-c", Some(BindInputs::Bind(hash_b.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -898,20 +899,20 @@ mod tests {
     //    \ /
     //     D       (wave 2, destroy first)
 
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_c = make_bind("bind-c", Some(BindInputs::Bind(hash_a.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     // D depends on both B and C
     let mut d_inputs = BTreeMap::new();
     d_inputs.insert("b".to_string(), BindInputs::Bind(hash_b.clone()));
     d_inputs.insert("c".to_string(), BindInputs::Bind(hash_c.clone()));
-    let bind_d = make_bind(Some(BindInputs::Table(d_inputs)));
+    let bind_d = make_bind("bind-d", Some(BindInputs::Table(d_inputs)));
     let hash_d = bind_d.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -966,10 +967,10 @@ mod tests {
     let build_a = make_build("a", None);
     let build_hash_a = build_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Build(build_hash_a.clone())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::Build(build_hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let bind_c = make_bind("bind-c", Some(BindInputs::Bind(hash_b.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -1021,15 +1022,15 @@ mod tests {
     // Independent binds A, B, C should all be in wave 0
     // and can be destroyed in parallel (any order)
 
-    let bind_a = make_bind(None);
+    let bind_a = make_bind("bind-a", None);
     let hash_a = bind_a.compute_hash().unwrap();
 
     // Make B different from A
-    let bind_b = make_bind(Some(BindInputs::String("different_b".to_string())));
+    let bind_b = make_bind("bind-b", Some(BindInputs::String("different_b".to_string())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     // Make C different from both
-    let bind_c = make_bind(Some(BindInputs::String("different_c".to_string())));
+    let bind_c = make_bind("bind-c", Some(BindInputs::String("different_c".to_string())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();

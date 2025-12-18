@@ -297,9 +297,8 @@ mod tests {
           inputs = {},
           setup = function(inputs)
             sys.build({
-              name = "test",
-              version = "1.0.0",
-              apply = function(build_inputs, ctx)
+              id = "test",
+              create = function(build_inputs, ctx)
                 return { out = "/store/test" }
               end,
             })
@@ -314,8 +313,7 @@ mod tests {
     assert!(manifest.bindings.is_empty());
 
     let build = manifest.builds.values().next().unwrap();
-    assert_eq!(build.name, "test");
-    assert_eq!(build.version.as_deref(), Some("1.0.0"));
+    assert_eq!(build.id, "test");
     Ok(())
   }
 
@@ -330,8 +328,12 @@ mod tests {
           inputs = {},
           setup = function(inputs)
             sys.bind({
-              apply = function(bind_inputs, ctx)
+              id = "test",
+              create = function(bind_inputs, ctx)
                 ctx:exec({ bin = "echo test" })
+              end,
+              destroy = function(outputs, ctx)
+                ctx:exec({ bin = "echo destroy" })
               end,
             })
           end,
@@ -357,9 +359,8 @@ mod tests {
           inputs = {},
           setup = function(inputs)
             sys.build({
-              name = "test",
-              version = "1.0.0",
-              apply = function(build_inputs, ctx)
+              id = "test",
+              create = function(build_inputs, ctx)
                 return { out = "/store/test" }
               end,
             })

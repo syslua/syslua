@@ -112,14 +112,18 @@ pub enum BindInputs {
 /// Shell variables like `$HOME` pass through unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BindDef {
+  /// The unique identifier for this binding definition.
+  pub id: String,
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
   pub inputs: Option<BindInputs>,
-  /// The sequence of actions to execute during `apply`.
-  pub apply_actions: Vec<Action>,
   /// Named outputs from the binding (e.g., `{"path": "$${action:0}"}`).
   pub outputs: Option<BTreeMap<String, String>>,
-  /// Optional actions to execute during `destroy` (cleanup).
-  pub destroy_actions: Option<Vec<Action>>,
+  /// The sequence of actions to execute during `create`.
+  pub create_actions: Vec<Action>,
+  /// Actions to execute during `update`.
+  pub update_actions: Option<Vec<Action>>,
+  /// Actions to execute during `destroy` (cleanup).
+  pub destroy_actions: Vec<Action>,
 }
 
 impl Hashable for BindDef {}
@@ -135,15 +139,17 @@ mod tests {
 
     fn simple_def() -> BindDef {
       BindDef {
+        id: "test-bind".to_string(),
         inputs: None,
-        apply_actions: vec![Action::Exec(ExecOpts {
+        outputs: None,
+        create_actions: vec![Action::Exec(ExecOpts {
           bin: "ln -s /src /dest".to_string(),
           args: None,
           env: None,
           cwd: None,
         })],
-        outputs: None,
-        destroy_actions: None,
+        update_actions: None,
+        destroy_actions: vec![],
       }
     }
 
@@ -169,7 +175,7 @@ mod tests {
       let def1 = simple_def();
 
       let mut def2 = simple_def();
-      def2.apply_actions.push(Action::Exec(ExecOpts {
+      def2.create_actions.push(Action::Exec(ExecOpts {
         bin: "echo done".to_string(),
         args: None,
         env: None,
@@ -186,12 +192,12 @@ mod tests {
       let def1 = simple_def();
 
       let mut def2 = simple_def();
-      def2.destroy_actions = Some(vec![Action::Exec(ExecOpts {
+      def2.destroy_actions = vec![Action::Exec(ExecOpts {
         bin: "rm /dest".to_string(),
         args: None,
         env: None,
         cwd: None,
-      })]);
+      })];
 
       assert_ne!(def1.compute_hash().unwrap(), def2.compute_hash().unwrap());
     }
@@ -199,8 +205,10 @@ mod tests {
     #[test]
     fn hash_changes_when_action_order_differs() {
       let def1 = BindDef {
+        id: "test-bind".to_string(),
         inputs: None,
-        apply_actions: vec![
+        outputs: None,
+        create_actions: vec![
           Action::Exec(ExecOpts {
             bin: "step1".to_string(),
             args: None,
@@ -214,13 +222,15 @@ mod tests {
             cwd: None,
           }),
         ],
-        outputs: None,
-        destroy_actions: None,
+        update_actions: None,
+        destroy_actions: vec![],
       };
 
       let def2 = BindDef {
+        id: "test-bind".to_string(),
         inputs: None,
-        apply_actions: vec![
+        outputs: None,
+        create_actions: vec![
           Action::Exec(ExecOpts {
             bin: "step2".to_string(),
             args: None,
@@ -234,8 +244,8 @@ mod tests {
             cwd: None,
           }),
         ],
-        outputs: None,
-        destroy_actions: None,
+        update_actions: None,
+        destroy_actions: vec![],
       };
 
       assert_ne!(def1.compute_hash().unwrap(), def2.compute_hash().unwrap());
@@ -247,20 +257,27 @@ mod tests {
       env.insert("HOME".to_string(), "/home/user".to_string());
 
       let def = BindDef {
+        id: "test-bind".to_string(),
         inputs: Some(BindInputs::String("test".to_string())),
-        apply_actions: vec![Action::Exec(ExecOpts {
+        outputs: Some(BTreeMap::from([("link".to_string(), "$${action:0}".to_string())])),
+        create_actions: vec![Action::Exec(ExecOpts {
           bin: "ln -s /src /dest".to_string(),
           args: None,
           env: Some(env),
           cwd: Some("/home".to_string()),
         })],
-        outputs: Some(BTreeMap::from([("link".to_string(), "$${action:0}".to_string())])),
-        destroy_actions: Some(vec![Action::Exec(ExecOpts {
-          bin: "rm /dest".to_string(),
+        update_actions: Some(vec![Action::Exec(ExecOpts {
+          bin: "echo updated".to_string(),
           args: None,
           env: None,
           cwd: None,
         })]),
+        destroy_actions: vec![Action::Exec(ExecOpts {
+          bin: "rm /dest".to_string(),
+          args: None,
+          env: None,
+          cwd: None,
+        })],
       };
 
       let json = serde_json::to_string(&def).unwrap();

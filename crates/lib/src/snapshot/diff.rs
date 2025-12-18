@@ -81,7 +81,7 @@ pub fn compute_diff(desired: &Manifest, current: Option<&Manifest>, store_path: 
 
   // Compute build diff
   for (hash, build_def) in &desired.builds {
-    if build_exists_in_store(&build_def.name, build_def.version.as_deref(), hash, store_path) {
+    if build_exists_in_store(&build_def.id, hash, store_path) {
       diff.builds_cached.push(hash.clone());
     } else {
       diff.builds_to_realize.push(hash.clone());
@@ -111,8 +111,8 @@ pub fn compute_diff(desired: &Manifest, current: Option<&Manifest>, store_path: 
 }
 
 /// Check if a build's output directory exists in the store.
-fn build_exists_in_store(name: &str, version: Option<&str>, hash: &ObjectHash, store_path: &Path) -> bool {
-  let dir_name = build_dir_name(name, version, hash);
+fn build_exists_in_store(id: &str, hash: &ObjectHash, store_path: &Path) -> bool {
+  let dir_name = build_dir_name(id, hash);
   let build_path = store_path.join("obj").join(dir_name);
   build_path.exists()
 }
@@ -124,22 +124,23 @@ mod tests {
   use crate::build::BuildDef;
   use tempfile::TempDir;
 
-  fn make_build_def(name: &str) -> BuildDef {
+  fn make_build_def(id: &str) -> BuildDef {
     BuildDef {
-      name: name.to_string(),
-      version: None,
+      id: id.to_string(),
       inputs: None,
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     }
   }
 
-  fn make_bind_def() -> BindDef {
+  fn make_bind_def(id: &str) -> BindDef {
     BindDef {
+      id: id.to_string(),
       inputs: None,
-      apply_actions: vec![],
       outputs: None,
-      destroy_actions: None,
+      create_actions: vec![],
+      update_actions: None,
+      destroy_actions: vec![],
     }
   }
 
@@ -164,7 +165,7 @@ mod tests {
       .insert(ObjectHash("build1".to_string()), make_build_def("pkg1"));
     desired
       .bindings
-      .insert(ObjectHash("bind1".to_string()), make_bind_def());
+      .insert(ObjectHash("bind1".to_string()), make_bind_def("bind1"));
 
     let diff = compute_diff(&desired, None, temp_dir.path());
 
@@ -208,7 +209,7 @@ mod tests {
 
     let mut manifest = Manifest::default();
     manifest.builds.insert(build_hash, make_build_def("pkg1"));
-    manifest.bindings.insert(bind_hash, make_bind_def());
+    manifest.bindings.insert(bind_hash, make_bind_def("bind1"));
 
     // Same manifest for desired and current
     let diff = compute_diff(&manifest, Some(&manifest), temp_dir.path());
@@ -224,13 +225,15 @@ mod tests {
     let mut current = Manifest::default();
     current
       .bindings
-      .insert(ObjectHash("existing".to_string()), make_bind_def());
+      .insert(ObjectHash("existing".to_string()), make_bind_def("bind1"));
 
     let mut desired = Manifest::default();
     desired
       .bindings
-      .insert(ObjectHash("existing".to_string()), make_bind_def());
-    desired.bindings.insert(ObjectHash("new".to_string()), make_bind_def());
+      .insert(ObjectHash("existing".to_string()), make_bind_def("bind1"));
+    desired
+      .bindings
+      .insert(ObjectHash("new".to_string()), make_bind_def("bind2"));
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -244,13 +247,17 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
 
     let mut current = Manifest::default();
-    current.bindings.insert(ObjectHash("keep".to_string()), make_bind_def());
     current
       .bindings
-      .insert(ObjectHash("remove".to_string()), make_bind_def());
+      .insert(ObjectHash("keep".to_string()), make_bind_def("bind1"));
+    current
+      .bindings
+      .insert(ObjectHash("remove".to_string()), make_bind_def("bind2"));
 
     let mut desired = Manifest::default();
-    desired.bindings.insert(ObjectHash("keep".to_string()), make_bind_def());
+    desired
+      .bindings
+      .insert(ObjectHash("keep".to_string()), make_bind_def("bind1"));
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -268,12 +275,12 @@ mod tests {
     let mut current = Manifest::default();
     current
       .bindings
-      .insert(ObjectHash("old_hash".to_string()), make_bind_def());
+      .insert(ObjectHash("old_hash".to_string()), make_bind_def("bind1"));
 
     let mut desired = Manifest::default();
     desired
       .bindings
-      .insert(ObjectHash("new_hash".to_string()), make_bind_def());
+      .insert(ObjectHash("new_hash".to_string()), make_bind_def("bind2"));
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -295,10 +302,10 @@ mod tests {
       .insert(ObjectHash("abc123def45678901234".to_string()), make_build_def("cached"));
     current
       .bindings
-      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def("bind1"));
     current
       .bindings
-      .insert(ObjectHash("removed_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("removed_bind".to_string()), make_bind_def("bind2"));
 
     let mut desired = Manifest::default();
     desired
@@ -310,10 +317,10 @@ mod tests {
     );
     desired
       .bindings
-      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("unchanged_bind".to_string()), make_bind_def("bind1"));
     desired
       .bindings
-      .insert(ObjectHash("new_bind".to_string()), make_bind_def());
+      .insert(ObjectHash("new_bind".to_string()), make_bind_def("bind2"));
 
     let diff = compute_diff(&desired, Some(&current), temp_dir.path());
 
@@ -402,20 +409,18 @@ mod tests {
 
     // Base build (no deps), version 1.0.0
     let base_v1 = BuildDef {
-      name: "base".to_string(),
-      version: Some("1.0.0".to_string()),
+      id: "base1".to_string(),
       inputs: None,
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let base_v1_hash = base_v1.compute_hash().unwrap();
 
     // Base build with different version
     let base_v2 = BuildDef {
-      name: "base".to_string(),
-      version: Some("2.0.0".to_string()),
+      id: "base2".to_string(),
       inputs: None,
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let base_v2_hash = base_v2.compute_hash().unwrap();
@@ -428,20 +433,18 @@ mod tests {
 
     // Dependent build referencing v1
     let dependent_on_v1 = BuildDef {
-      name: "dependent".to_string(),
-      version: None,
+      id: "dependent1".to_string(),
       inputs: Some(BuildInputs::Build(base_v1_hash.clone())),
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let dep_v1_hash = dependent_on_v1.compute_hash().unwrap();
 
     // Same dependent build referencing v2
     let dependent_on_v2 = BuildDef {
-      name: "dependent".to_string(),
-      version: None,
+      id: "dependent2".to_string(),
       inputs: Some(BuildInputs::Build(base_v2_hash.clone())),
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let dep_v2_hash = dependent_on_v2.compute_hash().unwrap();
@@ -463,10 +466,9 @@ mod tests {
 
     // Create build with version 1.0.0
     let build_v1 = BuildDef {
-      name: "pkg".to_string(),
-      version: Some("1.0.0".to_string()),
+      id: "pkg".to_string(),
       inputs: None,
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let hash_v1 = build_v1.compute_hash().unwrap();
@@ -481,10 +483,9 @@ mod tests {
 
     // Desired manifest has v2
     let build_v2 = BuildDef {
-      name: "pkg".to_string(),
-      version: Some("2.0.0".to_string()),
+      id: "pkg".to_string(),
       inputs: None,
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let hash_v2 = build_v2.compute_hash().unwrap();
@@ -508,10 +509,9 @@ mod tests {
 
     // Build with one action
     let build_action1 = BuildDef {
-      name: "pkg".to_string(),
-      version: None,
+      id: "pkg".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: "echo".to_string(),
         args: Some(vec!["hello".to_string()]),
         env: None,
@@ -523,10 +523,9 @@ mod tests {
 
     // Build with different action
     let build_action2 = BuildDef {
-      name: "pkg".to_string(),
-      version: None,
+      id: "pkg".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: "echo".to_string(),
         args: Some(vec!["world".to_string()]), // Different argument
         env: None,
@@ -548,20 +547,18 @@ mod tests {
 
     // Build with input "foo"
     let build_input1 = BuildDef {
-      name: "pkg".to_string(),
-      version: None,
+      id: "pkg".to_string(),
       inputs: Some(BuildInputs::String("foo".to_string())),
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let hash1 = build_input1.compute_hash().unwrap();
 
     // Build with input "bar"
     let build_input2 = BuildDef {
-      name: "pkg".to_string(),
-      version: None,
+      id: "pkg".to_string(),
       inputs: Some(BuildInputs::String("bar".to_string())),
-      apply_actions: vec![],
+      create_actions: vec![],
       outputs: None,
     };
     let hash2 = build_input2.compute_hash().unwrap();

@@ -472,7 +472,7 @@ fn build_restore_resolver_data(
 
   // Compute BuildResult for each build (just need store_path and outputs)
   for (hash, build_def) in &manifest.builds {
-    let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, system);
+    let store_path = build_path(&build_def.id, hash, system);
 
     // Resolve outputs - for now use the definition's output patterns
     // In practice, builds in the store should have their outputs already resolved
@@ -676,20 +676,18 @@ mod tests {
     desired.builds.insert(
       ObjectHash("cached".to_string()),
       BuildDef {
-        name: "cached-pkg".to_string(),
-        version: None,
+        id: "cached-pkg".to_string(),
         inputs: None,
-        apply_actions: vec![],
+        create_actions: vec![],
         outputs: None,
       },
     );
     desired.builds.insert(
       ObjectHash("new".to_string()),
       BuildDef {
-        name: "new-pkg".to_string(),
-        version: None,
+        id: "new-pkg".to_string(),
         inputs: None,
-        apply_actions: vec![],
+        create_actions: vec![],
         outputs: None,
       },
     );
@@ -698,19 +696,23 @@ mod tests {
     desired.bindings.insert(
       ObjectHash("new_bind".to_string()),
       BindDef {
+        id: "new-bind".to_string(),
         inputs: None,
-        apply_actions: vec![],
         outputs: None,
-        destroy_actions: None,
+        create_actions: vec![],
+        update_actions: None,
+        destroy_actions: vec![],
       },
     );
     desired.bindings.insert(
       ObjectHash("unchanged_bind".to_string()),
       BindDef {
+        id: "unchanged-bind".to_string(),
         inputs: None,
-        apply_actions: vec![],
         outputs: None,
-        destroy_actions: None,
+        create_actions: vec![],
+        update_actions: None,
+        destroy_actions: vec![],
       },
     );
 
@@ -838,10 +840,9 @@ mod tests {
       manifest.builds.insert(
         ObjectHash("build123".to_string()),
         BuildDef {
-          name: "test-pkg".to_string(),
-          version: Some("1.0.0".to_string()),
+          id: "test-pkg".to_string(),
           inputs: None,
-          apply_actions: vec![],
+          create_actions: vec![],
           outputs: None,
         },
       );
@@ -882,10 +883,12 @@ mod tests {
       manifest.bindings.insert(
         hash.clone(),
         BindDef {
+          id: "test-bind".to_string(),
           inputs: None,
-          apply_actions: vec![],
           outputs: None,
-          destroy_actions: None,
+          create_actions: vec![],
+          update_actions: None,
+          destroy_actions: vec![],
         },
       );
 
@@ -914,10 +917,12 @@ mod tests {
       manifest.bindings.insert(
         hash.clone(),
         BindDef {
+          id: "test-bind-no-state".to_string(),
           inputs: None,
-          apply_actions: vec![],
           outputs: None,
-          destroy_actions: None,
+          create_actions: vec![],
+          update_actions: None,
+          destroy_actions: vec![],
         },
       );
 
@@ -955,10 +960,12 @@ mod tests {
       manifest.bindings.insert(
         hash.clone(),
         BindDef {
+          id: "bind-no-state".to_string(),
           inputs: None,
-          apply_actions: vec![],
           outputs: None,
-          destroy_actions: None,
+          create_actions: vec![],
+          update_actions: None,
+          destroy_actions: vec![],
         },
       );
 

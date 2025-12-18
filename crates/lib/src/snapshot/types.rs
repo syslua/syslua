@@ -255,10 +255,9 @@ mod tests {
     manifest.builds.insert(
       crate::util::hash::ObjectHash("build1".to_string()),
       crate::build::BuildDef {
-        name: "test-build".to_string(),
-        version: None,
+        id: "test-build".to_string(),
         inputs: None,
-        apply_actions: vec![],
+        create_actions: vec![],
         outputs: None,
       },
     );

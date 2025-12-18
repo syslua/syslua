@@ -138,14 +138,13 @@ pub async fn realize_build(
   config: &ExecuteConfig,
 ) -> Result<BuildResult, ExecuteError> {
   info!(
-    name = %build_def.name,
-    version = ?build_def.version,
+    id = %build_def.id,
     hash = %hash.0,
     "realizing build"
   );
 
   // Compute the store path for this build
-  let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
+  let store_path = build_path(&build_def.id, hash, config.system);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -186,7 +185,7 @@ pub async fn realize_build(
   // Execute actions in order
   let mut action_results = Vec::new();
 
-  for (idx, action) in build_def.apply_actions.iter().enumerate() {
+  for (idx, action) in build_def.create_actions.iter().enumerate() {
     debug!(action_idx = idx, "executing action");
 
     let result = execute_action(action, &resolver, &store_path).await?;
@@ -210,7 +209,7 @@ pub async fn realize_build(
   write_build_complete_marker(&store_path).await?;
 
   info!(
-    name = %build_def.name,
+    id = %build_def.id,
     path = ?store_path,
     "build complete"
   );
@@ -249,14 +248,13 @@ pub async fn realize_build_with_resolver(
   config: &ExecuteConfig,
 ) -> Result<BuildResult, ExecuteError> {
   info!(
-    name = %build_def.name,
-    version = ?build_def.version,
+    id = %build_def.id,
     hash = %hash.0,
     "realizing build (with unified resolver)"
   );
 
   // Compute the store path for this build
-  let store_path = build_path(&build_def.name, build_def.version.as_deref(), hash, config.system);
+  let store_path = build_path(&build_def.id, hash, config.system);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -305,7 +303,7 @@ pub async fn realize_build_with_resolver(
   // Execute actions in order
   let mut action_results = Vec::new();
 
-  for (idx, action) in build_def.apply_actions.iter().enumerate() {
+  for (idx, action) in build_def.create_actions.iter().enumerate() {
     debug!(action_idx = idx, "executing action");
 
     let result = execute_action(action, &resolver, &store_path).await?;
@@ -330,7 +328,7 @@ pub async fn realize_build_with_resolver(
   write_build_complete_marker(&store_path).await?;
 
   info!(
-    name = %build_def.name,
+    id = %build_def.id,
     path = ?store_path,
     "build complete"
   );
@@ -424,10 +422,9 @@ mod tests {
   fn make_simple_build() -> BuildDef {
     let (cmd, args) = echo_msg("hello");
     BuildDef {
-      name: "test-build".to_string(),
-      version: Some("1.0.0".to_string()),
+      id: "test-build".to_string(),
       inputs: None,
-      apply_actions: vec![Action::Exec(ExecOpts {
+      create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
         env: None,
@@ -501,10 +498,9 @@ mod tests {
     with_temp_store(|| async {
       let (cmd, args) = echo_msg("/path/to/binary");
       let build_def = BuildDef {
-        name: "test-build".to_string(),
-        version: Some("1.0.0".to_string()),
+        id: "test-build".to_string(),
         inputs: None,
-        apply_actions: vec![Action::Exec(ExecOpts {
+        create_actions: vec![Action::Exec(ExecOpts {
           bin: cmd.to_string(),
           args: Some(args),
           env: None,
@@ -547,10 +543,9 @@ mod tests {
       let (cmd2, args2) = echo_msg("step2");
       let (cmd3, args3) = echo_msg("$${action:0} $${action:1}");
       let build_def = BuildDef {
-        name: "multi-action".to_string(),
-        version: None,
+        id: "multi-action".to_string(),
         inputs: None,
-        apply_actions: vec![
+        create_actions: vec![
           Action::Exec(ExecOpts {
             bin: cmd1.to_string(),
             args: Some(args1),
@@ -605,10 +600,9 @@ mod tests {
     with_temp_store(|| async {
       let (cmd, args) = shell_cmd("exit 1");
       let build_def = BuildDef {
-        name: "failing-build".to_string(),
-        version: None,
+        id: "failing-build".to_string(),
         inputs: None,
-        apply_actions: vec![Action::Exec(ExecOpts {
+        create_actions: vec![Action::Exec(ExecOpts {
           bin: cmd.to_string(),
           args: Some(args),
           env: None,
@@ -696,7 +690,7 @@ mod tests {
       let config = test_config();
 
       // Pre-create the store path WITHOUT a marker (simulating interrupted build)
-      let store_path = build_path(&build_def.name, build_def.version.as_deref(), &hash, config.system);
+      let store_path = build_path(&build_def.id, &hash, config.system);
       tokio::fs::create_dir_all(&store_path).await.unwrap();
       tokio::fs::write(store_path.join("partial-file"), "incomplete")
         .await
