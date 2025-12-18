@@ -66,6 +66,7 @@ impl TestEnv {
   /// - `TEST_OUTPUT_DIR`: Output path for test artifacts
   pub fn sys_cmd(&self) -> Command {
     let mut cmd: Command = cargo_bin_cmd!("sys");
+    cmd.env("SYSLUA_SYSTEM_STORE", self.store_path());
     cmd.env("SYSLUA_USER_STORE", self.store_path());
     cmd.env("XDG_DATA_HOME", self.data_path());
     cmd.env("TEST_OUTPUT_DIR", self.output_path());
