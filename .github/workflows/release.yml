@@ -107,7 +107,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -133,7 +142,7 @@ jobs:
 
       - name: Extract changelog for this version
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           # Generate changelog for just this release
@@ -149,6 +158,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ steps.app-token.outputs.token }}
           body_path: RELEASE_NOTES.md
           files: |
             release/*
