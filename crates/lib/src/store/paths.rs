@@ -43,9 +43,11 @@ impl StorePaths {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
   use temp_env::with_vars;
 
   #[test]
+  #[serial]
   fn env_var_overrides_default_paths() {
     with_vars(
       [

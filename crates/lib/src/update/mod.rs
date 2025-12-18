@@ -196,6 +196,9 @@ mod tests {
   use tempfile::TempDir;
 
   mod find_config_path_tests {
+    #[cfg(not(windows))]
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
@@ -235,6 +238,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[cfg(not(windows))]
     fn config_dir_fallback() {
       let temp = TempDir::new().unwrap();
@@ -263,6 +267,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[cfg(windows)]
     fn config_dir_fallback() {
       let temp = TempDir::new().unwrap();
@@ -292,9 +297,12 @@ mod tests {
   }
 
   mod update_inputs_tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
+    #[serial]
     fn updates_path_input() {
       let temp = TempDir::new().unwrap();
       let config_dir = temp.path();
@@ -338,6 +346,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn dry_run_no_changes() {
       let temp = TempDir::new().unwrap();
       let config_dir = temp.path();

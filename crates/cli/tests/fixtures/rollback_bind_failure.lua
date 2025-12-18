@@ -15,8 +15,13 @@ local PHASE = os.getenv('TEST_PHASE') or 'initial'
 --- @return string
 local function sh(ctx, script)
   if sys.os == 'windows' then
-    local cmd = os.getenv('COMSPEC') or 'cmd.exe'
-    return ctx:exec({ bin = cmd, args = { '/c', script } })
+    local system_drive = os.getenv('SystemDrive') or 'C:'
+    local cmd = os.getenv('COMSPEC') or system_drive .. '\\Windows\\System32\\cmd.exe'
+    return ctx:exec({
+      bin = cmd,
+      args = { '/c', script },
+      env = { PATH = system_drive .. '\\Windows\\System32;' .. system_drive .. '\\Windows' },
+    })
   else
     return ctx:exec({
       bin = '/bin/sh',

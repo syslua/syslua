@@ -780,6 +780,7 @@ async fn restore_destroyed_binds(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
   use tempfile::TempDir;
 
   fn test_options() -> ApplyOptions {
@@ -938,6 +939,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn cleanup_destroyed_bind_states_removes_state_files() {
     with_temp_env(|_temp_dir| {
       let hash1 = ObjectHash("destroyed_bind_1".to_string());
@@ -965,6 +967,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn cleanup_destroyed_bind_states_handles_empty_list() {
     with_temp_env(|_temp_dir| {
       // Should succeed with empty list
@@ -973,6 +976,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn build_restore_resolver_data_computes_build_paths() {
     use crate::build::BuildDef;
 
@@ -1006,6 +1010,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn build_restore_resolver_data_loads_bind_states() {
     use crate::bind::BindDef;
 
@@ -1045,6 +1050,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn build_restore_resolver_data_skips_missing_bind_states() {
     use crate::bind::BindDef;
 
@@ -1075,6 +1081,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn destroy_removed_binds_returns_empty_vec_for_empty_input() {
     with_temp_env(|_temp_dir| {
       let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1086,6 +1093,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn destroy_removed_binds_skips_binds_without_state() {
     use crate::bind::BindDef;
 
@@ -1120,6 +1128,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn destroy_removed_binds_skips_binds_without_definition() {
     with_temp_env(|_temp_dir| {
       let hash = ObjectHash("bind_no_def".to_string());
@@ -1147,6 +1156,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn restore_destroyed_binds_handles_empty_list() {
     with_temp_env(|_temp_dir| {
       let manifest = Manifest::default();
@@ -1160,6 +1170,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn update_modified_binds_returns_empty_for_empty_input() {
     with_temp_env(|_temp_dir| {
       let manifest = Manifest::default();
@@ -1174,6 +1185,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn update_modified_binds_fails_without_old_state() {
     use crate::bind::BindDef;
 
@@ -1210,6 +1222,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn update_modified_binds_fails_without_new_bind_def() {
     with_temp_env(|_temp_dir| {
       let old_hash = ObjectHash("old_bind".to_string());

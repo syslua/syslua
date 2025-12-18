@@ -6,6 +6,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use serial_test::serial;
 use tempfile::TempDir;
 
 /// Get a Command for the sys binary.
@@ -82,6 +83,7 @@ fn subcommand_help_works() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn init_creates_config_files() {
   let temp = TempDir::new().unwrap();
   let init_dir = temp.path().join("myconfig");
@@ -95,6 +97,7 @@ fn init_creates_config_files() {
 }
 
 #[test]
+#[serial]
 fn init_fails_if_config_exists() {
   let temp = temp_config(MINIMAL_CONFIG);
 
@@ -113,6 +116,7 @@ fn init_fails_if_config_exists() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn plan_with_minimal_config() {
   let temp = temp_config(MINIMAL_CONFIG);
 
@@ -126,6 +130,7 @@ fn plan_with_minimal_config() {
 }
 
 #[test]
+#[serial]
 fn plan_with_build_shows_build_count() {
   let temp = temp_config(BUILD_CONFIG);
 
@@ -140,6 +145,7 @@ fn plan_with_build_shows_build_count() {
 }
 
 #[test]
+#[serial]
 fn plan_nonexistent_config_fails() {
   let temp = TempDir::new().unwrap();
 
@@ -157,6 +163,7 @@ fn plan_nonexistent_config_fails() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn apply_minimal_config() {
   let temp = temp_config(MINIMAL_CONFIG);
 
@@ -171,6 +178,7 @@ fn apply_minimal_config() {
 }
 
 #[test]
+#[serial]
 fn apply_with_build_succeeds() {
   let temp = temp_config(BUILD_CONFIG);
 
@@ -191,6 +199,7 @@ fn apply_with_build_succeeds() {
 }
 
 #[test]
+#[serial]
 fn apply_nonexistent_config_fails() {
   let temp = TempDir::new().unwrap();
 
@@ -208,6 +217,7 @@ fn apply_nonexistent_config_fails() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn destroy_placeholder_works() {
   // destroy is currently a placeholder that just prints a message
   let temp = TempDir::new().unwrap();
@@ -227,6 +237,7 @@ fn destroy_placeholder_works() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn update_with_no_inputs() {
   let temp = temp_config(MINIMAL_CONFIG);
 
@@ -241,6 +252,7 @@ fn update_with_no_inputs() {
 }
 
 #[test]
+#[serial]
 fn update_dry_run() {
   let temp = temp_config(MINIMAL_CONFIG);
 
@@ -273,6 +285,7 @@ fn info_shows_platform() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn invalid_lua_syntax_fails() {
   let temp = temp_config("this is not valid lua {{{");
 
@@ -286,6 +299,7 @@ fn invalid_lua_syntax_fails() {
 }
 
 #[test]
+#[serial]
 fn missing_setup_function_fails() {
   let temp = temp_config("return { inputs = {} }");
 
