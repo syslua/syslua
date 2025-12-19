@@ -1,17 +1,14 @@
 name: CI
 
 on:
-  push:
+  pull_request:
     branches: [main]
-    paths-ignore: &ignore_paths
+    paths-ignore:
       - "docs/**"
       - "**.md"
       - "LICENSE"
       - ".editorconfig"
       - ".stylua.toml"
-  pull_request:
-    branches: [main]
-    paths-ignore: *ignore_paths
 
 env:
   CARGO_TERM_COLOR: always
