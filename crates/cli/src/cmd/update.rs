@@ -40,20 +40,26 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
     println!();
   }
 
-  // Print updated inputs
+  // Print updated direct inputs
   for (name, (old_rev, new_rev)) in &result.updated {
     let prefix = if dry_run { "Would update" } else { "Updated" };
     let old_short = &old_rev[..old_rev.len().min(8)];
     let new_short = &new_rev[..new_rev.len().min(8)];
     println!("  {prefix}: {name} {old_short} -> {new_short}");
+
+    // Print transitive updates for this input
+    print_transitive_updates(name, &result.transitive_updated, &result.transitive_added, dry_run);
   }
 
-  // Print added inputs
+  // Print added direct inputs
   for name in &result.added {
     let prefix = if dry_run { "Would add" } else { "Added" };
     if let Some(resolved) = result.resolved.get(name) {
       let rev_short = &resolved.rev[..resolved.rev.len().min(8)];
       println!("  {prefix}: {name} ({rev_short})");
+
+      // Print transitive adds for this input
+      print_transitive_updates(name, &result.transitive_updated, &result.transitive_added, dry_run);
     }
   }
 
@@ -64,7 +70,12 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
   }
 
   // Summary
-  if result.updated.is_empty() && result.added.is_empty() {
+  let has_changes = !result.updated.is_empty()
+    || !result.added.is_empty()
+    || !result.transitive_updated.is_empty()
+    || !result.transitive_added.is_empty();
+
+  if !has_changes {
     println!("All inputs are up to date.");
   } else if !dry_run {
     println!();
@@ -79,4 +90,32 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
   }
 
   Ok(())
+}
+
+/// Print transitive updates/adds for a given parent input.
+fn print_transitive_updates(
+  parent: &str,
+  transitive_updated: &std::collections::BTreeMap<String, (String, String)>,
+  transitive_added: &[String],
+  dry_run: bool,
+) {
+  // Print transitive updates that belong to this parent
+  for (path, (old_rev, new_rev)) in transitive_updated {
+    if path.starts_with(&format!("{}/", parent)) {
+      let prefix = if dry_run { "Would update" } else { "Updated" };
+      let old_short = &old_rev[..old_rev.len().min(8)];
+      let new_short = &new_rev[..new_rev.len().min(8)];
+      let rel_path = &path[parent.len() + 1..]; // Remove parent prefix
+      println!("    {prefix}: {rel_path} {old_short} -> {new_short}");
+    }
+  }
+
+  // Print transitive adds that belong to this parent
+  for path in transitive_added {
+    if path.starts_with(&format!("{}/", parent)) {
+      let prefix = if dry_run { "Would add" } else { "Added" };
+      let rel_path = &path[parent.len() + 1..]; // Remove parent prefix
+      println!("    {prefix}: {rel_path}");
+    }
+  }
 }

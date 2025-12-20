@@ -10,11 +10,10 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::init::update_luarc_inputs;
+use crate::inputs::ResolvedInputs;
 use crate::inputs::lock::{LOCK_FILENAME, LockFile};
-use crate::inputs::resolve::{
-  ResolutionResult, ResolveError, ResolvedInputs, resolve_inputs, save_lock_file_if_changed,
-};
-use crate::lua::entrypoint::extract_inputs;
+use crate::inputs::resolve::{ResolutionResult, ResolveError, resolve_inputs, save_lock_file_if_changed};
+use crate::lua::entrypoint::extract_input_decls;
 use crate::platform::paths::config_dir;
 
 /// Options for the update operation.
@@ -31,13 +30,17 @@ pub struct UpdateOptions {
 /// Result of a successful update operation.
 #[derive(Debug)]
 pub struct UpdateResult {
-  /// Inputs that were updated: name -> (old_rev, new_rev).
+  /// Direct inputs that were updated: name -> (old_rev, new_rev).
   pub updated: BTreeMap<String, (String, String)>,
-  /// Inputs that remained unchanged.
+  /// Transitive inputs that were updated: full_path -> (old_rev, new_rev).
+  pub transitive_updated: BTreeMap<String, (String, String)>,
+  /// Direct inputs that remained unchanged.
   pub unchanged: Vec<String>,
-  /// New inputs that were added (not previously locked).
+  /// New direct inputs that were added (not previously locked).
   pub added: Vec<String>,
-  /// Resolved inputs with their final paths and revisions.
+  /// New transitive inputs that were added.
+  pub transitive_added: Vec<String>,
+  /// Resolved inputs with their final paths and revisions (including transitive deps).
   pub resolved: ResolvedInputs,
   /// Whether the lock file changed.
   pub lock_changed: bool,
@@ -106,6 +109,10 @@ pub fn find_config_path(explicit: Option<&str>) -> Result<PathBuf, UpdateError> 
 
 /// Update inputs by re-resolving them (fetching latest revisions).
 ///
+/// This function handles both direct and transitive dependencies:
+/// - Direct inputs are force-updated if named, or all direct inputs if no names given
+/// - Transitive dependencies are re-resolved but reuse lock entries when URLs match
+///
 /// # Arguments
 ///
 /// * `config_path` - Path to the config file
@@ -127,12 +134,12 @@ pub fn update_inputs(config_path: &Path, options: &UpdateOptions) -> Result<Upda
 
   info!(config = %config_path_str, "loading config for update");
 
-  // Extract inputs from config
-  let raw_inputs = extract_inputs(&config_path_str)?;
+  // Extract input declarations from config (supports extended syntax)
+  let input_decls = extract_input_decls(&config_path_str)?;
 
   // Validate that requested inputs exist in config
   for input_name in &options.inputs {
-    if !raw_inputs.contains_key(input_name) {
+    if !input_decls.contains_key(input_name) {
       return Err(UpdateError::InputNotFound {
         name: input_name.clone(),
       });
@@ -146,22 +153,32 @@ pub fn update_inputs(config_path: &Path, options: &UpdateOptions) -> Result<Upda
     .unwrap_or_default();
 
   // Build force_update set
-  let force_update: HashSet<String> = options.inputs.iter().cloned().collect();
+  // If no specific inputs named, force-update all direct inputs
+  let force_update: HashSet<String> = if options.inputs.is_empty() {
+    input_decls.keys().cloned().collect()
+  } else {
+    options.inputs.iter().cloned().collect()
+  };
 
   info!(
-    count = raw_inputs.len(),
+    count = input_decls.len(),
     force_count = force_update.len(),
-    "resolving inputs"
+    "resolving inputs with transitive dependencies"
   );
 
-  // Resolve inputs with force update
-  let result: ResolutionResult = resolve_inputs(&raw_inputs, config_dir, Some(&force_update))?;
+  // Resolve inputs with force update (transitive resolution)
+  let result: ResolutionResult = resolve_inputs(&input_decls, config_dir, Some(&force_update))?;
 
-  // Compute what changed
+  // Compute what changed for direct inputs
   let mut updated = BTreeMap::new();
   let mut unchanged = Vec::new();
   let mut added = Vec::new();
 
+  // Track transitive updates
+  let mut transitive_updated = BTreeMap::new();
+  let mut transitive_added = Vec::new();
+
+  // Check direct inputs
   for (name, resolved) in &result.inputs {
     if let Some(old_entry) = old_lock.get(name) {
       if old_entry.rev != resolved.rev {
@@ -172,21 +189,74 @@ pub fn update_inputs(config_path: &Path, options: &UpdateOptions) -> Result<Upda
     } else {
       added.push(name.clone());
     }
+
+    // Check transitive dependencies of this input
+    collect_transitive_changes(
+      name,
+      &resolved.inputs,
+      &old_lock,
+      &mut transitive_updated,
+      &mut transitive_added,
+    );
   }
 
   // Write lock file and update .luarc.json (unless dry run)
   if !options.dry_run {
     save_lock_file_if_changed(&result, config_dir)?;
-    update_luarc_inputs(config_dir, &result.inputs, options.system);
+
+    // Collect all input paths (direct + transitive) for .luarc.json
+    let input_paths: Vec<_> = collect_all_input_paths(&result.inputs);
+    update_luarc_inputs(config_dir, input_paths, options.system);
   }
 
   Ok(UpdateResult {
     updated,
+    transitive_updated,
     unchanged,
     added,
+    transitive_added,
     resolved: result.inputs,
     lock_changed: result.lock_changed,
   })
+}
+
+/// Recursively collect transitive input changes.
+fn collect_transitive_changes(
+  parent_path: &str,
+  transitive: &ResolvedInputs,
+  old_lock: &LockFile,
+  updated: &mut BTreeMap<String, (String, String)>,
+  added: &mut Vec<String>,
+) {
+  for (name, resolved) in transitive {
+    // Build the full path for the lock key (e.g., "pkgs/utils")
+    let full_path = format!("{}/{}", parent_path, name);
+
+    if let Some(old_entry) = old_lock.get(&full_path) {
+      if old_entry.rev != resolved.rev {
+        updated.insert(full_path.clone(), (old_entry.rev.clone(), resolved.rev.clone()));
+      }
+    } else {
+      added.push(full_path.clone());
+    }
+
+    // Recurse into nested transitive deps
+    collect_transitive_changes(&full_path, &resolved.inputs, old_lock, updated, added);
+  }
+}
+
+/// Collect all input paths (direct and transitive) for .luarc.json.
+fn collect_all_input_paths(inputs: &ResolvedInputs) -> Vec<&Path> {
+  let mut paths = Vec::new();
+  collect_paths_recursive(inputs, &mut paths);
+  paths
+}
+
+fn collect_paths_recursive<'a>(inputs: &'a ResolvedInputs, paths: &mut Vec<&'a Path>) {
+  for resolved in inputs.values() {
+    paths.push(resolved.path.as_path());
+    collect_paths_recursive(&resolved.inputs, paths);
+  }
 }
 
 #[cfg(test)]
@@ -416,6 +486,173 @@ mod tests {
       let result = update_inputs(&config_path, &options);
       assert!(result.is_err());
       assert!(matches!(result.unwrap_err(), UpdateError::InputNotFound { .. }));
+    }
+
+    #[test]
+    #[serial]
+    fn updates_input_with_transitive_deps() {
+      let temp = TempDir::new().unwrap();
+      let config_dir = temp.path();
+
+      // Create lib_b (transitive dep of lib_a)
+      let lib_b = config_dir.join("lib_b");
+      fs::create_dir_all(&lib_b).unwrap();
+      fs::write(
+        lib_b.join("init.lua"),
+        r#"
+return {
+  inputs = {},
+  setup = function() end,
+}
+"#,
+      )
+      .unwrap();
+
+      // Create lib_a which depends on lib_b
+      let lib_a = config_dir.join("lib_a");
+      fs::create_dir_all(&lib_a).unwrap();
+      fs::write(
+        lib_a.join("init.lua"),
+        format!(
+          r#"
+return {{
+  inputs = {{
+    lib_b = "path:{}",
+  }},
+  setup = function() end,
+}}
+"#,
+          lib_b.display()
+        ),
+      )
+      .unwrap();
+
+      // Create config that references lib_a
+      let config_path = config_dir.join("init.lua");
+      fs::write(
+        &config_path,
+        format!(
+          r#"
+return {{
+  inputs = {{
+    lib_a = "path:{}",
+  }},
+  setup = function(inputs) end,
+}}
+"#,
+          lib_a.display()
+        ),
+      )
+      .unwrap();
+
+      temp_env::with_vars(
+        [
+          ("XDG_DATA_HOME", Some(temp.path().to_str().unwrap())),
+          ("XDG_CACHE_HOME", Some(temp.path().to_str().unwrap())),
+          ("HOME", Some(temp.path().to_str().unwrap())),
+        ],
+        || {
+          let options = UpdateOptions::default();
+          let result = update_inputs(&config_path, &options).unwrap();
+
+          // lib_a should be added as a direct input
+          assert_eq!(result.added.len(), 1);
+          assert!(result.added.contains(&"lib_a".to_string()));
+
+          // lib_b should be added as a transitive input
+          assert_eq!(result.transitive_added.len(), 1);
+          assert!(result.transitive_added.contains(&"lib_a/lib_b".to_string()));
+
+          // Check that resolved includes transitive deps
+          let lib_a_resolved = result.resolved.get("lib_a").unwrap();
+          assert!(lib_a_resolved.inputs.contains_key("lib_b"));
+
+          assert!(result.lock_changed);
+        },
+      );
+    }
+
+    #[test]
+    #[serial]
+    fn update_specific_input_only() {
+      let temp = TempDir::new().unwrap();
+      let config_dir = temp.path();
+
+      // Create two independent inputs
+      let input_a = config_dir.join("input_a");
+      fs::create_dir_all(&input_a).unwrap();
+      fs::write(
+        input_a.join("init.lua"),
+        r#"
+return {
+  inputs = {},
+  setup = function() end,
+}
+"#,
+      )
+      .unwrap();
+
+      let input_b = config_dir.join("input_b");
+      fs::create_dir_all(&input_b).unwrap();
+      fs::write(
+        input_b.join("init.lua"),
+        r#"
+return {
+  inputs = {},
+  setup = function() end,
+}
+"#,
+      )
+      .unwrap();
+
+      // Create config with both inputs
+      let config_path = config_dir.join("init.lua");
+      fs::write(
+        &config_path,
+        format!(
+          r#"
+return {{
+  inputs = {{
+    input_a = "path:{}",
+    input_b = "path:{}",
+  }},
+  setup = function(inputs) end,
+}}
+"#,
+          input_a.display(),
+          input_b.display()
+        ),
+      )
+      .unwrap();
+
+      temp_env::with_vars(
+        [
+          ("XDG_DATA_HOME", Some(temp.path().to_str().unwrap())),
+          ("XDG_CACHE_HOME", Some(temp.path().to_str().unwrap())),
+          ("HOME", Some(temp.path().to_str().unwrap())),
+        ],
+        || {
+          // First, update all to create the lock file
+          let options = UpdateOptions::default();
+          let _ = update_inputs(&config_path, &options).unwrap();
+
+          // Now update only input_a
+          let options = UpdateOptions {
+            inputs: vec!["input_a".to_string()],
+            ..Default::default()
+          };
+          let result = update_inputs(&config_path, &options).unwrap();
+
+          // Both inputs should be in resolved (we still resolve everything)
+          assert!(result.resolved.contains_key("input_a"));
+          assert!(result.resolved.contains_key("input_b"));
+
+          // Since both were already in the lock file, they should be unchanged
+          // (path inputs don't change revision)
+          assert!(result.updated.is_empty());
+          assert!(result.added.is_empty());
+        },
+      );
     }
   }
 }

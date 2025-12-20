@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::inputs::resolve::ResolvedInputs;
 use crate::platform::paths::{cache_dir, data_dir, root_dir};
 
 pub use templates::{GLOBALS_D_LUA, INIT_LUA_TEMPLATE, LUARC_JSON_TEMPLATE};
@@ -162,9 +161,12 @@ pub fn init(options: &InitOptions) -> Result<InitResult, InitError> {
 /// # Arguments
 ///
 /// * `config_dir` - Directory containing .luarc.json
-/// * `inputs` - Resolved inputs with their paths
+/// * `input_paths` - Iterator of input paths to add to library
 /// * `system` - Whether running as elevated (affects types/cache paths)
-pub fn update_luarc_inputs(config_dir: &Path, inputs: &ResolvedInputs, system: bool) {
+pub fn update_luarc_inputs<'a, I>(config_dir: &Path, input_paths: I, system: bool)
+where
+  I: IntoIterator<Item = &'a Path>,
+{
   let luarc_path = config_dir.join(".luarc.json");
 
   // Skip if .luarc.json doesn't exist
@@ -228,9 +230,9 @@ pub fn update_luarc_inputs(config_dir: &Path, inputs: &ResolvedInputs, system: b
   // Build new library array: types first, then inputs, then user entries
   let mut new_library: Vec<serde_json::Value> = vec![serde_json::Value::String(types_prefix)];
 
-  // Add each input's path (sorted by name for deterministic output)
-  for (_name, input) in inputs.iter() {
-    new_library.push(serde_json::Value::String(input.path.to_string_lossy().to_string()));
+  // Add each input's path
+  for input_path in input_paths {
+    new_library.push(serde_json::Value::String(input_path.to_string_lossy().to_string()));
   }
 
   // Append user entries

@@ -50,6 +50,34 @@ end
 return M
 ```
 
+### Extended Input Syntax (Transitive Overrides)
+
+For advanced use cases, you can use the extended table syntax to override how an input's transitive dependencies are resolved:
+
+```lua
+M.inputs = {
+    -- Simple URL string (most common)
+    syslua = "git:https://github.com/spirit-led-software/syslua.git",
+
+    -- Extended syntax: override transitive dependencies
+    my_lib = {
+        url = "git:https://github.com/myorg/my-lib.git",
+        inputs = {
+            -- Make my_lib use our version of utils (instead of its own)
+            utils = { follows = "my_utils" },
+
+            -- Override with a specific URL
+            logger = "git:https://github.com/myorg/better-logger.git",
+        },
+    },
+
+    -- This is what my_lib's "utils" dependency will use
+    my_utils = "git:https://github.com/myorg/utils.git",
+}
+```
+
+See [Transitive Dependencies](#transitive-dependencies) for more details.
+
 ## Input URL Formats
 
 | Format     | Example                               | Auth Method                 |
@@ -134,11 +162,138 @@ end
 Each input in the `inputs` table passed to `M.setup()` has the following structure:
 
 ```lua
-inputs.dotfiles = {
+inputs.my_lib = {
     path = "/path/to/resolved/input",  -- Absolute path to input content
     rev = "abc123...",                  -- Git revision (or "local" for path inputs)
+    inputs = {                          -- Transitive dependencies (if any)
+        utils = {
+            path = "/path/to/utils",
+            rev = "def456...",
+        },
+    },
 }
 ```
+
+For simple inputs without transitive dependencies, the `inputs` field is omitted.
+
+## Transitive Dependencies
+
+Inputs can declare their own dependencies, which sys.lua resolves automatically. This works similarly to Nix flakes - each input can have its own `M.inputs` table, and those dependencies are resolved transitively.
+
+### How Transitive Dependencies Work
+
+When an input has an `init.lua` with its own `M.inputs`:
+
+1. **Automatic Resolution**: sys.lua parses the input's `init.lua` and resolves its declared dependencies
+2. **Content-Addressed Cache**: Each unique input (by URL + revision) is stored once in the cache
+3. **`.inputs/` Symlinks**: Dependencies are linked into each input's `.inputs/` directory
+4. **Custom Require**: A custom Lua searcher walks up the directory tree to find dependencies in `.inputs/`
+
+### Example: Library with Dependencies
+
+Consider a library `my-lib` that depends on `utils`:
+
+```lua
+-- my-lib/init.lua
+local M = {}
+
+M.inputs = {
+    utils = "git:https://github.com/someorg/utils.git",
+}
+
+function M.setup(inputs)
+    local utils = require("utils")  -- Resolved via .inputs/utils symlink
+    -- ...
+end
+
+return M
+```
+
+When you use `my-lib` in your config:
+
+```lua
+-- ~/.config/syslua/init.lua
+M.inputs = {
+    my_lib = "git:https://github.com/myorg/my-lib.git",
+}
+
+function M.setup(inputs)
+    local my_lib = require("my_lib")
+    my_lib.setup(inputs.my_lib.inputs)
+end
+```
+
+The cache structure looks like:
+
+```
+~/.cache/syslua/inputs/store/
+├── my-lib-a1b2c3d4/
+│   ├── init.lua
+│   └── .inputs/
+│       └── utils -> ../utils-e5f6g7h8  (symlink)
+└── utils-e5f6g7h8/
+    └── init.lua
+```
+
+### The `follows` Mechanism
+
+You can override how an input's transitive dependencies are resolved using `follows`. This tells sys.lua to use a different input instead of what the library declares.
+
+**Use cases:**
+- Use a newer version of a shared dependency
+- Deduplicate the same library used by multiple inputs
+- Use your own fork of a dependency
+
+```lua
+M.inputs = {
+    -- Your version of utils
+    my_utils = "git:https://github.com/myorg/utils-fork.git",
+
+    -- Override my_lib's utils to use your version
+    my_lib = {
+        url = "git:https://github.com/myorg/my-lib.git",
+        inputs = {
+            utils = { follows = "my_utils" },
+        },
+    },
+}
+```
+
+With this configuration:
+- `my-lib` will use your `my_utils` instead of its declared `utils`
+- The `.inputs/utils` symlink in `my-lib` points to `my_utils`
+- Only one copy of utils exists in the cache
+
+### Follows Chains
+
+`follows` declarations can chain: if A's dep follows B, and B's dep follows C, then A gets C's version. The chain is limited to 10 hops to prevent infinite loops.
+
+### Diamond Dependencies
+
+When multiple inputs depend on the same library with the same URL:
+
+```lua
+M.inputs = {
+    lib_a = "git:.../lib-a.git",  -- depends on utils v1
+    lib_b = "git:.../lib-b.git",  -- also depends on utils v1
+}
+```
+
+If both `lib_a` and `lib_b` depend on the same `utils` URL+revision, they share the same cached copy. Each gets their own `.inputs/utils` symlink pointing to the shared location.
+
+### Circular Dependencies
+
+Circular dependencies between inputs are supported for runtime usage:
+
+```lua
+-- lib_a/init.lua
+M.inputs = { lib_b = "path:../lib_b" }
+
+-- lib_b/init.lua
+M.inputs = { lib_a = "path:../lib_a" }
+```
+
+The symlinks allow each library to `require()` the other at runtime. The resolution algorithm detects cycles by tracking URLs it has already resolved.
 
 ## Lock File
 
@@ -150,16 +305,29 @@ sys.lua generates a `syslua.lock` file in the same directory as the configuratio
 
 ### Lock File Format
 
+The lock file uses a graph-based format (version 2) to support transitive dependencies:
+
 ```json
 {
-  "version": 1,
-  "inputs": {
+  "version": 2,
+  "nodes": {
+    "__root__": {
+      "inputs": ["syslua", "dotfiles"]
+    },
     "syslua": {
       "type": "git",
       "url": "https://github.com/spirit-led-software/syslua.git",
       "rev": "a1b2c3d4e5f6...",
       "sha256": "...",
-      "lastModified": 1733667300
+      "lastModified": 1733667300,
+      "inputs": ["syslua/utils"]
+    },
+    "syslua/utils": {
+      "type": "git",
+      "url": "https://github.com/spirit-led-software/lua-utils.git",
+      "rev": "b2c3d4e5f6a1...",
+      "sha256": "...",
+      "lastModified": 1733667200
     },
     "dotfiles": {
       "type": "git",
@@ -171,6 +339,12 @@ sys.lua generates a `syslua.lock` file in the same directory as the configuratio
   }
 }
 ```
+
+Key features:
+- `__root__` node lists direct dependencies
+- Transitive deps use path notation (`parent/dep_name`)
+- Each node tracks its own transitive dependencies
+- Version 1 lock files are automatically migrated to version 2
 
 ### Lock File Behavior
 

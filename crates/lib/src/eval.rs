@@ -5,7 +5,6 @@
 //! builds and bindings defined in the configuration.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -13,7 +12,8 @@ use mlua::prelude::*;
 use tracing::info;
 
 use crate::init::update_luarc_inputs;
-use crate::inputs::resolve::{ResolveError, ResolvedInputs, resolve_inputs, save_lock_file_if_changed};
+use crate::inputs::resolve::{ResolveError, resolve_inputs, save_lock_file_if_changed};
+use crate::inputs::{InputDecl, InputDecls, InputOverride, ResolvedInputs};
 use crate::lua::{loaders, runtime};
 use crate::manifest::Manifest;
 use crate::platform;
@@ -75,23 +75,27 @@ pub fn evaluate_config(path: &Path) -> Result<Manifest, EvalError> {
         .get("setup")
         .map_err(|_| LuaError::external("config must return a table with a 'setup' function"))?;
 
-      // Extract raw inputs table (name -> url)
-      let raw_inputs = extract_raw_inputs(&config_table)?;
+      // Extract raw inputs table (supports both simple URLs and extended syntax)
+      let input_decls = extract_raw_inputs(&config_table)?;
 
-      // Resolve inputs (fetch git repos, resolve paths)
-      let resolved = if raw_inputs.is_empty() {
+      // Resolve inputs (fetch git repos, resolve paths) with transitive dependencies
+      let resolved = if input_decls.is_empty() {
         info!("no inputs to resolve");
         None
       } else {
-        info!(count = raw_inputs.len(), "resolving inputs");
-        let result = resolve_inputs(&raw_inputs, config_dir, None)?;
+        info!(
+          count = input_decls.len(),
+          "resolving inputs with transitive dependencies"
+        );
+        let result = resolve_inputs(&input_decls, config_dir, None)?;
 
         // Save lock file if it changed
         save_lock_file_if_changed(&result, config_dir)?;
 
         // Update .luarc.json with resolved input paths for LuaLS
         let system = platform::is_elevated();
-        update_luarc_inputs(config_dir, &result.inputs, system);
+        let input_paths: Vec<_> = result.inputs.values().map(|i| i.path.as_path()).collect();
+        update_luarc_inputs(config_dir, input_paths, system);
 
         // Register input searcher so require("input-name") works
         register_input_searcher(&lua, &result.inputs)?;
@@ -121,38 +125,155 @@ pub fn evaluate_config(path: &Path) -> Result<Manifest, EvalError> {
 
 /// Extract raw inputs from the config table.
 ///
-/// Returns a map of input name -> URL string.
-fn extract_raw_inputs(config_table: &LuaTable) -> LuaResult<HashMap<String, String>> {
-  let mut inputs = HashMap::new();
+/// Supports both simple URL strings and extended table syntax:
+/// ```lua
+/// inputs = {
+///   -- Simple: just a URL
+///   utils = "git:https://github.com/org/utils.git",
+///
+///   -- Extended: URL with transitive overrides
+///   pkgs = {
+///     url = "git:https://github.com/org/pkgs.git",
+///     inputs = {
+///       utils = { follows = "utils" },
+///     },
+///   },
+/// }
+/// ```
+fn extract_raw_inputs(config_table: &LuaTable) -> LuaResult<InputDecls> {
+  let mut decls = std::collections::BTreeMap::new();
 
   let inputs_value: LuaValue = config_table.get("inputs")?;
   if let LuaValue::Table(inputs_table) = inputs_value {
-    for pair in inputs_table.pairs::<String, String>() {
-      let (name, url) = pair?;
-      inputs.insert(name, url);
+    for pair in inputs_table.pairs::<String, LuaValue>() {
+      let (name, value) = pair?;
+      let decl = parse_input_decl(&name, value)?;
+      decls.insert(name, decl);
     }
   }
   // If inputs is nil or not a table, return empty map (no inputs)
 
-  Ok(inputs)
+  Ok(decls)
 }
 
+/// Parse a single input declaration from a Lua value.
+fn parse_input_decl(name: &str, value: LuaValue) -> LuaResult<InputDecl> {
+  match value {
+    LuaValue::String(url) => {
+      let url_str = url.to_str()?.to_string();
+      Ok(InputDecl::Url(url_str))
+    }
+    LuaValue::Table(table) => {
+      // Extended syntax: { url = "...", inputs = { ... } }
+      let url: Option<String> = table.get("url")?;
+      let inputs_value: LuaValue = table.get("inputs")?;
+
+      let overrides = match inputs_value {
+        LuaValue::Nil => std::collections::BTreeMap::new(),
+        LuaValue::Table(inputs_table) => parse_input_overrides(name, &inputs_table)?,
+        _ => {
+          return Err(LuaError::external(format!(
+            "input '{}': inputs field must be a table",
+            name
+          )));
+        }
+      };
+
+      Ok(InputDecl::Extended { url, inputs: overrides })
+    }
+    _ => Err(LuaError::external(format!(
+      "input '{}' must be a string URL or a table",
+      name
+    ))),
+  }
+}
+
+/// Parse input overrides from a table.
+fn parse_input_overrides(
+  parent_name: &str,
+  table: &LuaTable,
+) -> LuaResult<std::collections::BTreeMap<String, InputOverride>> {
+  let mut overrides = std::collections::BTreeMap::new();
+
+  for pair in table.pairs::<String, LuaValue>() {
+    let (name, value) = pair?;
+    let override_ = parse_single_override(parent_name, &name, value)?;
+    overrides.insert(name, override_);
+  }
+
+  Ok(overrides)
+}
+
+/// Parse a single input override.
+fn parse_single_override(parent_name: &str, name: &str, value: LuaValue) -> LuaResult<InputOverride> {
+  match value {
+    LuaValue::String(url) => {
+      // String is interpreted as a URL override
+      let url_str = url.to_str()?.to_string();
+      Ok(InputOverride::Url(url_str))
+    }
+    LuaValue::Table(table) => {
+      // Check for follows
+      let follows: Option<String> = table.get("follows")?;
+      if let Some(follows_path) = follows {
+        return Ok(InputOverride::Follows(follows_path));
+      }
+
+      // Check for url
+      let url: Option<String> = table.get("url")?;
+      if let Some(url_str) = url {
+        return Ok(InputOverride::Url(url_str));
+      }
+
+      Err(LuaError::external(format!(
+        "input '{}': override '{}' must have either 'url' or 'follows' field",
+        parent_name, name
+      )))
+    }
+    _ => Err(LuaError::external(format!(
+      "input '{}': override '{}' must be a string URL or a table with 'url' or 'follows'",
+      parent_name, name
+    ))),
+  }
+}
+
+/// Convert InputDecls to a simple HashMap<String, String> for backwards compatibility.
 /// Build a Lua table representing resolved inputs for setup().
 ///
-/// Each input becomes: `inputs.name = { path = "/path/to/input", rev = "abc123" }`
+/// Each input becomes: `inputs.name = { path = "/path/to/input", rev = "abc123", inputs = {...} }`
+/// The nested `inputs` table contains the input's resolved transitive dependencies.
 fn build_inputs_table(lua: &Lua, resolved: Option<&ResolvedInputs>) -> LuaResult<LuaTable> {
   let inputs = lua.create_table()?;
 
   if let Some(resolved_inputs) = resolved {
     for (name, input) in resolved_inputs {
-      let entry = lua.create_table()?;
-      entry.set("path", input.path.to_string_lossy().as_ref())?;
-      entry.set("rev", input.rev.as_str())?;
+      let entry = build_input_entry(lua, input)?;
       inputs.set(name.as_str(), entry)?;
     }
   }
 
   Ok(inputs)
+}
+
+/// Build a Lua table entry for a single resolved input.
+///
+/// Creates: `{ path = "...", rev = "...", inputs = {...} }`
+fn build_input_entry(lua: &Lua, input: &crate::inputs::ResolvedInput) -> LuaResult<LuaTable> {
+  let entry = lua.create_table()?;
+  entry.set("path", input.path.to_string_lossy().as_ref())?;
+  entry.set("rev", input.rev.as_str())?;
+
+  // Recursively build nested inputs table for transitive dependencies
+  if !input.inputs.is_empty() {
+    let nested_inputs = lua.create_table()?;
+    for (dep_name, dep_input) in &input.inputs {
+      let dep_entry = build_input_entry(lua, dep_input)?;
+      nested_inputs.set(dep_name.as_str(), dep_entry)?;
+    }
+    entry.set("inputs", nested_inputs)?;
+  }
+
+  Ok(entry)
 }
 
 /// Register a custom searcher for inputs.
@@ -873,6 +994,85 @@ mod tests {
     )
     .unwrap();
 
+    evaluate_config(&config_path)?;
+    Ok(())
+  }
+
+  #[test]
+  fn test_extended_input_syntax_with_url() -> Result<(), EvalError> {
+    let temp_dir = TempDir::new().unwrap();
+    let config_dir = temp_dir.path();
+
+    // Create a local input directory
+    let local_input = config_dir.join("my-lib");
+    fs::create_dir(&local_input).unwrap();
+    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
+
+    let config_path = config_dir.join("init.lua");
+    fs::write(
+      &config_path,
+      r#"
+        return {
+          inputs = {
+            -- Extended syntax with just url (no overrides)
+            mylib = {
+              url = "path:./my-lib",
+            },
+          },
+          setup = function(inputs)
+            local lib = require("mylib")
+            assert(lib.name == "my-lib", "expected name='my-lib', got " .. tostring(lib.name))
+          end,
+        }
+      "#,
+    )
+    .unwrap();
+
+    evaluate_config(&config_path)?;
+    Ok(())
+  }
+
+  #[test]
+  fn test_extended_input_syntax_with_overrides_is_parsed() -> Result<(), EvalError> {
+    let temp_dir = TempDir::new().unwrap();
+    let config_dir = temp_dir.path();
+
+    // Create two local inputs
+    let utils_dir = config_dir.join("utils");
+    fs::create_dir(&utils_dir).unwrap();
+    fs::write(utils_dir.join("init.lua"), "return { name = 'utils' }").unwrap();
+
+    let pkgs_dir = config_dir.join("pkgs");
+    fs::create_dir(&pkgs_dir).unwrap();
+    fs::write(pkgs_dir.join("init.lua"), "return { name = 'pkgs' }").unwrap();
+
+    let config_path = config_dir.join("init.lua");
+    fs::write(
+      &config_path,
+      r#"
+        return {
+          inputs = {
+            utils = "path:./utils",
+            -- Extended syntax with overrides (currently parsed but not fully resolved)
+            pkgs = {
+              url = "path:./pkgs",
+              inputs = {
+                utils = { follows = "utils" },
+              },
+            },
+          },
+          setup = function(inputs)
+            -- Both inputs should be resolved
+            assert(inputs.utils, "utils should be resolved")
+            assert(inputs.pkgs, "pkgs should be resolved")
+          end,
+        }
+      "#,
+    )
+    .unwrap();
+
+    // This should work even though follows isn't fully implemented yet
+    // (we're just testing that the parsing works)
     evaluate_config(&config_path)?;
     Ok(())
   }

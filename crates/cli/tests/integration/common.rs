@@ -39,6 +39,24 @@ impl TestEnv {
     Self { temp, config_path }
   }
 
+  /// Create an empty test environment.
+  ///
+  /// Use this when you need to manually set up the directory structure.
+  pub fn empty() -> Self {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("init.lua");
+    Self { temp, config_path }
+  }
+
+  /// Write a file relative to the temp directory.
+  pub fn write_file(&self, relative_path: &str, content: &str) {
+    let path = self.temp.path().join(relative_path);
+    if let Some(parent) = path.parent() {
+      std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&path, content).unwrap();
+  }
+
   /// Store path (isolated per test).
   pub fn store_path(&self) -> PathBuf {
     self.temp.path().join("store")
