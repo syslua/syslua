@@ -108,7 +108,7 @@ The search order for submodules is:
 
 This allows libraries with a `lua/` subdirectory (common in LuaRocks packages) to work seamlessly.
 
-All files loaded from inputs have `__dir` injected, just like any other Lua file. This means relative `require()` and `dofile()` calls within inputs work correctly.
+All files loaded from inputs have `sys.dir` injected, just like any other Lua file. This means relative `require()` and `dofile()` calls within inputs work correctly.
 
 ```lua
 M.inputs = {
@@ -502,7 +502,7 @@ REGISTER_INPUT_SEARCHER(name, cache_path):
     //    - cache_path/sub/module/init.lua
     //    - cache_path/lua/sub/module.lua       (LuaRocks-style)
     //    - cache_path/lua/sub/module/init.lua  (LuaRocks-style)
-    // 3. Uses load_file_with_dir() for __dir injection
+    // 3. Uses load_file_with_dir() for sys.dir injection
     //
     // The searcher is inserted at position 2 in package.searchers,
     // before the standard file searcher, so input names take precedence.

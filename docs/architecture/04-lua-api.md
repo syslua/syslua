@@ -324,7 +324,7 @@ sys.lua automatically generates a `.luarc.json` file when you run `sys apply`. T
     "checkThirdParty": false
   },
   "diagnostics": {
-    "globals": ["sys", "input", "__dir"]
+    "globals": ["sys"]
   },
   "completion": {
     "callSnippet": "Both",

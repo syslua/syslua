@@ -1,15 +1,15 @@
-//! Custom Lua module loading with per-file `__dir` injection.
+//! Custom Lua module loading with per-file `sys.dir` injection.
 //!
 //! This module provides custom implementations of `require`, `dofile`, and `loadfile`
-//! that inject a `__dir` variable into each loaded file's environment. The `__dir`
-//! variable contains the directory path of the currently executing Lua file.
+//! that inject a `sys.dir` property into each loaded file's environment. The `sys.dir`
+//! property contains the directory path of the currently executing Lua file.
 //!
 //! # Implementation Strategy
 //!
 //! Rather than reimplementing `require` entirely, we hook into `package.searchers[2]`
 //! (the Lua file loader) with a custom function that:
 //! 1. Uses Lua's built-in `package.searchpath` for path resolution
-//! 2. Loads files with a custom environment containing `__dir`
+//! 2. Loads files with a custom environment containing a cloned `sys` table with `dir`
 //! 3. Preserves all other `require` behavior (caching, preload, C loaders)
 //!
 //! For `dofile` and `loadfile`, we replace them entirely with Rust functions.
@@ -18,8 +18,8 @@
 //!
 //! For inputs with transitive dependencies, we add a `.inputs/` directory searcher
 //! that runs before the standard Lua file searcher. This searcher:
-//! 1. Gets the current `__dir` (where the calling file is located)
-//! 2. Walks up from `__dir` looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
+//! 1. Gets the current `sys.dir` (where the calling file is located)
+//! 2. Walks up from `sys.dir` looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
 //! 3. If found, loads it via `load_file_with_dir` (recursive injection)
 //! 4. If not found, returns nil to let the next searcher try
 
@@ -27,8 +27,8 @@ use mlua::prelude::*;
 use std::fs;
 use std::path::Path;
 
-/// Registry key for storing the current `__dir` value.
-/// This is used by `dofile` to resolve relative paths.
+/// Registry key for storing the current directory value.
+/// This is used by `dofile` to resolve relative paths and by the `.inputs/` searcher.
 const CURRENT_DIR_KEY: &str = "__syslua_current_dir";
 
 /// Name of the inputs directory used for transitive dependencies.
@@ -73,10 +73,10 @@ fn find_in_inputs_dirs(modname: &str, start_dir: &Path) -> Option<std::path::Pat
   None
 }
 
-/// Load a Lua file with a custom environment containing `__dir`.
+/// Load a Lua file with a custom environment containing `sys.dir`.
 ///
 /// Creates an environment table with:
-/// - `__dir` set to the parent directory of the file
+/// - A cloned `sys` table with `dir` set to the parent directory of the file
 /// - A metatable with `__index` pointing to `_G` for global access
 ///
 /// # Arguments
@@ -100,13 +100,22 @@ pub fn load_file_with_dir(lua: &Lua, path: &Path) -> LuaResult<LuaValue> {
     .to_string_lossy()
     .into_owned();
 
-  // Store current __dir in registry for nested dofile calls
+  // Store current dir in registry for nested dofile calls and .inputs/ searcher
   let prev_dir: Option<String> = lua.named_registry_value(CURRENT_DIR_KEY)?;
   lua.set_named_registry_value(CURRENT_DIR_KEY, dir.clone())?;
 
-  // Create environment table with __dir
+  // Create environment table
   let env = lua.create_table()?;
-  env.set("__dir", dir)?;
+
+  // Clone the global sys table and add dir to it
+  let global_sys: LuaTable = lua.globals().get("sys")?;
+  let local_sys = lua.create_table()?;
+  for pair in global_sys.pairs::<LuaValue, LuaValue>() {
+    let (k, v) = pair?;
+    local_sys.set(k, v)?;
+  }
+  local_sys.set("dir", dir)?;
+  env.set("sys", local_sys)?;
 
   // Inherit from _G via metatable
   let mt = lua.create_table()?;
@@ -121,7 +130,7 @@ pub fn load_file_with_dir(lua: &Lua, path: &Path) -> LuaResult<LuaValue> {
     .set_environment(env)
     .eval::<LuaValue>();
 
-  // Restore previous __dir (ignore errors during cleanup to avoid masking the original error)
+  // Restore previous dir (ignore errors during cleanup to avoid masking the original error)
   let _ = lua.set_named_registry_value(CURRENT_DIR_KEY, prev_dir);
 
   result
@@ -130,7 +139,8 @@ pub fn load_file_with_dir(lua: &Lua, path: &Path) -> LuaResult<LuaValue> {
 /// Load a Lua file and return it as a function (without executing).
 ///
 /// Similar to `load_file_with_dir` but returns the chunk as a callable function
-/// instead of executing it immediately.
+/// instead of executing it immediately. The function's environment will have
+/// a cloned `sys` table with `dir` set to the file's parent directory.
 pub fn load_file_as_function(lua: &Lua, path: &Path) -> LuaResult<LuaFunction> {
   // Canonicalize the path to resolve . and .. components
   let canonical_path = path
@@ -146,9 +156,18 @@ pub fn load_file_as_function(lua: &Lua, path: &Path) -> LuaResult<LuaFunction> {
     .to_string_lossy()
     .into_owned();
 
-  // Create environment table with __dir
+  // Create environment table
   let env = lua.create_table()?;
-  env.set("__dir", dir)?;
+
+  // Clone the global sys table and add dir to it
+  let global_sys: LuaTable = lua.globals().get("sys")?;
+  let local_sys = lua.create_table()?;
+  for pair in global_sys.pairs::<LuaValue, LuaValue>() {
+    let (k, v) = pair?;
+    local_sys.set(k, v)?;
+  }
+  local_sys.set("dir", dir)?;
+  env.set("sys", local_sys)?;
 
   // Inherit from _G via metatable
   let mt = lua.create_table()?;
@@ -163,17 +182,17 @@ pub fn load_file_as_function(lua: &Lua, path: &Path) -> LuaResult<LuaFunction> {
     .into_function()
 }
 
-/// Get the current `__dir` from the registry.
+/// Get the current directory from the registry.
 ///
 /// Returns `None` if no file is currently being loaded.
 fn get_current_dir(lua: &Lua) -> LuaResult<Option<String>> {
   lua.named_registry_value(CURRENT_DIR_KEY)
 }
 
-/// Resolve a potentially relative path against the current `__dir`.
+/// Resolve a potentially relative path against the current directory.
 ///
 /// If the path is absolute, returns it as-is.
-/// If the path is relative and there's a current `__dir`, resolves against it.
+/// If the path is relative and there's a current directory context, resolves against it.
 /// Otherwise, resolves against the current working directory.
 fn resolve_path(lua: &Lua, path_str: &str) -> LuaResult<std::path::PathBuf> {
   let path = Path::new(path_str);
@@ -182,7 +201,7 @@ fn resolve_path(lua: &Lua, path_str: &str) -> LuaResult<std::path::PathBuf> {
     return Ok(path.to_path_buf());
   }
 
-  // Try to resolve against current __dir
+  // Try to resolve against current directory context
   if let Some(current_dir) = get_current_dir(lua)? {
     let resolved = Path::new(&current_dir).join(path);
     if resolved.exists() {
@@ -197,7 +216,7 @@ fn resolve_path(lua: &Lua, path_str: &str) -> LuaResult<std::path::PathBuf> {
 /// Create a custom Lua file searcher for `package.searchers[2]`.
 ///
 /// This searcher uses `package.searchpath` to find modules but loads them
-/// with our custom `load_file_with_dir` to inject `__dir`.
+/// with our custom `load_file_with_dir` to inject `sys.dir`.
 fn create_lua_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
   lua.create_function(|lua, modname: String| {
     let package: LuaTable = lua.globals().get("package")?;
@@ -215,7 +234,7 @@ fn create_lua_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
         let filepath = filepath_lua.to_str()?.to_string();
         let path_clone = filepath.clone();
 
-        // Create a loader function that loads the file with __dir
+        // Create a loader function that loads the file with sys.dir
         let loader = lua.create_function(move |lua, _: LuaMultiValue| {
           let path = Path::new(&path_clone);
           load_file_with_dir(lua, path)
@@ -236,18 +255,18 @@ fn create_lua_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
 /// Create a `.inputs/` directory searcher for transitive dependencies.
 ///
 /// This searcher is inserted before the standard Lua file searcher. It:
-/// 1. Gets the current `__dir` from the registry
-/// 2. Walks up from `__dir` looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
-/// 3. If found, returns a loader that loads the file with `__dir` injection
+/// 1. Gets the current directory from the registry
+/// 2. Walks up from the current directory looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
+/// 3. If found, returns a loader that loads the file with `sys.dir` injection
 /// 4. If not found, returns nil to let the next searcher try
 fn create_inputs_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
   lua.create_function(|lua, modname: String| {
-    // Get the current __dir from registry
+    // Get the current directory from registry
     let current_dir: Option<String> = get_current_dir(lua)?;
 
     let Some(dir_str) = current_dir else {
-      // No __dir set, can't search .inputs/
-      let errmsg = format!("\n\tno .inputs/ for '{}' (no __dir context)", modname);
+      // No directory context set, can't search .inputs/
+      let errmsg = format!("\n\tno .inputs/ for '{}' (no directory context)", modname);
       return Ok((LuaValue::Nil, errmsg));
     };
 
@@ -259,7 +278,7 @@ fn create_inputs_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
         let filepath_str = filepath.to_string_lossy().to_string();
         let path_clone = filepath_str.clone();
 
-        // Create a loader function that loads the file with __dir
+        // Create a loader function that loads the file with sys.dir
         let loader = lua.create_function(move |lua, _: LuaMultiValue| {
           let path = Path::new(&path_clone);
           load_file_with_dir(lua, path)
@@ -279,7 +298,7 @@ fn create_inputs_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
 
 /// Create a custom `dofile` function.
 ///
-/// This version resolves relative paths against the current `__dir`,
+/// This version resolves relative paths against the current directory,
 /// allowing for intuitive relative imports.
 fn create_dofile(lua: &Lua) -> LuaResult<LuaFunction> {
   lua.create_function(|lua, path: Option<String>| match path {
@@ -293,8 +312,8 @@ fn create_dofile(lua: &Lua) -> LuaResult<LuaFunction> {
 
 /// Create a custom `loadfile` function.
 ///
-/// This version resolves relative paths against the current `__dir`
-/// and returns a function with `__dir` injected into its environment.
+/// This version resolves relative paths against the current directory
+/// and returns a function with `sys.dir` injected into its environment.
 fn create_loadfile(lua: &Lua) -> LuaResult<LuaFunction> {
   lua.create_function(|lua, (path, mode, env): (String, Option<String>, Option<LuaTable>)| {
     // We only support text mode
@@ -308,8 +327,8 @@ fn create_loadfile(lua: &Lua) -> LuaResult<LuaFunction> {
       )));
     }
 
-    // If a custom env is provided, we can't inject __dir the same way
-    // For now, we ignore the custom env parameter and always inject __dir
+    // If a custom env is provided, we can't inject sys.dir the same way
+    // For now, we ignore the custom env parameter and always inject sys.dir
     if env.is_some() {
       return Err(LuaError::external("loadfile with custom environment not supported"));
     }
@@ -328,7 +347,7 @@ fn create_loadfile(lua: &Lua) -> LuaResult<LuaFunction> {
 /// 4. Replaces `loadfile` with our custom version
 ///
 /// After calling this, all Lua files loaded via `require`, `dofile`, or `loadfile`
-/// will have access to the `__dir` variable containing their parent directory.
+/// will have access to the `sys.dir` property containing their parent directory.
 /// Additionally, `require` calls will first search `.inputs/` directories for
 /// transitive input dependencies.
 pub fn install_loaders(lua: &Lua) -> LuaResult<()> {
@@ -381,6 +400,14 @@ mod tests {
     lua
       .load(r#"package.path = package.path .. ";./?.lua;./?/init.lua""#)
       .exec()?;
+
+    // Create a minimal sys table for testing (sys.dir will be added per-file)
+    let sys = lua.create_table()?;
+    sys.set("os", "test")?;
+    sys.set("arch", "test")?;
+    sys.set("platform", "test-test")?;
+    lua.globals().set("sys", sys)?;
+
     install_loaders(&lua)?;
     Ok(lua)
   }
@@ -389,7 +416,7 @@ mod tests {
   fn test_load_file_with_dir_sets_dir() -> LuaResult<()> {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.lua");
-    fs::write(&file_path, "return __dir").unwrap();
+    fs::write(&file_path, "return sys.dir").unwrap();
 
     let lua = create_test_runtime()?;
     let result: String = load_file_with_dir(&lua, &file_path)?.to_string().unwrap().to_string();
@@ -406,7 +433,7 @@ mod tests {
 
     // Create a module file
     let mod_path = temp_dir.path().join("mymod.lua");
-    fs::write(&mod_path, "return { dir = __dir }").unwrap();
+    fs::write(&mod_path, "return { dir = sys.dir }").unwrap();
 
     let lua = create_test_runtime()?;
 
@@ -464,7 +491,7 @@ mod tests {
   fn test_dofile_with_absolute_path() -> LuaResult<()> {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.lua");
-    fs::write(&file_path, "return __dir").unwrap();
+    fs::write(&file_path, "return sys.dir").unwrap();
 
     let lua = create_test_runtime()?;
 
@@ -487,7 +514,7 @@ mod tests {
 
     // Create sub.lua in the same directory
     let sub_path = temp_dir.path().join("sub.lua");
-    fs::write(&sub_path, "return __dir").unwrap();
+    fs::write(&sub_path, "return sys.dir").unwrap();
 
     let lua = create_test_runtime()?;
     let result: String = load_file_with_dir(&lua, &main_path)?.to_string().unwrap().to_string();
@@ -507,13 +534,13 @@ mod tests {
     //   main.lua -> dofiles subdir/a.lua
     //   subdir/
     //     a.lua -> dofiles b.lua (relative to subdir)
-    //     b.lua -> returns __dir
+    //     b.lua -> returns sys.dir
     let subdir = temp_dir.path().join("subdir");
     fs::create_dir(&subdir).unwrap();
 
     fs::write(temp_dir.path().join("main.lua"), "return dofile('./subdir/a.lua')").unwrap();
     fs::write(subdir.join("a.lua"), "return dofile('./b.lua')").unwrap();
-    fs::write(subdir.join("b.lua"), "return __dir").unwrap();
+    fs::write(subdir.join("b.lua"), "return sys.dir").unwrap();
 
     let lua = create_test_runtime()?;
     let result: String = load_file_with_dir(&lua, &temp_dir.path().join("main.lua"))?
@@ -521,7 +548,7 @@ mod tests {
       .unwrap()
       .to_string();
 
-    // b.lua should see __dir as the subdir, not the root
+    // b.lua should see sys.dir as the subdir, not the root
     // Use canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
     let expected = subdir.canonicalize().unwrap();
     assert_eq!(result, expected.to_string_lossy());
@@ -555,7 +582,7 @@ mod tests {
   fn test_loadfile_has_dir() -> LuaResult<()> {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.lua");
-    fs::write(&file_path, "return __dir").unwrap();
+    fs::write(&file_path, "return sys.dir").unwrap();
 
     let lua = create_test_runtime()?;
 
@@ -657,10 +684,10 @@ mod tests {
     //   main.lua           -> requires "utils"
     //   .inputs/
     //     utils/
-    //       init.lua       -> returns { name = "utils", dir = __dir }
+    //       init.lua       -> returns { name = "utils", dir = sys.dir }
     let inputs_dir = temp_dir.path().join(".inputs").join("utils");
     fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return { name = 'utils', dir = __dir }").unwrap();
+    fs::write(inputs_dir.join("init.lua"), "return { name = 'utils', dir = sys.dir }").unwrap();
 
     let main_path = temp_dir.path().join("main.lua");
     fs::write(&main_path, "local u = require('utils'); return u.name").unwrap();
@@ -681,10 +708,10 @@ mod tests {
     //   main.lua           -> requires "utils" and returns utils.dir
     //   .inputs/
     //     utils/
-    //       init.lua       -> returns { dir = __dir }
+    //       init.lua       -> returns { dir = sys.dir }
     let inputs_dir = temp_dir.path().join(".inputs").join("utils");
     fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return { dir = __dir }").unwrap();
+    fs::write(inputs_dir.join("init.lua"), "return { dir = sys.dir }").unwrap();
 
     let main_path = temp_dir.path().join("main.lua");
     fs::write(&main_path, "local u = require('utils'); return u.dir").unwrap();
@@ -692,7 +719,7 @@ mod tests {
     let lua = create_test_runtime()?;
     let result: String = load_file_with_dir(&lua, &main_path)?.to_string().unwrap().to_string();
 
-    // The __dir should be the utils directory, not the main.lua directory
+    // The sys.dir should be the utils directory, not the main.lua directory
     let expected = inputs_dir.canonicalize().unwrap();
     assert_eq!(result, expected.to_string_lossy());
     Ok(())

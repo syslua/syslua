@@ -374,6 +374,13 @@ fn create_dir_link(target: &Path, link: &Path) -> Result<(), StoreError> {
     target.to_path_buf()
   };
 
+  // Canonicalize to resolve ".." components (required for junctions)
+  let absolute_target = absolute_target.canonicalize().map_err(|e| StoreError::CreateSymlink {
+    from: target.to_path_buf(),
+    to: link.to_path_buf(),
+    source: e,
+  })?;
+
   // Try junction (works without admin on Windows 7+)
   if junction::create(&absolute_target, link).is_ok() {
     return Ok(());

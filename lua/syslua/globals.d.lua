@@ -54,6 +54,7 @@
 ---@alias Arch "x86_64" | "aarch64" | "i386"
 
 ---@class Sys
+---@field dir string Directory containing the current Lua file
 ---@field platform Platform Active platform
 ---@field os Os Operating system name
 ---@field arch Arch System architecture
@@ -66,6 +67,3 @@
 ---@type Sys
 ---@diagnostic disable-next-line: missing-fields
 sys = {}
-
----@type string
-__dir = ''

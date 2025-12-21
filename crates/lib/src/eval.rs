@@ -283,7 +283,7 @@ fn build_input_entry(lua: &Lua, input: &crate::inputs::ResolvedInput) -> LuaResu
 /// - Submodules: `require("input_name.foo.bar")` → `input_path/foo/bar.lua`
 ///   or `input_path/foo/bar/init.lua`
 ///
-/// All files are loaded via `load_file_with_dir()` to ensure `__dir` is injected.
+/// All files are loaded via `load_file_with_dir()` to ensure `sys.dir` is injected.
 fn register_input_searcher(lua: &Lua, resolved: &ResolvedInputs) -> LuaResult<()> {
   // Store input name → base path mappings in registry
   // Only include inputs that have an init.lua (are Lua libraries)
@@ -348,7 +348,7 @@ fn register_input_searcher(lua: &Lua, resolved: &ResolvedInputs) -> LuaResult<()
         let path_str = path.to_string_lossy().to_string();
         let path_for_loader = path_str.clone();
 
-        // Create loader function that uses load_file_with_dir for __dir injection
+        // Create loader function that uses load_file_with_dir for sys.dir injection
         let loader = lua.create_function(move |lua, _: LuaMultiValue| {
           loaders::load_file_with_dir(lua, Path::new(&path_for_loader))
         })?;
@@ -709,10 +709,10 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with init.lua that returns __dir
+    // Create a local input directory with init.lua that returns sys.dir
     let local_input = config_dir.join("my-lib");
     fs::create_dir(&local_input).unwrap();
-    fs::write(local_input.join("init.lua"), "return { dir = __dir }").unwrap();
+    fs::write(local_input.join("init.lua"), "return { dir = sys.dir }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -723,11 +723,11 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib") should have __dir set correctly
+            -- require("mylib") should have sys.dir set correctly
             local lib = require("mylib")
-            assert(lib.dir, "__dir should be set")
-            -- __dir should end with "my-lib" (the input directory)
-            assert(lib.dir:match("my%-lib$"), "__dir should end with 'my-lib', got: " .. lib.dir)
+            assert(lib.dir, "sys.dir should be set")
+            -- sys.dir should end with "my-lib" (the input directory)
+            assert(lib.dir:match("my%-lib$"), "sys.dir should end with 'my-lib', got: " .. lib.dir)
           end,
         }
       "#,
@@ -743,11 +743,11 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with sub/module.lua that returns __dir
+    // Create a local input directory with sub/module.lua that returns sys.dir
     let local_input = config_dir.join("my-lib");
     fs::create_dir_all(local_input.join("sub")).unwrap();
     fs::write(local_input.join("init.lua"), "return {}").unwrap();
-    fs::write(local_input.join("sub").join("module.lua"), "return { dir = __dir }").unwrap();
+    fs::write(local_input.join("sub").join("module.lua"), "return { dir = sys.dir }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -758,11 +758,11 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib.sub.module") should have __dir set to the sub directory
+            -- require("mylib.sub.module") should have sys.dir set to the sub directory
             local mod = require("mylib.sub.module")
-            assert(mod.dir, "__dir should be set")
-            -- __dir should end with "sub" (the module's parent directory)
-            assert(mod.dir:match("sub$"), "__dir should end with 'sub', got: " .. mod.dir)
+            assert(mod.dir, "sys.dir should be set")
+            -- sys.dir should end with "sub" (the module's parent directory)
+            assert(mod.dir:match("sub$"), "sys.dir should end with 'sub', got: " .. mod.dir)
           end,
         }
       "#,
@@ -889,11 +889,15 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with lua/submodule.lua that returns __dir
+    // Create a local input directory with lua/submodule.lua that returns sys.dir
     let local_input = config_dir.join("my-lib");
     fs::create_dir_all(local_input.join("lua")).unwrap();
     fs::write(local_input.join("init.lua"), "return {}").unwrap();
-    fs::write(local_input.join("lua").join("submodule.lua"), "return { dir = __dir }").unwrap();
+    fs::write(
+      local_input.join("lua").join("submodule.lua"),
+      "return { dir = sys.dir }",
+    )
+    .unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -904,11 +908,11 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib.submodule") should have __dir set to lua/
+            -- require("mylib.submodule") should have sys.dir set to lua/
             local mod = require("mylib.submodule")
-            assert(mod.dir, "__dir should be set")
-            -- __dir should end with "lua" (the module's parent directory)
-            assert(mod.dir:match("lua$"), "__dir should end with 'lua', got: " .. mod.dir)
+            assert(mod.dir, "sys.dir should be set")
+            -- sys.dir should end with "lua" (the module's parent directory)
+            assert(mod.dir:match("lua$"), "sys.dir should end with 'lua', got: " .. mod.dir)
           end,
         }
       "#,

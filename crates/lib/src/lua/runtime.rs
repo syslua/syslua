@@ -16,7 +16,7 @@ pub fn create_runtime(manifest: Rc<RefCell<Manifest>>) -> LuaResult<Lua> {
     )
     .exec()?;
 
-  // Install custom module loaders that inject __dir into each loaded file
+  // Install custom module loaders that inject sys.dir into each loaded file
   loaders::install_loaders(&lua)?;
 
   // Register global tables (sys.platform, sys.os, sys.arch, sys.build, etc.)

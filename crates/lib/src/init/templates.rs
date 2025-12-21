@@ -20,7 +20,7 @@ pub const LUARC_JSON_TEMPLATE: &str = r#"{
     "checkThirdParty": false
   },
   "diagnostics": {
-    "globals": ["sys", "__dir"]
+    "globals": ["sys"]
   },
   "completion": {
     "callSnippet": "Both",
