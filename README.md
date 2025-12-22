@@ -104,11 +104,17 @@ sys.bind({
   },
   create = function(inputs, ctx)
     local dest = '/usr/local/sbin/my-tool'
-    ctx:exec(string.format('ln -s "%s" "%s"', inputs.tool.outputs.bin, dest))
+    ctx:exec({
+      bin = '/bin/ln',
+      args = { '-s', inputs.tool.outputs.bin, dest },
+    })
     return { dest = dest }
   end,
-  destroy = function(inputs, ctx)
-    ctx:exec(string.format('rm "%s"', inputs.dest))
+  destroy = function(outputs, ctx)
+    ctx:exec({
+      bin = '/bin/rm',
+      args = { outputs.dest },
+    })
   end,
 })
 ```
@@ -163,10 +169,16 @@ First-class support for Linux, macOS, and Windows. Platform-specific logic lives
 sys.bind({
   inputs = { tool = my_tool },
   create = function(inputs, ctx)
-    if syslua.is_linux then
-      ctx:exec('systemctl enable my-tool')
-    elseif syslua.is_darwin then
-      ctx:exec('launchctl load /Library/LaunchDaemons/my-tool.plist')
+    if sys.os == 'linux' then
+      ctx:exec({
+        bin = '/bin/systemctl',
+        args = { 'enable', 'my-tool' },
+      })
+    elseif sys.os == 'darwin' then
+      ctx:exec({
+        bin = '/bin/launchctl',
+        args = { 'load', '/Library/LaunchDaemons/my-tool.plist' },
+      })
     end
   end,
 })
