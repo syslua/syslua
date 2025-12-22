@@ -123,15 +123,14 @@ return M
 | ------------- | ----------------------------- | ------------------------ |
 | `sys.build()` | Create a build (build recipe) | [Builds](./01-builds.md) |
 | `sys.bind()`  | Create a bind (side effects)  | [Binds](./02-binds.md)   |
-| `input()`     | Declare an input source       | [Inputs](./06-inputs.md) |
 
-### Custom ActionCtx Methods
+### Custom Context Methods
 
-`sys.register_ctx_method()` allows Lua libraries to extend `ActionCtx` with custom methods that compose existing primitives. This enables higher-level abstractions while keeping actions properly recorded.
+`sys.register_build_ctx_method()` `sys.register_bind_ctx_method()` allows Lua libraries to extend `BuildCtx` and `BindCtx` with custom methods that compose existing primitives. This enables higher-level abstractions while keeping actions properly recorded.
 
 ```lua
 -- Register a cross-platform mkdir helper
-sys.register_ctx_method('mkdir', function(ctx, path)
+sys.register_build_ctx_method('mkdir', function(ctx, path)
   if sys.os == 'windows' then
     return ctx:exec({ bin = 'cmd.exe', args = { '/c', 'mkdir', path } })
   else
@@ -139,7 +138,7 @@ sys.register_ctx_method('mkdir', function(ctx, path)
   end
 end)
 
--- Now available on any ActionCtx:
+-- Now available on any BuildCtx:
 sys.build({
   id = 'my-tool',
   create = function(inputs, ctx)
@@ -149,10 +148,10 @@ sys.build({
 })
 ```
 
-| Function                            | Purpose                                 |
-| ----------------------------------- | --------------------------------------- |
-| `sys.register_ctx_method(name, fn)` | Register a custom method on `ActionCtx` |
-| `sys.unregister_ctx_method(name)`   | Remove a previously registered method   |
+| Function                                  | Purpose                                |
+| ----------------------------------------- | -------------------------------------- |
+| `sys.register_build_ctx_method(name, fn)` | Register a custom method on `BuildCtx` |
+| `sys.register_bind_ctx_method(name, fn)`  | Register a custom method on `BindCtx`  |
 
 **Rules:**
 
@@ -161,25 +160,6 @@ sys.build({
 - Actions called within registered methods are recorded normally
 - Registration is global—methods are available to all subsequent builds/binds
 - Unknown method calls produce helpful error messages suggesting `sys.register_ctx_method`
-
-### Convenience Helpers (Lua, via `require('syslua.modules')`)
-
-| Function                  | Purpose                               |
-| ------------------------- | ------------------------------------- |
-| `modules.file.setup()`    | Declare a managed file                |
-| `modules.env.setup()`     | Declare environment variables         |
-| `modules.user.setup()`    | Declare per-user scoped configuration |
-| `modules.project.setup()` | Declare project-scoped environment    |
-
-> **Note:** These helpers are accessed via `local modules = require('syslua.modules')`, not as globals.
-
-Note: There is no `service()` or `pkg()` global. Packages and services are plain Lua modules:
-
-```lua
-require('syslua.pkgs.cli.ripgrep').setup()
-require('syslua.pkgs.cli.ripgrep').setup({ version = '14.0.0' })
-require('syslua.modules.services.nginx').setup({ port = 8080 })
-```
 
 ### System Information
 
@@ -205,29 +185,6 @@ sys.path.is_absolute(path) -- Check if path is absolute
 sys.path.normalize(path) -- Normalize path (resolve . and ..)
 sys.path.relative(from, to) -- Get relative path
 sys.path.split(path) -- Split into components
-```
-
-## Library Functions
-
-> **Future Feature:** The priority system (`mkDefault`, `mkForce`, etc.) is documented but not yet implemented.
-
-```lua
-local lib = require('syslua.lib')
-
--- JSON conversion
-lib.toJSON(table) -- Convert Lua table to JSON string
-
--- FUTURE: Priority functions for conflict resolution (not yet implemented)
--- lib.mkDefault(value) -- Priority 1000 (can be overridden)
--- lib.mkForce(value) -- Priority 50 (forces value)
--- lib.mkBefore(value) -- Priority 500 (prepend to mergeable)
--- lib.mkAfter(value) -- Priority 1500 (append to mergeable)
--- lib.mkOverride(priority, value) -- Explicit priority
--- lib.mkOrder(priority, value) -- Alias for mkOverride
-
--- FUTURE: Environment variable definitions (not yet implemented)
--- lib.env.defineMergeable(var_name) -- PATH-like variables
--- lib.env.defineSingular(var_name) -- Single-value variables
 ```
 
 ## Lua Language Server (LuaLS) Integration
@@ -380,13 +337,20 @@ sys.build({
 })
 ```
 
-### ActionCtx Methods
+### BuildCtx Methods
 
 | Method                       | Description                                                 | Returns                 |
 | ---------------------------- | ----------------------------------------------------------- | ----------------------- |
 | `ctx.out`                    | Property returning the build's output directory placeholder | string                  |
 | `ctx:fetch_url(url, sha256)` | Download file with hash verification                        | opaque path reference   |
 | `ctx:exec(opts)`             | Execute a command                                           | opaque stdout reference |
+
+### BindCtx Methods
+
+| Method           | Description                                                 | Returns                 |
+| ---------------- | ----------------------------------------------------------- | ----------------------- |
+| `ctx.out`        | Property returning the binds's output directory placeholder | string                  |
+| `ctx:exec(opts)` | Execute a command                                           | opaque stdout reference |
 
 ## See Also
 
