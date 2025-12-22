@@ -43,6 +43,11 @@ impl SnapshotStore {
     Self { base_path }
   }
 
+  /// Get the base path of this store (for debugging).
+  pub fn base_path(&self) -> &PathBuf {
+    &self.base_path
+  }
+
   /// Create a snapshot store at the default location.
   ///
   /// Uses the platform-specific data directory:
