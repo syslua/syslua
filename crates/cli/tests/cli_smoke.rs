@@ -214,19 +214,18 @@ fn apply_nonexistent_config_fails() {
 // =============================================================================
 
 #[test]
-fn destroy_placeholder_works() {
-  // destroy is currently a placeholder that just prints a message
+fn destroy_with_no_state_succeeds() {
+  // destroy with no previous state should succeed gracefully
   let temp = TempDir::new().unwrap();
 
   sys_cmd()
     .arg("destroy")
-    .arg(temp.path().join("init.lua"))
     .env("SYSLUA_SYSTEM_STORE", temp.path().join("store"))
     .env("SYSLUA_USER_STORE", temp.path().join("store"))
     .env("XDG_DATA_HOME", temp.path().join("data"))
     .assert()
     .success()
-    .stdout(predicate::str::contains("destroy"));
+    .stdout(predicate::str::contains("Nothing to destroy"));
 }
 
 // =============================================================================

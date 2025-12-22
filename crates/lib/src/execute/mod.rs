@@ -26,7 +26,7 @@ use crate::{
 use dag::DagNode;
 use resolver::ExecutionResolver;
 
-pub use apply::{ApplyError, ApplyOptions, ApplyResult, apply};
+pub use apply::{ApplyError, ApplyOptions, ApplyResult, DestroyOptions, DestroyResult, apply, destroy};
 pub use dag::ExecutionDag;
 pub use types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError, FailedDependency};
 

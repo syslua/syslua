@@ -28,8 +28,12 @@ enum Commands {
   Apply { file: String },
   /// Evaluate a config and create a plan without applying
   Plan { file: String },
-  /// Remove resources defined in a config
-  Destroy { file: String },
+  /// Remove all binds from the current snapshot
+  Destroy {
+    /// Show what would be destroyed without making changes
+    #[arg(long)]
+    dry_run: bool,
+  },
   /// Update inputs by re-resolving to latest revisions
   Update {
     /// Path to config file (default: ./init.lua or ~/.config/syslua/init.lua)
@@ -63,10 +67,7 @@ fn main() -> ExitCode {
     Commands::Init { path } => cmd_init(&path),
     Commands::Apply { file } => cmd_apply(&file),
     Commands::Plan { file } => cmd_plan(&file),
-    Commands::Destroy { file } => {
-      cmd_destroy(&file);
-      Ok(())
-    }
+    Commands::Destroy { dry_run } => cmd_destroy(dry_run),
     Commands::Update {
       config,
       inputs,
