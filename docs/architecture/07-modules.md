@@ -458,7 +458,9 @@ M.inputs = {
 }
 
 function M.setup(inputs)
-    local pkgs = require("inputs.pkgs")
+    -- Inputs are available via their namespace in package.path
+    -- The "pkgs" input provides the "pkgs" namespace (lua/pkgs/)
+    local pkgs = require("pkgs")
     
     -- Packages
     pkgs.cli.ripgrep.setup()

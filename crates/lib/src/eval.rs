@@ -9,17 +9,14 @@ use std::path::Path;
 use std::rc::Rc;
 
 use mlua::prelude::*;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::init::update_luarc_inputs;
 use crate::inputs::resolve::{ResolveError, resolve_inputs, save_lock_file_if_changed};
-use crate::inputs::{InputDecl, InputDecls, InputOverride, ResolvedInputs};
+use crate::inputs::{InputDecl, InputDecls, InputOverride, ResolvedInput, ResolvedInputs};
 use crate::lua::{loaders, runtime};
 use crate::manifest::Manifest;
 use crate::platform;
-
-/// Registry key for storing input name → path mappings.
-const INPUT_PATHS_REGISTRY_KEY: &str = "__syslua_input_paths";
 
 /// Errors that can occur during config evaluation.
 #[derive(Debug, thiserror::Error)]
@@ -39,8 +36,10 @@ pub enum EvalError {
 /// 1. Creates a new Lua runtime with the `sys` global
 /// 2. Loads and executes the configuration file
 /// 3. Resolves all declared inputs (fetching git repos, resolving paths)
-/// 4. Calls the `setup(inputs)` function with resolved inputs
-/// 5. Returns the manifest containing all registered builds and bindings
+/// 4. Builds package.path from all inputs' `lua/` directories
+/// 5. Calls each input's `setup(inputs)` function in dependency order
+/// 6. Calls the root config's `setup(inputs)` function last
+/// 7. Returns the manifest containing all registered builds and bindings
 ///
 /// # Arguments
 /// * `path` - Path to the Lua configuration file
@@ -97,16 +96,22 @@ pub fn evaluate_config(path: &Path) -> Result<Manifest, EvalError> {
         let input_paths: Vec<_> = result.inputs.values().map(|i| i.path.as_path()).collect();
         update_luarc_inputs(config_dir, input_paths, system);
 
-        // Register input searcher so require("input-name") works
-        register_input_searcher(&lua, &result.inputs)?;
-
         Some(result.inputs)
       };
+
+      // Build and set package.path from all lua/ directories
+      if let Some(ref inputs) = resolved {
+        let package_path = build_package_path(config_dir, inputs);
+        set_package_path(&lua, &package_path)?;
+
+        // Call input setup() functions in dependency order
+        call_input_setups(&lua, inputs)?;
+      }
 
       // Build Lua inputs table for setup()
       let inputs_table = build_inputs_table(&lua, resolved.as_ref())?;
 
-      // Call setup(inputs) to register builds and binds
+      // Call root config's setup(inputs) last
       setup.call::<()>(inputs_table)?;
     } else {
       return Err(LuaError::external("config must return a table with 'inputs' and 'setup' fields").into());
@@ -121,6 +126,111 @@ pub fn evaluate_config(path: &Path) -> Result<Manifest, EvalError> {
       .expect("manifest still has references")
       .into_inner(),
   )
+}
+
+/// Build package.path from all lua/ directories.
+///
+/// Constructs a package.path string that includes:
+/// 1. Config directory's lua/ (if exists) - highest priority
+/// 2. All inputs' lua/ directories in declaration order
+///
+/// # Arguments
+/// * `config_dir` - Directory containing the config file
+/// * `resolved` - Map of resolved inputs
+///
+/// # Returns
+/// A semicolon-separated package.path string
+fn build_package_path(config_dir: &Path, resolved: &ResolvedInputs) -> String {
+  let mut paths = Vec::new();
+
+  // 1. Config directory's lua/ (if exists) - highest priority
+  let config_lua_dir = config_dir.join("lua");
+  if config_lua_dir.is_dir() {
+    let lua_dir_str = config_lua_dir.to_string_lossy();
+    paths.push(format!("{}/?.lua", lua_dir_str));
+    paths.push(format!("{}/?/init.lua", lua_dir_str));
+  }
+
+  // 2. Collect all lua/ paths from resolved inputs (including transitive)
+  collect_lua_paths(resolved, &mut paths);
+
+  paths.join(";")
+}
+
+/// Recursively collect lua/ paths from resolved inputs.
+fn collect_lua_paths(inputs: &ResolvedInputs, paths: &mut Vec<String>) {
+  for input in inputs.values() {
+    let lua_dir = input.path.join("lua");
+    if lua_dir.is_dir() {
+      let lua_dir_str = lua_dir.to_string_lossy();
+      paths.push(format!("{}/?.lua", lua_dir_str));
+      paths.push(format!("{}/?/init.lua", lua_dir_str));
+    }
+
+    // Recursively add transitive dependencies' lua/ paths
+    if !input.inputs.is_empty() {
+      collect_lua_paths(&input.inputs, paths);
+    }
+  }
+}
+
+/// Set package.path in the Lua runtime.
+///
+/// Prepends the new paths to the existing package.path.
+fn set_package_path(lua: &Lua, new_paths: &str) -> LuaResult<()> {
+  if new_paths.is_empty() {
+    return Ok(());
+  }
+
+  let package: LuaTable = lua.globals().get("package")?;
+  let current_path: String = package.get("path")?;
+
+  let combined_path = format!("{};{}", new_paths, current_path);
+  package.set("path", combined_path.as_str())?;
+
+  debug!(package_path = %new_paths, "set package.path");
+  Ok(())
+}
+
+/// Call setup() functions for all inputs in dependency order.
+///
+/// Walks the input tree depth-first, calling each input's setup() function
+/// after its dependencies have been set up. This ensures that libraries can
+/// rely on their dependencies being initialized before their own setup runs.
+fn call_input_setups(lua: &Lua, resolved: &ResolvedInputs) -> LuaResult<()> {
+  for (name, input) in resolved {
+    call_input_setup_recursive(lua, name, input)?;
+  }
+  Ok(())
+}
+
+/// Recursively call setup() for an input and its dependencies.
+fn call_input_setup_recursive(lua: &Lua, name: &str, input: &ResolvedInput) -> LuaResult<()> {
+  // First, recursively call setup for transitive dependencies
+  for (dep_name, dep_input) in &input.inputs {
+    call_input_setup_recursive(lua, dep_name, dep_input)?;
+  }
+
+  // Then call this input's setup() if it has one
+  let init_path = input.path.join("init.lua");
+  if init_path.exists() {
+    // Load the input's init.lua
+    let init_result = loaders::load_file_with_dir(lua, &init_path)?;
+
+    if let LuaValue::Table(init_table) = init_result {
+      // Check if it has a setup function
+      let setup_value: LuaValue = init_table.get("setup")?;
+      if let LuaValue::Function(setup_fn) = setup_value {
+        // Build inputs table for this input's dependencies
+        let inputs_table = build_inputs_table(lua, Some(&input.inputs))?;
+
+        debug!(input = name, "calling input setup()");
+        setup_fn.call::<()>(inputs_table)?;
+      }
+    }
+  }
+
+  Ok(())
 }
 
 /// Extract raw inputs from the config table.
@@ -237,7 +347,6 @@ fn parse_single_override(parent_name: &str, name: &str, value: LuaValue) -> LuaR
   }
 }
 
-/// Convert InputDecls to a simple HashMap<String, String> for backwards compatibility.
 /// Build a Lua table representing resolved inputs for setup().
 ///
 /// Each input becomes: `inputs.name = { path = "/path/to/input", rev = "abc123", inputs = {...} }`
@@ -258,7 +367,7 @@ fn build_inputs_table(lua: &Lua, resolved: Option<&ResolvedInputs>) -> LuaResult
 /// Build a Lua table entry for a single resolved input.
 ///
 /// Creates: `{ path = "...", rev = "...", inputs = {...} }`
-fn build_input_entry(lua: &Lua, input: &crate::inputs::ResolvedInput) -> LuaResult<LuaTable> {
+fn build_input_entry(lua: &Lua, input: &ResolvedInput) -> LuaResult<LuaTable> {
   let entry = lua.create_table()?;
   entry.set("path", input.path.to_string_lossy().as_ref())?;
   entry.set("rev", input.rev.as_str())?;
@@ -274,106 +383,6 @@ fn build_input_entry(lua: &Lua, input: &crate::inputs::ResolvedInput) -> LuaResu
   }
 
   Ok(entry)
-}
-
-/// Register a custom searcher for inputs.
-///
-/// This searcher handles:
-/// - Exact matches: `require("input_name")` → `input_path/init.lua`
-/// - Submodules: `require("input_name.foo.bar")` → `input_path/foo/bar.lua`
-///   or `input_path/foo/bar/init.lua`
-///
-/// All files are loaded via `load_file_with_dir()` to ensure `sys.dir` is injected.
-fn register_input_searcher(lua: &Lua, resolved: &ResolvedInputs) -> LuaResult<()> {
-  // Store input name → base path mappings in registry
-  // Only include inputs that have an init.lua (are Lua libraries)
-  let inputs_registry = lua.create_table()?;
-  for (name, input) in resolved {
-    let init_path = input.path.join("init.lua");
-    if init_path.exists() {
-      // Store the base path (directory), not the init.lua path
-      inputs_registry.set(name.as_str(), input.path.to_string_lossy().as_ref())?;
-    }
-  }
-  lua.set_named_registry_value(INPUT_PATHS_REGISTRY_KEY, inputs_registry)?;
-
-  // Create the searcher function
-  let searcher = lua.create_function(|lua, module_name: String| {
-    let inputs: LuaTable = lua.named_registry_value(INPUT_PATHS_REGISTRY_KEY)?;
-
-    // Check each input to see if module_name matches or is a submodule
-    for pair in inputs.pairs::<String, String>() {
-      let (input_name, input_base_path) = pair?;
-
-      let file_path = if module_name == input_name {
-        // Exact match: require("cool_lib") → cool_lib/init.lua
-        let path = Path::new(&input_base_path).join("init.lua");
-        if path.exists() { Some(path) } else { None }
-      } else if let Some(suffix) = module_name.strip_prefix(&format!("{}.", input_name)) {
-        // Submodule: require("cool_lib.foo.bar")
-        // Search order:
-        //   1. cool_lib/foo/bar.lua
-        //   2. cool_lib/foo/bar/init.lua
-        //   3. cool_lib/lua/foo/bar.lua      (LuaRocks-style)
-        //   4. cool_lib/lua/foo/bar/init.lua (LuaRocks-style)
-        let relative = suffix.replace('.', std::path::MAIN_SEPARATOR_STR);
-        let base = Path::new(&input_base_path);
-
-        // Try module.lua first (at root)
-        let as_file = base.join(format!("{}.lua", relative));
-        if as_file.exists() {
-          Some(as_file)
-        } else {
-          // Try module/init.lua (at root)
-          let as_dir = base.join(&relative).join("init.lua");
-          if as_dir.exists() {
-            Some(as_dir)
-          } else {
-            // Try lua/module.lua (LuaRocks-style)
-            let lua_as_file = base.join("lua").join(format!("{}.lua", relative));
-            if lua_as_file.exists() {
-              Some(lua_as_file)
-            } else {
-              // Try lua/module/init.lua (LuaRocks-style)
-              let lua_as_dir = base.join("lua").join(&relative).join("init.lua");
-              if lua_as_dir.exists() { Some(lua_as_dir) } else { None }
-            }
-          }
-        }
-      } else {
-        None
-      };
-
-      if let Some(path) = file_path {
-        let path_str = path.to_string_lossy().to_string();
-        let path_for_loader = path_str.clone();
-
-        // Create loader function that uses load_file_with_dir for sys.dir injection
-        let loader = lua.create_function(move |lua, _: LuaMultiValue| {
-          loaders::load_file_with_dir(lua, Path::new(&path_for_loader))
-        })?;
-
-        // Return loader function on success
-        return Ok(LuaValue::Function(loader));
-      }
-    }
-
-    // Not an input module - return error string for message accumulation
-    let err_msg = format!("\n\tno input '{}'", module_name);
-    Ok(LuaValue::String(lua.create_string(&err_msg)?))
-  })?;
-
-  // Insert searcher at position 2, shifting existing searchers
-  let package: LuaTable = lua.globals().get("package")?;
-  let searchers: LuaTable = package.get("searchers")?;
-  let len = searchers.len()?;
-  for i in (2..=len).rev() {
-    let v: LuaValue = searchers.get(i)?;
-    searchers.set(i + 1, v)?;
-  }
-  searchers.set(2, searcher)?;
-
-  Ok(())
 }
 
 #[cfg(test)]
@@ -569,18 +578,16 @@ mod tests {
   }
 
   #[test]
-  fn test_require_input_exact_match() -> Result<(), EvalError> {
+  fn test_require_from_input_lua_dir() -> Result<(), EvalError> {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with init.lua
+    // Create a local input with lua/<namespace>/ structure
     let local_input = config_dir.join("my-lib");
-    fs::create_dir(&local_input).unwrap();
-    fs::write(
-      local_input.join("init.lua"),
-      "return { name = 'my-lib', version = '1.0.0' }",
-    )
-    .unwrap();
+    let lua_dir = local_input.join("lua").join("mylib");
+    fs::create_dir_all(&lua_dir).unwrap();
+    fs::write(local_input.join("init.lua"), "return {}").unwrap();
+    fs::write(lua_dir.join("init.lua"), "return { name = 'mylib', version = '1.0.0' }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -591,9 +598,9 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib") should load the input's init.lua
+            -- require("mylib") should load from lua/mylib/init.lua via package.path
             local lib = require("mylib")
-            assert(lib.name == "my-lib", "expected name='my-lib', got " .. tostring(lib.name))
+            assert(lib.name == "mylib", "expected name='mylib', got " .. tostring(lib.name))
             assert(lib.version == "1.0.0", "expected version='1.0.0', got " .. tostring(lib.version))
           end,
         }
@@ -606,15 +613,17 @@ mod tests {
   }
 
   #[test]
-  fn test_require_input_submodule() -> Result<(), EvalError> {
+  fn test_require_submodule_from_lua_dir() -> Result<(), EvalError> {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with init.lua and utils.lua
+    // Create a local input with lua/<namespace>/ structure and submodule
     let local_input = config_dir.join("my-lib");
-    fs::create_dir(&local_input).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(local_input.join("utils.lua"), "return { helper = 'works' }").unwrap();
+    let lua_dir = local_input.join("lua").join("mylib");
+    fs::create_dir_all(&lua_dir).unwrap();
+    fs::write(local_input.join("init.lua"), "return {}").unwrap();
+    fs::write(lua_dir.join("init.lua"), "return { name = 'mylib' }").unwrap();
+    fs::write(lua_dir.join("utils.lua"), "return { helper = 'works' }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -625,7 +634,7 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib.utils") should load the input's utils.lua
+            -- require("mylib.utils") should load from lua/mylib/utils.lua via package.path
             local utils = require("mylib.utils")
             assert(utils.helper == "works", "expected helper='works', got " .. tostring(utils.helper))
           end,
@@ -639,15 +648,21 @@ mod tests {
   }
 
   #[test]
-  fn test_require_input_nested_submodule() -> Result<(), EvalError> {
+  fn test_config_lua_dir_conflicts_with_input() -> Result<(), EvalError> {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with nested structure
+    // Create config's own lua/ directory with a module
+    let config_lua_dir = config_dir.join("lua").join("mymod");
+    fs::create_dir_all(&config_lua_dir).unwrap();
+    fs::write(config_lua_dir.join("init.lua"), "return { source = 'config' }").unwrap();
+
+    // Create an input with the same module name in its lua/ directory
     let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("sub")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(local_input.join("sub").join("module.lua"), "return { nested = true }").unwrap();
+    let input_lua_dir = local_input.join("lua").join("mymod");
+    fs::create_dir_all(&input_lua_dir).unwrap();
+    fs::write(local_input.join("init.lua"), "return {}").unwrap();
+    fs::write(input_lua_dir.join("init.lua"), "return { source = 'input' }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -658,61 +673,48 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib.sub.module") should load the input's sub/module.lua
-            local mod = require("mylib.sub.module")
-            assert(mod.nested == true, "expected nested=true")
+            -- This should not be reached due to namespace conflict
+            local mod = require("mymod")
           end,
         }
       "#,
     )
     .unwrap();
 
-    evaluate_config(&config_path)?;
+    // Should fail with namespace conflict
+    let result = evaluate_config(&config_path);
+    assert!(result.is_err(), "expected namespace conflict error");
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+      err_msg.contains("namespace conflict") || err_msg.contains("NamespaceConflict"),
+      "expected namespace conflict error, got: {}",
+      err_msg
+    );
+
     Ok(())
   }
 
   #[test]
-  fn test_require_input_submodule_init() -> Result<(), EvalError> {
+  fn test_input_setup_is_called() -> Result<(), EvalError> {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with sub/init.lua
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("sub")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(local_input.join("sub").join("init.lua"), "return { sub_init = true }").unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
-          setup = function(inputs)
-            -- require("mylib.sub") should load the input's sub/init.lua
-            local sub = require("mylib.sub")
-            assert(sub.sub_init == true, "expected sub_init=true")
-          end,
-        }
-      "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_input_has_dir_injection() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with init.lua that returns sys.dir
+    // Create a local input with a setup function that sets a global
     let local_input = config_dir.join("my-lib");
     fs::create_dir(&local_input).unwrap();
-    fs::write(local_input.join("init.lua"), "return { dir = sys.dir }").unwrap();
+    fs::write(
+      local_input.join("init.lua"),
+      r#"
+        return {
+          setup = function(inputs)
+            -- Set a global to prove setup was called
+            _G.MY_LIB_SETUP_CALLED = true
+          end,
+        }
+      "#,
+    )
+    .unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(
@@ -723,11 +725,8 @@ mod tests {
             mylib = "path:./my-lib",
           },
           setup = function(inputs)
-            -- require("mylib") should have sys.dir set correctly
-            local lib = require("mylib")
-            assert(lib.dir, "sys.dir should be set")
-            -- sys.dir should end with "my-lib" (the input directory)
-            assert(lib.dir:match("my%-lib$"), "sys.dir should end with 'my-lib', got: " .. lib.dir)
+            -- Verify input's setup was called before our setup
+            assert(_G.MY_LIB_SETUP_CALLED == true, "input setup should have been called")
           end,
         }
       "#,
@@ -739,89 +738,49 @@ mod tests {
   }
 
   #[test]
-  fn test_require_input_submodule_has_dir_injection() -> Result<(), EvalError> {
+  fn test_transitive_input_setup_order() -> Result<(), EvalError> {
     let temp_dir = TempDir::new().unwrap();
     let config_dir = temp_dir.path();
 
-    // Create a local input directory with sub/module.lua that returns sys.dir
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("sub")).unwrap();
-    fs::write(local_input.join("init.lua"), "return {}").unwrap();
-    fs::write(local_input.join("sub").join("module.lua"), "return { dir = sys.dir }").unwrap();
-
-    let config_path = config_dir.join("init.lua");
+    // Create utils (no deps)
+    let utils_dir = config_dir.join("utils");
+    fs::create_dir(&utils_dir).unwrap();
     fs::write(
-      &config_path,
+      utils_dir.join("init.lua"),
       r#"
         return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
           setup = function(inputs)
-            -- require("mylib.sub.module") should have sys.dir set to the sub directory
-            local mod = require("mylib.sub.module")
-            assert(mod.dir, "sys.dir should be set")
-            -- sys.dir should end with "sub" (the module's parent directory)
-            assert(mod.dir:match("sub$"), "sys.dir should end with 'sub', got: " .. mod.dir)
+            _G.SETUP_ORDER = _G.SETUP_ORDER or {}
+            table.insert(_G.SETUP_ORDER, "utils")
           end,
         }
       "#,
     )
     .unwrap();
 
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
+    // Create lib_a which depends on utils
+    let lib_a_dir = config_dir.join("lib_a");
+    fs::create_dir(&lib_a_dir).unwrap();
 
-  #[test]
-  fn test_require_input_lua_subdir_file() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with lua/submodule.lua (LuaRocks-style)
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("lua")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
+    // Need to escape the path for Lua
+    let utils_path = utils_dir.canonicalize().unwrap();
+    let utils_path_str = utils_path.to_string_lossy().replace('\\', "/");
     fs::write(
-      local_input.join("lua").join("submodule.lua"),
-      "return { lua_subdir = true }",
-    )
-    .unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
+      lib_a_dir.join("init.lua"),
+      format!(
+        r#"
+        return {{
+          inputs = {{
+            utils = "path:{}",
+          }},
           setup = function(inputs)
-            -- require("mylib.submodule") should load lua/submodule.lua
-            local sub = require("mylib.submodule")
-            assert(sub.lua_subdir == true, "expected lua_subdir=true")
+            _G.SETUP_ORDER = _G.SETUP_ORDER or {{}}
+            table.insert(_G.SETUP_ORDER, "lib_a")
           end,
-        }
+        }}
       "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_input_lua_subdir_init() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with lua/submodule/init.lua (LuaRocks-style)
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("lua").join("submodule")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(
-      local_input.join("lua").join("submodule").join("init.lua"),
-      "return { lua_subdir_init = true }",
+        utils_path_str
+      ),
     )
     .unwrap();
 
@@ -831,167 +790,17 @@ mod tests {
       r#"
         return {
           inputs = {
-            mylib = "path:./my-lib",
+            lib_a = "path:./lib_a",
           },
           setup = function(inputs)
-            -- require("mylib.submodule") should load lua/submodule/init.lua
-            local sub = require("mylib.submodule")
-            assert(sub.lua_subdir_init == true, "expected lua_subdir_init=true")
-          end,
-        }
-      "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_input_lua_subdir_nested() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with lua/foo/bar.lua (nested in lua/)
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("lua").join("foo")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(
-      local_input.join("lua").join("foo").join("bar.lua"),
-      "return { nested = true }",
-    )
-    .unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
-          setup = function(inputs)
-            -- require("mylib.foo.bar") should load lua/foo/bar.lua
-            local bar = require("mylib.foo.bar")
-            assert(bar.nested == true, "expected nested=true")
-          end,
-        }
-      "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_input_lua_subdir_has_dir_injection() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with lua/submodule.lua that returns sys.dir
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("lua")).unwrap();
-    fs::write(local_input.join("init.lua"), "return {}").unwrap();
-    fs::write(
-      local_input.join("lua").join("submodule.lua"),
-      "return { dir = sys.dir }",
-    )
-    .unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
-          setup = function(inputs)
-            -- require("mylib.submodule") should have sys.dir set to lua/
-            local mod = require("mylib.submodule")
-            assert(mod.dir, "sys.dir should be set")
-            -- sys.dir should end with "lua" (the module's parent directory)
-            assert(mod.dir:match("lua$"), "sys.dir should end with 'lua', got: " .. mod.dir)
-          end,
-        }
-      "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_input_root_takes_precedence_over_lua_subdir() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create a local input directory with BOTH:
-    // - submodule.lua (at root)
-    // - lua/submodule.lua (in lua/)
-    // Root should take precedence
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir_all(local_input.join("lua")).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-    fs::write(local_input.join("submodule.lua"), "return { source = 'root' }").unwrap();
-    fs::write(
-      local_input.join("lua").join("submodule.lua"),
-      "return { source = 'lua_subdir' }",
-    )
-    .unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
-          setup = function(inputs)
-            -- require("mylib.submodule") should load root submodule.lua, not lua/submodule.lua
-            local sub = require("mylib.submodule")
-            assert(sub.source == "root", "expected source='root', got: " .. sub.source)
-          end,
-        }
-      "#,
-    )
-    .unwrap();
-
-    evaluate_config(&config_path)?;
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_non_input_falls_through() -> Result<(), EvalError> {
-    let temp_dir = TempDir::new().unwrap();
-    let config_dir = temp_dir.path();
-
-    // Create an input
-    let local_input = config_dir.join("my-lib");
-    fs::create_dir(&local_input).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
-
-    let config_path = config_dir.join("init.lua");
-    fs::write(
-      &config_path,
-      r#"
-        return {
-          inputs = {
-            mylib = "path:./my-lib",
-          },
-          setup = function(inputs)
-            -- require("mylib") should work via input searcher
-            local lib = require("mylib")
-            assert(lib.name == "my-lib", "input should load")
+            _G.SETUP_ORDER = _G.SETUP_ORDER or {}
+            table.insert(_G.SETUP_ORDER, "config")
             
-            -- require("nonexistent") should fail with proper error message
-            -- that includes both "no input" and "no file" messages
-            local ok, err = pcall(function() require("nonexistent") end)
-            assert(not ok, "require('nonexistent') should fail")
-            assert(err:match("no input 'nonexistent'"), "error should mention 'no input', got: " .. err)
+            -- Verify order: utils first (dep), then lib_a, then config
+            assert(#_G.SETUP_ORDER == 3, "expected 3 setups, got " .. #_G.SETUP_ORDER)
+            assert(_G.SETUP_ORDER[1] == "utils", "expected utils first, got " .. tostring(_G.SETUP_ORDER[1]))
+            assert(_G.SETUP_ORDER[2] == "lib_a", "expected lib_a second, got " .. tostring(_G.SETUP_ORDER[2]))
+            assert(_G.SETUP_ORDER[3] == "config", "expected config third, got " .. tostring(_G.SETUP_ORDER[3]))
           end,
         }
       "#,
@@ -1009,8 +818,10 @@ mod tests {
 
     // Create a local input directory
     let local_input = config_dir.join("my-lib");
-    fs::create_dir(&local_input).unwrap();
-    fs::write(local_input.join("init.lua"), "return { name = 'my-lib' }").unwrap();
+    let lua_dir = local_input.join("lua").join("mylib");
+    fs::create_dir_all(&lua_dir).unwrap();
+    fs::write(local_input.join("init.lua"), "return {}").unwrap();
+    fs::write(lua_dir.join("init.lua"), "return { name = 'my-lib' }").unwrap();
 
     let config_path = config_dir.join("init.lua");
     fs::write(

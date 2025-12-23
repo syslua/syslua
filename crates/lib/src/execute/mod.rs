@@ -30,6 +30,12 @@ pub use apply::{ApplyError, ApplyOptions, ApplyResult, DestroyOptions, DestroyRe
 pub use dag::ExecutionDag;
 pub use types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError, FailedDependency};
 
+/// Type alias for build task JoinSet to reduce complexity.
+type BuildJoinSet = tokio::task::JoinSet<Result<(ObjectHash, Result<BuildResult, ExecuteError>), ExecuteError>>;
+
+/// Type alias for bind task JoinSet to reduce complexity.
+type BindJoinSet = tokio::task::JoinSet<Result<(ObjectHash, Result<BindResult, ExecuteError>), ExecuteError>>;
+
 /// Execute all builds in a manifest.
 ///
 /// This is the main entry point for build execution. It:
@@ -431,9 +437,7 @@ async fn execute_bind_wave(
 }
 
 /// Collect results from a JoinSet of build tasks.
-async fn collect_join_results(
-  mut join_set: tokio::task::JoinSet<Result<(ObjectHash, Result<BuildResult, ExecuteError>), ExecuteError>>,
-) -> Vec<(ObjectHash, Result<BuildResult, ExecuteError>)> {
+async fn collect_join_results(mut join_set: BuildJoinSet) -> Vec<(ObjectHash, Result<BuildResult, ExecuteError>)> {
   let mut results = Vec::new();
 
   while let Some(join_result) = join_set.join_next().await {
@@ -454,9 +458,7 @@ async fn collect_join_results(
 }
 
 /// Collect results from a JoinSet of bind tasks.
-async fn collect_bind_join_results(
-  mut join_set: tokio::task::JoinSet<Result<(ObjectHash, Result<BindResult, ExecuteError>), ExecuteError>>,
-) -> Vec<(ObjectHash, Result<BindResult, ExecuteError>)> {
+async fn collect_bind_join_results(mut join_set: BindJoinSet) -> Vec<(ObjectHash, Result<BindResult, ExecuteError>)> {
   let mut results = Vec::new();
 
   while let Some(join_result) = join_set.join_next().await {

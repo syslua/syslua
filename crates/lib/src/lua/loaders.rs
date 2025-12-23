@@ -13,65 +13,14 @@
 //! 3. Preserves all other `require` behavior (caching, preload, C loaders)
 //!
 //! For `dofile` and `loadfile`, we replace them entirely with Rust functions.
-//!
-//! # Transitive Input Resolution
-//!
-//! For inputs with transitive dependencies, we add a `.inputs/` directory searcher
-//! that runs before the standard Lua file searcher. This searcher:
-//! 1. Gets the current `sys.dir` (where the calling file is located)
-//! 2. Walks up from `sys.dir` looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
-//! 3. If found, loads it via `load_file_with_dir` (recursive injection)
-//! 4. If not found, returns nil to let the next searcher try
 
 use mlua::prelude::*;
 use std::fs;
 use std::path::Path;
 
 /// Registry key for storing the current directory value.
-/// This is used by `dofile` to resolve relative paths and by the `.inputs/` searcher.
+/// This is used by `dofile` to resolve relative paths.
 const CURRENT_DIR_KEY: &str = "__syslua_current_dir";
-
-/// Name of the inputs directory used for transitive dependencies.
-const INPUTS_DIR_NAME: &str = ".inputs";
-
-/// Search for a module in `.inputs/` directories walking up from a starting directory.
-///
-/// This enables transitive input resolution: when code inside an input calls
-/// `require("utils")`, we walk up from the calling file's directory looking for
-/// `.inputs/utils/init.lua` or `.inputs/utils.lua`.
-///
-/// Returns the path to the module file if found, or None if not found.
-fn find_in_inputs_dirs(modname: &str, start_dir: &Path) -> Option<std::path::PathBuf> {
-  let mut current = start_dir.to_path_buf();
-
-  loop {
-    let inputs_dir = current.join(INPUTS_DIR_NAME);
-
-    if inputs_dir.is_dir() {
-      // Try .inputs/<modname>/init.lua
-      let init_path = inputs_dir.join(modname).join("init.lua");
-      if init_path.is_file() {
-        return Some(init_path);
-      }
-
-      // Try .inputs/<modname>.lua
-      let file_path = inputs_dir.join(format!("{}.lua", modname));
-      if file_path.is_file() {
-        return Some(file_path);
-      }
-    }
-
-    // Move up to parent directory
-    match current.parent() {
-      Some(parent) if parent != current => {
-        current = parent.to_path_buf();
-      }
-      _ => break,
-    }
-  }
-
-  None
-}
 
 /// Load a Lua file with a custom environment containing `sys.dir`.
 ///
@@ -100,7 +49,7 @@ pub fn load_file_with_dir(lua: &Lua, path: &Path) -> LuaResult<LuaValue> {
     .to_string_lossy()
     .into_owned();
 
-  // Store current dir in registry for nested dofile calls and .inputs/ searcher
+  // Store current dir in registry for nested dofile calls
   let prev_dir: Option<String> = lua.named_registry_value(CURRENT_DIR_KEY)?;
   lua.set_named_registry_value(CURRENT_DIR_KEY, dir.clone())?;
 
@@ -252,50 +201,6 @@ fn create_lua_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
   })
 }
 
-/// Create a `.inputs/` directory searcher for transitive dependencies.
-///
-/// This searcher is inserted before the standard Lua file searcher. It:
-/// 1. Gets the current directory from the registry
-/// 2. Walks up from the current directory looking for `.inputs/<modname>/init.lua` or `.inputs/<modname>.lua`
-/// 3. If found, returns a loader that loads the file with `sys.dir` injection
-/// 4. If not found, returns nil to let the next searcher try
-fn create_inputs_searcher(lua: &Lua) -> LuaResult<LuaFunction> {
-  lua.create_function(|lua, modname: String| {
-    // Get the current directory from registry
-    let current_dir: Option<String> = get_current_dir(lua)?;
-
-    let Some(dir_str) = current_dir else {
-      // No directory context set, can't search .inputs/
-      let errmsg = format!("\n\tno .inputs/ for '{}' (no directory context)", modname);
-      return Ok((LuaValue::Nil, errmsg));
-    };
-
-    let start_dir = Path::new(&dir_str);
-
-    // Search for the module in .inputs/ directories
-    match find_in_inputs_dirs(&modname, start_dir) {
-      Some(filepath) => {
-        let filepath_str = filepath.to_string_lossy().to_string();
-        let path_clone = filepath_str.clone();
-
-        // Create a loader function that loads the file with sys.dir
-        let loader = lua.create_function(move |lua, _: LuaMultiValue| {
-          let path = Path::new(&path_clone);
-          load_file_with_dir(lua, path)
-        })?;
-
-        // Return (loader, filepath) - the filepath is passed to the loader as extra data
-        Ok((LuaValue::Function(loader), filepath_str))
-      }
-      None => {
-        // Module not found in .inputs/ directories
-        let errmsg = format!("\n\tno .inputs/ for '{}'", modname);
-        Ok((LuaValue::Nil, errmsg))
-      }
-    }
-  })
-}
-
 /// Create a custom `dofile` function.
 ///
 /// This version resolves relative paths against the current directory,
@@ -341,44 +246,20 @@ fn create_loadfile(lua: &Lua) -> LuaResult<LuaFunction> {
 /// Install custom module loaders into the Lua runtime.
 ///
 /// This function:
-/// 1. Inserts a `.inputs/` searcher at `package.searchers[2]` for transitive dependencies
-/// 2. Moves the standard Lua file searcher to `package.searchers[3]` (replaced with our custom version)
-/// 3. Replaces `dofile` with our custom version
-/// 4. Replaces `loadfile` with our custom version
+/// 1. Replaces the standard Lua file searcher at `package.searchers[2]` with our custom version
+/// 2. Replaces `dofile` with our custom version
+/// 3. Replaces `loadfile` with our custom version
 ///
 /// After calling this, all Lua files loaded via `require`, `dofile`, or `loadfile`
 /// will have access to the `sys.dir` property containing their parent directory.
-/// Additionally, `require` calls will first search `.inputs/` directories for
-/// transitive input dependencies.
 pub fn install_loaders(lua: &Lua) -> LuaResult<()> {
   let package: LuaTable = lua.globals().get("package")?;
   let searchers: LuaTable = package.get("searchers")?;
 
-  // Get the current searchers to shift them
+  // Replace the standard Lua file searcher at position 2 with our custom version
   // Standard Lua has: [1]=preload, [2]=lua_searcher, [3]=c_searcher, [4]=croot_searcher
-  // We want: [1]=preload, [2]=inputs_searcher, [3]=lua_searcher(custom), [4]=c_searcher, [5]=croot_searcher
-
-  // First, shift existing searchers [2..n] to [3..n+1]
-  // We need to read them first to avoid overwriting
-  let len = searchers.len()?;
-  let mut existing: Vec<LuaValue> = Vec::with_capacity(len as usize);
-  for i in 1..=len {
-    existing.push(searchers.get(i)?);
-  }
-
-  // Rebuild the searchers table:
-  // [1] = preload (keep original)
-  // [2] = inputs searcher (new)
-  // [3] = our custom lua searcher (replaces original [2])
-  // [4..n+1] = original [3..n]
-  searchers.set(1, existing[0].clone())?;
-  searchers.set(2, create_inputs_searcher(lua)?)?;
-  searchers.set(3, create_lua_searcher(lua)?)?;
-
-  // Shift remaining searchers (original positions 3+ to 4+)
-  for (i, value) in existing.iter().skip(2).enumerate() {
-    searchers.set((4 + i) as i64, value.clone())?;
-  }
+  // We want:          [1]=preload, [2]=lua_searcher(custom), [3]=c_searcher, [4]=croot_searcher
+  searchers.set(2, create_lua_searcher(lua)?)?;
 
   // Replace dofile
   lua.globals().set("dofile", create_dofile(lua)?)?;
@@ -614,207 +495,6 @@ mod tests {
     let result = lua.load("dofile('/nonexistent/path/file.lua')").exec();
 
     assert!(result.is_err());
-    Ok(())
-  }
-
-  #[test]
-  fn test_find_in_inputs_dirs_init_lua() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create .inputs/utils/init.lua
-    let inputs_dir = temp_dir.path().join(".inputs").join("utils");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return 'utils'").unwrap();
-
-    let result = find_in_inputs_dirs("utils", temp_dir.path());
-    assert!(result.is_some());
-    assert!(result.unwrap().ends_with("init.lua"));
-  }
-
-  #[test]
-  fn test_find_in_inputs_dirs_single_file() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create .inputs/helper.lua
-    let inputs_dir = temp_dir.path().join(".inputs");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("helper.lua"), "return 'helper'").unwrap();
-
-    let result = find_in_inputs_dirs("helper", temp_dir.path());
-    assert!(result.is_some());
-    assert!(result.unwrap().ends_with("helper.lua"));
-  }
-
-  #[test]
-  fn test_find_in_inputs_dirs_walks_up() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create directory structure:
-    // temp_dir/
-    //   .inputs/utils/init.lua
-    //   subdir/
-    //     deep/
-    //       file.lua (start here)
-    let inputs_dir = temp_dir.path().join(".inputs").join("utils");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return 'utils'").unwrap();
-
-    let deep_dir = temp_dir.path().join("subdir").join("deep");
-    fs::create_dir_all(&deep_dir).unwrap();
-
-    let result = find_in_inputs_dirs("utils", &deep_dir);
-    assert!(result.is_some());
-    assert!(result.unwrap().ends_with("init.lua"));
-  }
-
-  #[test]
-  fn test_find_in_inputs_dirs_not_found() {
-    let temp_dir = TempDir::new().unwrap();
-
-    let result = find_in_inputs_dirs("nonexistent", temp_dir.path());
-    assert!(result.is_none());
-  }
-
-  #[test]
-  fn test_require_from_inputs_dir() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create directory structure:
-    // temp_dir/
-    //   main.lua           -> requires "utils"
-    //   .inputs/
-    //     utils/
-    //       init.lua       -> returns { name = "utils", dir = sys.dir }
-    let inputs_dir = temp_dir.path().join(".inputs").join("utils");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return { name = 'utils', dir = sys.dir }").unwrap();
-
-    let main_path = temp_dir.path().join("main.lua");
-    fs::write(&main_path, "local u = require('utils'); return u.name").unwrap();
-
-    let lua = create_test_runtime()?;
-    let result: String = load_file_with_dir(&lua, &main_path)?.to_string().unwrap().to_string();
-
-    assert_eq!(result, "utils");
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_from_inputs_dir_has_correct_dir() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create directory structure:
-    // temp_dir/
-    //   main.lua           -> requires "utils" and returns utils.dir
-    //   .inputs/
-    //     utils/
-    //       init.lua       -> returns { dir = sys.dir }
-    let inputs_dir = temp_dir.path().join(".inputs").join("utils");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return { dir = sys.dir }").unwrap();
-
-    let main_path = temp_dir.path().join("main.lua");
-    fs::write(&main_path, "local u = require('utils'); return u.dir").unwrap();
-
-    let lua = create_test_runtime()?;
-    let result: String = load_file_with_dir(&lua, &main_path)?.to_string().unwrap().to_string();
-
-    // The sys.dir should be the utils directory, not the main.lua directory
-    let expected = inputs_dir.canonicalize().unwrap();
-    assert_eq!(result, expected.to_string_lossy());
-    Ok(())
-  }
-
-  #[test]
-  fn test_require_from_subdir_finds_parent_inputs() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Simulating the pkgs example from the plan:
-    // temp_dir/
-    //   pkgs/
-    //     init.lua
-    //     cli/
-    //       ripgrep.lua    -> requires "utils"
-    //     .inputs/
-    //       utils/
-    //         init.lua     -> returns { name = "utils" }
-
-    let pkgs_dir = temp_dir.path().join("pkgs");
-    let cli_dir = pkgs_dir.join("cli");
-    let inputs_dir = pkgs_dir.join(".inputs").join("utils");
-
-    fs::create_dir_all(&cli_dir).unwrap();
-    fs::create_dir_all(&inputs_dir).unwrap();
-
-    fs::write(pkgs_dir.join("init.lua"), "return {}").unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return { name = 'utils' }").unwrap();
-    fs::write(
-      cli_dir.join("ripgrep.lua"),
-      "local utils = require('utils'); return utils.name",
-    )
-    .unwrap();
-
-    let lua = create_test_runtime()?;
-    let ripgrep_path = cli_dir.join("ripgrep.lua");
-    let result: String = load_file_with_dir(&lua, &ripgrep_path)?
-      .to_string()
-      .unwrap()
-      .to_string();
-
-    assert_eq!(result, "utils");
-    Ok(())
-  }
-
-  #[test]
-  fn test_inputs_searcher_caches_modules() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a module in .inputs
-    let inputs_dir = temp_dir.path().join(".inputs").join("cached");
-    fs::create_dir_all(&inputs_dir).unwrap();
-    fs::write(inputs_dir.join("init.lua"), "return {}").unwrap();
-
-    let main_path = temp_dir.path().join("main.lua");
-    fs::write(
-      &main_path,
-      r#"
-        local a = require('cached')
-        local b = require('cached')
-        return a == b
-      "#,
-    )
-    .unwrap();
-
-    let lua = create_test_runtime()?;
-    let result: bool = load_file_with_dir(&lua, &main_path)?.as_boolean().unwrap();
-
-    assert!(result, "require from .inputs should cache modules");
-    Ok(())
-  }
-
-  #[test]
-  fn test_inputs_searcher_falls_back_to_package_path() -> LuaResult<()> {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a module in package.path (not in .inputs)
-    let mod_path = temp_dir.path().join("fallback.lua");
-    fs::write(&mod_path, "return 'from_package_path'").unwrap();
-
-    // Create main.lua that requires it
-    let main_path = temp_dir.path().join("main.lua");
-    fs::write(&main_path, "return require('fallback')").unwrap();
-
-    let lua = create_test_runtime()?;
-
-    // Add temp dir to package.path
-    let package: LuaTable = lua.globals().get("package")?;
-    let path: String = package.get("path")?;
-    let new_path = format!("{}/?.lua;{}", temp_dir.path().display(), path);
-    package.set("path", new_path)?;
-
-    let result: String = load_file_with_dir(&lua, &main_path)?.to_string().unwrap().to_string();
-
-    assert_eq!(result, "from_package_path");
     Ok(())
   }
 }

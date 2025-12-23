@@ -37,6 +37,9 @@ use super::dag::{DagNode, ExecutionDag};
 use super::resolver::ExecutionResolver;
 use super::types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError};
 
+/// Type alias for restore resolver data to reduce type complexity.
+type RestoreResolverData = (HashMap<ObjectHash, BuildResult>, HashMap<ObjectHash, BindResult>);
+
 /// Result of an apply operation.
 #[derive(Debug)]
 pub struct ApplyResult {
@@ -776,10 +779,7 @@ async fn update_modified_binds(
 /// Loads bind state for all binds in the manifest (destroyed + unchanged)
 /// and computes build store paths from the manifest. This allows placeholder
 /// resolution during restore (e.g., `$${build:hash:out}`, `$${bind:hash:output}`).
-fn build_restore_resolver_data(
-  manifest: &Manifest,
-  system: bool,
-) -> Result<(HashMap<ObjectHash, BuildResult>, HashMap<ObjectHash, BindResult>), ApplyError> {
+fn build_restore_resolver_data(manifest: &Manifest, system: bool) -> Result<RestoreResolverData, ApplyError> {
   let mut builds = HashMap::new();
   let mut binds = HashMap::new();
 

@@ -161,6 +161,56 @@ pub type ResolvedInputs = BTreeMap<String, ResolvedInput>;
 /// Map of input names to their declarations.
 pub type InputDecls = BTreeMap<String, InputDecl>;
 
+/// A Lua namespace discovered in an input's `lua/` directory.
+///
+/// Each input can provide one or more namespaces via its `lua/<namespace>/` subdirectories.
+/// This type tracks which input provides each namespace for conflict detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LuaNamespace {
+  /// The namespace name (the directory name under `lua/`).
+  pub name: String,
+
+  /// The input that provides this namespace (full path in dependency graph).
+  pub provider_input: String,
+
+  /// The original URL of the providing input.
+  /// For path inputs, this is the resolved absolute path prefixed with `path:`.
+  pub url: String,
+
+  /// The resolved revision (commit SHA for git, "local" for path inputs).
+  pub rev: String,
+
+  /// The full path to this namespace's directory (e.g., `/path/to/input/lua/my_lib`).
+  pub path: PathBuf,
+}
+
+impl LuaNamespace {
+  /// Create a new LuaNamespace.
+  pub fn new(
+    name: impl Into<String>,
+    provider_input: impl Into<String>,
+    url: impl Into<String>,
+    rev: impl Into<String>,
+    path: PathBuf,
+  ) -> Self {
+    Self {
+      name: name.into(),
+      provider_input: provider_input.into(),
+      url: url.into(),
+      rev: rev.into(),
+      path,
+    }
+  }
+
+  /// Check if two namespaces are from the same source (same URL + same rev).
+  ///
+  /// This is used for diamond dependency deduplication: if two inputs provide
+  /// the same namespace from the same source at the same revision, it's not a conflict.
+  pub fn same_source(&self, other: &LuaNamespace) -> bool {
+    self.url == other.url && self.rev == other.rev
+  }
+}
+
 /// A node in the dependency graph for lock file serialization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -352,6 +402,90 @@ mod tests {
       assert_eq!(node.url.as_deref(), Some("git:https://example.com"));
       assert_eq!(node.rev.as_deref(), Some("abc123"));
       assert_eq!(node.last_modified, Some(1234567890));
+    }
+  }
+
+  mod lua_namespace {
+    use super::*;
+
+    #[test]
+    fn new_creates_namespace() {
+      let ns = LuaNamespace::new(
+        "my_lib",
+        "my_lib",
+        "git:https://example.com/my_lib.git",
+        "abc123",
+        PathBuf::from("/store/inputs/my_lib-abc123/lua/my_lib"),
+      );
+
+      assert_eq!(ns.name, "my_lib");
+      assert_eq!(ns.provider_input, "my_lib");
+      assert_eq!(ns.url, "git:https://example.com/my_lib.git");
+      assert_eq!(ns.rev, "abc123");
+      assert_eq!(ns.path, PathBuf::from("/store/inputs/my_lib-abc123/lua/my_lib"));
+    }
+
+    #[test]
+    fn same_source_with_identical_url_and_rev() {
+      let ns1 = LuaNamespace::new(
+        "utils",
+        "lib_a/utils",
+        "git:https://example.com/utils.git",
+        "abc123",
+        PathBuf::from("/store/inputs/utils-abc123/lua/utils"),
+      );
+
+      let ns2 = LuaNamespace::new(
+        "utils",
+        "lib_b/utils",
+        "git:https://example.com/utils.git",
+        "abc123",
+        PathBuf::from("/store/inputs/utils-abc123/lua/utils"),
+      );
+
+      assert!(ns1.same_source(&ns2));
+    }
+
+    #[test]
+    fn different_source_with_different_rev() {
+      let ns1 = LuaNamespace::new(
+        "utils",
+        "lib_a/utils",
+        "git:https://example.com/utils.git",
+        "abc123",
+        PathBuf::from("/store/inputs/utils-abc123/lua/utils"),
+      );
+
+      let ns2 = LuaNamespace::new(
+        "utils",
+        "lib_b/utils",
+        "git:https://example.com/utils.git",
+        "def456", // Different rev
+        PathBuf::from("/store/inputs/utils-def456/lua/utils"),
+      );
+
+      assert!(!ns1.same_source(&ns2));
+    }
+
+    #[test]
+    fn different_source_with_different_url() {
+      let ns1 = LuaNamespace::new(
+        "utils",
+        "lib_a/utils",
+        "git:https://example.com/utils.git",
+        "abc123",
+        PathBuf::from("/store/inputs/utils-abc123/lua/utils"),
+      );
+
+      let ns2 = LuaNamespace::new(
+        "utils",
+        "lib_b/utils",
+        "git:https://github.com/other/utils.git", // Different URL
+        "abc123",
+        PathBuf::from("/store/inputs/utils-abc123/lua/utils"),
+      );
+
+      assert!(!ns1.same_source(&ns2));
     }
   }
 }

@@ -1,1 +1,6 @@
-return require('syslua')
+return {
+  inputs = {},
+  setup = function(_inputs)
+    -- no setup yet
+  end,
+}

@@ -412,6 +412,35 @@ impl LockFile {
   }
 }
 
+/// Load a lock file from an input's directory.
+///
+/// This is used to load per-input lock files (`<input>/syslua.lock`) that
+/// pin an input's transitive dependencies.
+///
+/// # Arguments
+///
+/// * `input_path` - Path to the input's root directory
+///
+/// # Returns
+///
+/// `Some(LockFile)` if a lock file exists and is valid, `None` otherwise.
+/// Errors during parsing are logged and treated as missing lock file.
+pub fn load_input_lock(input_path: &Path) -> Option<LockFile> {
+  let lock_path = input_path.join(LOCK_FILENAME);
+  match LockFile::load(&lock_path) {
+    Ok(Some(lock)) => Some(lock),
+    Ok(None) => None,
+    Err(e) => {
+      tracing::warn!(
+        path = %lock_path.display(),
+        error = %e,
+        "failed to load input lock file, treating as unlocked"
+      );
+      None
+    }
+  }
+}
+
 /// Errors that can occur when working with lock files.
 #[derive(Debug, Error)]
 pub enum LockError {
