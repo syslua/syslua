@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// Operating system variants supported by sys.lua
+/// Operating system variants supported by SysLua
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Os {
   Linux,

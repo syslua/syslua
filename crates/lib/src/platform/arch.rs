@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// CPU architecture variants supported by sys.lua
+/// CPU architecture variants supported by SysLua
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arch {
   X86_64,

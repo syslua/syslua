@@ -1,19 +1,19 @@
 # Module System
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers the module system and composition.
 
 ## Core Value: Standard Lua Idioms
 
-sys.lua modules are **plain Lua modules**. No magic, no DSL, no hidden behavior:
+SysLua modules are **plain Lua modules**. No magic, no DSL, no hidden behavior:
 
 - `require()` returns a table — just like any Lua library
 - `setup(opts)` is a function call — it does the work immediately
 - `options` is a table — documents defaults, used for merging
 - No hidden globals, no auto-evaluation, no implicit behavior
 
-If you know Lua, you know how sys.lua modules work.
+If you know Lua, you know how SysLua modules work.
 
 ## Entry Point vs Regular Modules
 

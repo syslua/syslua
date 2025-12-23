@@ -1,6 +1,6 @@
 # Inputs
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers input sources, lock files, and how inputs are accessed in configuration.
 

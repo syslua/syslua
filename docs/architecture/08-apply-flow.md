@@ -1,6 +1,6 @@
 # Apply Flow
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers the apply command flow, DAG construction, parallel execution, and atomicity.
 
@@ -72,7 +72,7 @@ sys apply init.lua
 
 ## Two-Phase Evaluation
 
-sys.lua uses a two-phase evaluation model that separates input resolution from configuration:
+SysLua uses a two-phase evaluation model that separates input resolution from configuration:
 
 ### Phase 1: Input Resolution
 
@@ -203,7 +203,7 @@ Execution order:
 
 ## Atomic Apply (All-or-Nothing)
 
-**sys.lua uses atomic semantics for the apply operation.** Either all changes succeed or the system remains in its previous state - there is no partial application.
+**SysLua uses atomic semantics for the apply operation.** Either all changes succeed or the system remains in its previous state - there is no partial application.
 
 ### Why Atomic?
 
@@ -246,8 +246,8 @@ When any node in the DAG fails:
 4. **Report failure** - Show which node failed and why
 
 ```bash
-$ sudo sys apply sys.lua
-Evaluating sys.lua...
+$ sudo sys apply SysLua
+Evaluating SysLua...
 Building execution plan...
 
 Executing:
@@ -288,8 +288,8 @@ Run 'sys plan' to review the execution plan.
 Preview changes without applying (evaluates config to manifest, builds DAG, but doesn't execute):
 
 ```bash
-$ sys plan sys.lua
-Evaluating sys.lua...
+$ sys plan SysLua
+Evaluating SysLua...
 Building execution plan...
 
 Builds:
@@ -356,8 +356,8 @@ env { EDITOR = "emacs" } -- priority 1000 (ERROR!)
 
 ```
 Error: Conflicting values for env.EDITOR at priority 1000:
-  - "vim" (declared at sys.lua:10)
-  - "emacs" (declared at sys.lua:15)
+  - "vim" (declared at SysLua:10)
+  - "emacs" (declared at SysLua:15)
 
 Use lib.mkForce() to override, or lib.mkDefault() to provide a fallback.
 ```

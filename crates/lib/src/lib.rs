@@ -1,6 +1,6 @@
-//! syslua-core: Core types and logic for sys.lua
+//! syslua-core: Core types and logic for SysLua
 //!
-//! This crate provides the fundamental types used throughout sys.lua:
+//! This crate provides the fundamental types used throughout SysLua:
 //! - `Derivation`: immutable build recipes that produce store content
 //! - `Activation`: describes what to do with derivation outputs
 //! - `Manifest`: the complete set of derivations and activations

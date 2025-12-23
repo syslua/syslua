@@ -1,6 +1,6 @@
 # Lua API
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers the Lua API layers, globals, type definitions, and IDE integration.
 
@@ -189,7 +189,7 @@ sys.path.split(path) -- Split into components
 
 ## Lua Language Server (LuaLS) Integration
 
-sys.lua provides excellent IDE/editor support through type definition files and automatic workspace configuration.
+SysLua provides excellent IDE/editor support through type definition files and automatic workspace configuration.
 
 ### Goals
 
@@ -202,7 +202,7 @@ sys.lua provides excellent IDE/editor support through type definition files and 
 
 ### Type Definition Files
 
-sys.lua ships with comprehensive type definitions:
+SysLua ships with comprehensive type definitions:
 
 ```
 syslua/
@@ -213,7 +213,7 @@ syslua/
 
 ### Workspace Configuration
 
-sys.lua automatically generates a `.luarc.json` file when you run `sys apply`. This tells LuaLS where to find type definitions:
+SysLua automatically generates a `.luarc.json` file when you run `sys apply`. This tells LuaLS where to find type definitions:
 
 ```json
 {
@@ -242,7 +242,7 @@ sys.lua automatically generates a `.luarc.json` file when you run `sys apply`. T
 # Install Lua Language Server extension
 code --install-extension sumneko.lua
 
-# sys.lua automatically generates .luarc.json on first apply
+# SysLua automatically generates .luarc.json on first apply
 sys apply ~/.config/syslua/
 ```
 
@@ -272,7 +272,7 @@ require('lspconfig').lua_ls.setup({
 # Generate .luarc.json without applying config
 $ sys init
 Generated .luarc.json for Lua Language Server integration
-Generated sys.lua template
+Generated SysLua template
 
 # Force regenerate .luarc.json
 $ sys init --force
@@ -281,7 +281,7 @@ Regenerated .luarc.json
 
 ## Runtime Type Checking
 
-In addition to LSP-based type checking, sys.lua performs runtime validation during config evaluation:
+In addition to LSP-based type checking, SysLua performs runtime validation during config evaluation:
 
 ```lua
 local modules = require('syslua.modules')
@@ -308,7 +308,7 @@ modules.file.setup({
 **Example error output:**
 
 ```
-Error evaluating sys.lua:
+Error evaluating SysLua:
   Line 15: Invalid value for package version
     Expected: string
     Got: number (123)

@@ -1,6 +1,6 @@
 # Snapshots
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers the snapshot design, rollback algorithm, and garbage collection.
 
@@ -253,7 +253,7 @@ To prevent race conditions, GC uses a global lock:
 GC_COLLECT():
     lock = ACQUIRE_STORE_LOCK(exclusive=true, timeout=30s)
     IF lock IS NULL:
-        ERROR "Could not acquire store lock. Another sys.lua operation may be running."
+        ERROR "Could not acquire store lock. Another SysLua operation may be running."
 
     TRY:
         // Phase 1: Find all roots
@@ -308,7 +308,7 @@ Snapshots protect their referenced objects from GC:
 
 ```bash
 $ sys apply init.lua           # Installs ripgrep@15.1.0 (creates snapshot 1)
-$ # Edit sys.lua to remove ripgrep
+$ # Edit SysLua to remove ripgrep
 $ sys apply init.lua           # Removes ripgrep symlink (creates snapshot 2)
 $ sys gc                       # Does NOT delete ripgrep object (snapshot 1 references it)
 $ sys rollback <snapshot 1>    # Can still rollback (object exists)

@@ -13,7 +13,7 @@ The store provides:
 
 ## Store Locations
 
-sys.lua uses a multi-level store architecture:
+SysLua uses a multi-level store architecture:
 
 ### System Store (Managed by Admin/Root)
 

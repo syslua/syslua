@@ -1,6 +1,6 @@
 # Platform Specifics
 
-> Part of the [sys.lua Architecture](./00-overview.md) documentation.
+> Part of the [SysLua Architecture](./00-overview.md) documentation.
 
 This document covers platform-specific details including services, environment scripts, file management, and paths.
 
@@ -71,7 +71,7 @@ if (Test-Path "$env:USERPROFILE\.local\share\sys\env.ps1") {
 
 ### Per-User Profiles
 
-sys.lua generates **separate environment scripts for each user** defined in the configuration:
+SysLua generates **separate environment scripts for each user** defined in the configuration:
 
 ```
 ~/.local/share/syslua/
@@ -117,14 +117,14 @@ Persistent variables are written directly to OS-level configuration, available t
 
 ## File Management
 
-sys.lua provides declarative file management through the unified build model.
+SysLua provides declarative file management through the unified build model.
 
-**Important: Files are fully managed by sys.lua.** When you declare a file:
+**Important: Files are fully managed by SysLua.** When you declare a file:
 
 - The file's entire content is replaced with what you specify
 - Existing content is NOT preserved or merged
 - Removing a file declaration removes the file from disk
-- Changes made outside sys.lua will be overwritten on next `sys apply`
+- Changes made outside SysLua will be overwritten on next `sys apply`
 
 ### File Modes
 
@@ -154,12 +154,12 @@ sys.lua provides declarative file management through the unified build model.
 
 - Direct symlink, content lives outside the store
 - File can be edited in place
-- Still tracked by sys.lua (build records the link metadata)
+- Still tracked by SysLua (build records the link metadata)
 - No content-based rollback (rollback restores the symlink, not content)
 
 ## Service Management
 
-sys.lua provides cross-platform declarative service management using native init systems.
+SysLua provides cross-platform declarative service management using native init systems.
 
 ### Platform Backends
 
@@ -320,7 +320,7 @@ dependencies aren't properly specified:
 
 ## Build System
 
-While sys.lua prefers prebuilt binaries for speed, it supports building from source when necessary.
+While SysLua prefers prebuilt binaries for speed, it supports building from source when necessary.
 
 ### Prebuilt vs Source
 

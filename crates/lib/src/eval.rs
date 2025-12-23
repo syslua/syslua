@@ -146,7 +146,7 @@ fn build_package_path(config_dir: &Path, resolved: &ResolvedInputs) -> String {
   // 1. Config directory's lua/ (if exists) - highest priority
   let config_lua_dir = config_dir.join("lua");
   if config_lua_dir.is_dir() {
-    let lua_dir_str = config_lua_dir.to_string_lossy();
+    let lua_dir_str = config_lua_dir.to_string_lossy().replace("\\", "/");
     paths.push(format!("{}/?.lua", lua_dir_str));
     paths.push(format!("{}/?/init.lua", lua_dir_str));
   }
@@ -162,7 +162,7 @@ fn collect_lua_paths(inputs: &ResolvedInputs, paths: &mut Vec<String>) {
   for input in inputs.values() {
     let lua_dir = input.path.join("lua");
     if lua_dir.is_dir() {
-      let lua_dir_str = lua_dir.to_string_lossy();
+      let lua_dir_str = lua_dir.to_string_lossy().replace("\\", "/");
       paths.push(format!("{}/?.lua", lua_dir_str));
       paths.push(format!("{}/?/init.lua", lua_dir_str));
     }

@@ -1,6 +1,6 @@
 # Builds
 
-> **Core Principle:** Builds are the sole primitive for producing store content in sys.lua.
+> **Core Principle:** Builds are the sole primitive for producing store content in SysLua.
 
 A build is an immutable description of:
 
@@ -8,7 +8,7 @@ A build is an immutable description of:
 - How to transform those inputs into outputs (config function)
 - What outputs are produced
 
-All managed state in sys.lua uses builds - not just packages, but also files and environment variables.
+All managed state in SysLua uses builds - not just packages, but also files and environment variables.
 
 ## The `sys.build()` Function
 
