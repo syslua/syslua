@@ -14,7 +14,7 @@ use tracing::{debug, info};
 use crate::init::update_luarc_inputs;
 use crate::inputs::resolve::{ResolveError, resolve_inputs, save_lock_file_if_changed};
 use crate::inputs::{InputDecl, InputDecls, InputOverride, ResolvedInput, ResolvedInputs};
-use crate::lua::{loaders, runtime};
+use crate::lua::runtime;
 use crate::manifest::Manifest;
 use crate::platform;
 
@@ -65,7 +65,7 @@ pub fn evaluate_config(path: &Path) -> Result<Manifest, EvalError> {
   // before we try to unwrap the manifest Rc
   {
     let lua = runtime::create_runtime(manifest.clone())?;
-    let config = loaders::load_file_with_dir(&lua, path)?;
+    let config = runtime::load_file(&lua, path)?;
 
     // Config should return a table with { inputs, setup }
     if let LuaValue::Table(config_table) = config {
@@ -215,7 +215,7 @@ fn call_input_setup_recursive(lua: &Lua, name: &str, input: &ResolvedInput) -> L
   let init_path = input.path.join("init.lua");
   if init_path.exists() {
     // Load the input's init.lua
-    let init_result = loaders::load_file_with_dir(lua, &init_path)?;
+    let init_result = runtime::load_file(lua, &init_path)?;
 
     if let LuaValue::Table(init_table) = init_result {
       // Check if it has a setup function

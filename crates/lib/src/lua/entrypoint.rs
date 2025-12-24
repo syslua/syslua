@@ -6,7 +6,7 @@ use std::rc::Rc;
 use mlua::prelude::*;
 
 use crate::inputs::{InputDecl, InputDecls, InputOverride};
-use crate::lua::{loaders, runtime};
+use crate::lua::runtime;
 use crate::manifest::Manifest;
 
 /// Extract raw input declarations from an entrypoint file.
@@ -35,7 +35,8 @@ pub fn extract_input_decls(entrypoint_path: &str) -> LuaResult<InputDecls> {
   let lua = runtime::create_runtime(manifest)?;
 
   let path = Path::new(entrypoint_path);
-  let result = loaders::load_file_with_dir(&lua, path)?;
+  let result = runtime::load_file(&lua, path)?;
+
   let result_table = result
     .as_table()
     .ok_or_else(|| LuaError::external("entrypoint must return a table"))?;

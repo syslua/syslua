@@ -40,7 +40,7 @@ use super::types::{
   InputDecl, InputDecls, InputOverride, LuaNamespace, ResolvedInput as TypesResolvedInput,
   ResolvedInputs as TypesResolvedInputs,
 };
-use crate::lua::{loaders, runtime};
+use crate::lua::runtime;
 use crate::manifest::Manifest;
 use crate::platform::paths::cache_dir;
 
@@ -609,7 +609,7 @@ fn extract_input_decls_from_file(init_path: &Path) -> Result<InputDecls, Resolve
     message: e.to_string(),
   })?;
 
-  let result = loaders::load_file_with_dir(&lua, init_path).map_err(|e| ResolveError::ExtractInputs {
+  let result = runtime::load_file(&lua, init_path).map_err(|e| ResolveError::ExtractInputs {
     name: init_path.display().to_string(),
     message: e.to_string(),
   })?;
