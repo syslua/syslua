@@ -45,16 +45,13 @@ return {
         return { file = TEST_DIR .. (sys.os == 'windows' and '\\check-marker.txt' or '/check-marker.txt') }
       end,
       check = function(outputs, _, ctx)
-        local exists
+        local drifted
         if sys.os == 'windows' then
-          exists = sh(ctx, 'if (Test-Path "' .. outputs.file .. '") { "false" } else { "true" }')
+          drifted = sh(ctx, 'if (Test-Path "' .. outputs.file .. '") { Write-Host -NoNewline "false" } else { Write-Host -NoNewline "true" }')
         else
-          exists = sh(ctx, 'test -f ' .. outputs.file .. ' && echo false || echo true')
+          drifted = sh(ctx, 'test -f "' .. outputs.file .. '" && printf false || printf true')
         end
-        if exists == 'true' then
-          return { drifted = exists, message = 'file does not exist' }
-        end
-        return { drifted = exists }
+        return { drifted = drifted, message = 'file does not exist' }
       end,
       destroy = function(outputs, ctx)
         if sys.os == 'windows' then
