@@ -12,12 +12,11 @@ use mlua::prelude::*;
 
 use crate::action::BIND_CTX_METHODS_REGISTRY_KEY;
 use crate::action::actions::exec::parse_exec_opts;
-use crate::bind::BindInputs;
+use crate::bind::{BindInputsDef, BindRef, BindSpec};
 use crate::build::BUILD_REF_TYPE;
 use crate::build::lua::build_hash_to_lua;
 use crate::manifest::Manifest;
-use crate::outputs::lua::{outputs_to_lua_table, parse_outputs};
-use crate::util::hash::{Hashable, ObjectHash};
+use crate::util::hash::ObjectHash;
 
 use super::{BIND_REF_TYPE, BindCtx, BindDef};
 
@@ -60,12 +59,12 @@ impl LuaUserData for BindCtx {
 /// (detected via metatable `__type` field).
 ///
 /// Validates that any referenced builds/binds exist in the manifest.
-pub fn lua_value_to_bind_inputs_ref(value: LuaValue, manifest: &Manifest) -> LuaResult<BindInputs> {
+pub fn lua_value_to_bind_inputs_def(value: LuaValue, manifest: &Manifest) -> LuaResult<BindInputsDef> {
   match value {
-    LuaValue::String(s) => Ok(BindInputs::String(s.to_str()?.to_string())),
-    LuaValue::Number(n) => Ok(BindInputs::Number(n)),
-    LuaValue::Integer(i) => Ok(BindInputs::Number(i as f64)),
-    LuaValue::Boolean(b) => Ok(BindInputs::Boolean(b)),
+    LuaValue::String(s) => Ok(BindInputsDef::String(s.to_str()?.to_string())),
+    LuaValue::Number(n) => Ok(BindInputsDef::Number(n)),
+    LuaValue::Integer(i) => Ok(BindInputsDef::Number(i as f64)),
+    LuaValue::Boolean(b) => Ok(BindInputsDef::Boolean(b)),
     LuaValue::Table(t) => {
       // Check metatable for type marker (BuildRef or BindRef)
       if let Some(mt) = t.metatable()
@@ -86,17 +85,17 @@ pub fn lua_value_to_bind_inputs_ref(value: LuaValue, manifest: &Manifest) -> Lua
         let mut arr = Vec::with_capacity(len);
         for i in 1..=len {
           let val: LuaValue = t.get(i)?;
-          arr.push(lua_value_to_bind_inputs_ref(val, manifest)?);
+          arr.push(lua_value_to_bind_inputs_def(val, manifest)?);
         }
-        Ok(BindInputs::Array(arr))
+        Ok(BindInputsDef::Array(arr))
       } else {
         // Treat as table/map
         let mut map = BTreeMap::new();
         for pair in t.pairs::<String, LuaValue>() {
           let (k, v) = pair?;
-          map.insert(k, lua_value_to_bind_inputs_ref(v, manifest)?);
+          map.insert(k, lua_value_to_bind_inputs_def(v, manifest)?);
         }
-        Ok(BindInputs::Table(map))
+        Ok(BindInputsDef::Table(map))
       }
     }
     LuaValue::Nil => Err(LuaError::external("nil values not allowed in inputs")),
@@ -110,7 +109,7 @@ pub fn lua_value_to_bind_inputs_ref(value: LuaValue, manifest: &Manifest) -> Lua
 /// Parse a Lua table marked as BuildRef into InputsRef::Build.
 ///
 /// Validates that the referenced build exists in the manifest.
-fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputs> {
+fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputsDef> {
   let hash: String = t.get("hash")?;
   let build_hash = ObjectHash(hash);
 
@@ -122,13 +121,13 @@ fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInp
     )));
   }
 
-  Ok(BindInputs::Build(build_hash))
+  Ok(BindInputsDef::Build(build_hash))
 }
 
 /// Parse a Lua table marked as BindRef into InputsRef::Bind.
 ///
 /// Validates that the referenced bind exists in the manifest.
-fn parse_bind_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputs> {
+fn parse_bind_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInputsDef> {
   let hash: String = t.get("hash")?;
   let bind_hash = ObjectHash(hash);
 
@@ -140,34 +139,34 @@ fn parse_bind_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<BindInpu
     )));
   }
 
-  Ok(BindInputs::Bind(bind_hash))
+  Ok(BindInputsDef::Bind(bind_hash))
 }
 
 /// Convert BindInputsRef to a Lua value for passing to the create function.
 ///
 /// For Build/Bind references, looks up the definition in the manifest to
 /// reconstruct the Lua table with placeholder outputs.
-pub fn bind_inputs_ref_to_lua(lua: &Lua, inputs: &BindInputs, manifest: &Manifest) -> LuaResult<LuaValue> {
+pub fn bind_inputs_ref_to_lua(lua: &Lua, inputs: &BindInputsDef, manifest: &Manifest) -> LuaResult<LuaValue> {
   match inputs {
-    BindInputs::String(s) => Ok(LuaValue::String(lua.create_string(s)?)),
-    BindInputs::Number(n) => Ok(LuaValue::Number(*n)),
-    BindInputs::Boolean(b) => Ok(LuaValue::Boolean(*b)),
-    BindInputs::Array(arr) => {
+    BindInputsDef::String(s) => Ok(LuaValue::String(lua.create_string(s)?)),
+    BindInputsDef::Number(n) => Ok(LuaValue::Number(*n)),
+    BindInputsDef::Boolean(b) => Ok(LuaValue::Boolean(*b)),
+    BindInputsDef::Array(arr) => {
       let table = lua.create_table()?;
       for (i, val) in arr.iter().enumerate() {
         table.set(i + 1, bind_inputs_ref_to_lua(lua, val, manifest)?)?;
       }
       Ok(LuaValue::Table(table))
     }
-    BindInputs::Table(map) => {
+    BindInputsDef::Table(map) => {
       let table = lua.create_table()?;
       for (k, v) in map {
         table.set(k.as_str(), bind_inputs_ref_to_lua(lua, v, manifest)?)?;
       }
       Ok(LuaValue::Table(table))
     }
-    BindInputs::Build(hash) => build_hash_to_lua(lua, hash, manifest),
-    BindInputs::Bind(hash) => bind_hash_to_lua(lua, hash, manifest),
+    BindInputsDef::Build(hash) => build_hash_to_lua(lua, hash, manifest),
+    BindInputsDef::Bind(hash) => bind_hash_to_lua(lua, hash, manifest),
   }
 }
 
@@ -213,175 +212,17 @@ pub fn bind_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> Lu
 /// 6. Returns a BindRef as a Lua table with metatable marker
 pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<Manifest>>) -> LuaResult<()> {
   let bind_fn = lua.create_function(move |lua, spec_table: LuaTable| {
-    // 1. Parse the BindSpec from the Lua table
-    let id: Option<String> = spec_table.get("id")?;
+    let bind_spec: BindSpec = lua.unpack(LuaValue::Table(spec_table))?;
+    let bind_def = BindDef::from_spec(lua, &manifest, bind_spec)?;
+    let bind_ref = BindRef::from_def(&bind_def)?;
 
-    let create_fn: LuaFunction = spec_table
-      .get("create")
-      .map_err(|_| LuaError::external("bind spec requires 'create' function"))?;
-
-    let update_fn: Option<LuaFunction> = spec_table.get("update")?;
-
-    if update_fn.is_some() && id.is_none() {
-      return Err(LuaError::external(
-        "bind spec with 'update' function requires 'id' field",
-      ));
-    }
-
-    let destroy_fn: LuaFunction = spec_table
-      .get("destroy")
-      .map_err(|_| LuaError::external("bind spec requires 'destroy' function"))?;
-
-    // 2. Resolve inputs (if provided)
-    let inputs_value: Option<LuaValue> = spec_table.get("inputs")?;
-    let resolved_inputs: Option<BindInputs> = match inputs_value {
-      Some(LuaValue::Function(f)) => {
-        // Dynamic inputs - call the function to get resolved value
-        let result: LuaValue = f.call(())?;
-        if result == LuaValue::Nil {
-          None
-        } else {
-          Some(lua_value_to_bind_inputs_ref(result, &manifest.borrow())?)
-        }
-      }
-      Some(LuaValue::Nil) => None,
-      Some(v) => Some(lua_value_to_bind_inputs_ref(v, &manifest.borrow())?),
-      None => None,
-    };
-
-    // 3. Create BindCtx and call the create function
-    let mut create_ctx = BindCtx::new();
-    let create_ctx_userdata = lua.create_userdata(create_ctx)?;
-
-    // Prepare inputs argument for create function
-    let inputs_arg: LuaValue = match &resolved_inputs {
-      Some(inputs) => bind_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
-      None => LuaValue::Table(lua.create_table()?), // Empty table if no inputs
-    };
-
-    // Call: create(inputs, ctx) -> outputs (optional)
-    let create_result: LuaValue = create_fn.call((&inputs_arg, &create_ctx_userdata))?;
-
-    // 4. Extract outputs from create return value (optional for binds)
-    let outputs: Option<BTreeMap<String, String>> = match create_result {
-      LuaValue::Table(t) => {
-        let parsed = parse_outputs(t)?;
-        if parsed.is_empty() { None } else { Some(parsed) }
-      }
-      LuaValue::Nil => None,
-      _ => {
-        return Err(LuaError::external("bind create must return a table of outputs or nil"));
-      }
-    };
-
-    // 5. Extract create actions from ActionCtx
-    create_ctx = create_ctx_userdata.take()?;
-    let create_actions = create_ctx.into_actions();
-
-    // Create outputs argument for destroy function
-    // The outputs contain $${out} placeholders that will be resolved at runtime
-    let outputs_arg: LuaValue = match &outputs {
-      Some(outs) => {
-        let outputs_table = outputs_to_lua_table(lua, outs)?;
-        LuaValue::Table(outputs_table)
-      }
-      None => LuaValue::Table(lua.create_table()?),
-    };
-
-    let update_actions = if let Some(update_fn) = update_fn {
-      let update_ctx = BindCtx::new();
-      let update_ctx_userdata = lua.create_userdata(update_ctx)?;
-
-      // Call: update(outputs, inputs, ctx) -> outputs (must match create's output keys)
-      let update_result: LuaValue = update_fn.call((&outputs_arg, &inputs_arg, &update_ctx_userdata))?;
-
-      // Validate update returns same output shape as create
-      match (&update_result, &outputs) {
-        (LuaValue::Table(update_table), Some(create_outputs)) => {
-          let update_outputs = parse_outputs(update_table.clone())?;
-          let create_keys: std::collections::HashSet<_> = create_outputs.keys().collect();
-          let update_keys: std::collections::HashSet<_> = update_outputs.keys().collect();
-
-          if create_keys != update_keys {
-            return Err(LuaError::external(format!(
-              "update must return same output keys as create. create: {:?}, update: {:?}",
-              create_keys, update_keys
-            )));
-          }
-        }
-        (LuaValue::Table(update_table), None) => {
-          let update_outputs = parse_outputs(update_table.clone())?;
-          if !update_outputs.is_empty() {
-            return Err(LuaError::external(format!(
-              "update returned outputs but create did not. update keys: {:?}",
-              update_outputs.keys().collect::<Vec<_>>()
-            )));
-          }
-        }
-        (LuaValue::Nil, Some(create_outputs)) => {
-          if !create_outputs.is_empty() {
-            return Err(LuaError::external(format!(
-              "update returned nil but create returned outputs. create keys: {:?}",
-              create_outputs.keys().collect::<Vec<_>>()
-            )));
-          }
-        }
-        (LuaValue::Nil, None) => {
-          // Both return nil/empty, that's fine
-        }
-        (other, _) => {
-          return Err(LuaError::external(format!(
-            "update must return a table of outputs or nil, got: {:?}",
-            other.type_name()
-          )));
-        }
-      }
-
-      let update_ctx: BindCtx = update_ctx_userdata.take()?;
-      let update_actions = update_ctx.into_actions();
-      if update_actions.is_empty() {
-        None
-      } else {
-        Some(update_actions)
-      }
-    } else {
-      None
-    };
-
-    // 6. Call destroy function
-    let destroy_actions = {
-      let destroy_ctx = BindCtx::new();
-      let destroy_ctx_userdata = lua.create_userdata(destroy_ctx)?;
-
-      // Call: destroy(outputs, ctx) -> ignored
-      let _: LuaValue = destroy_fn.call((outputs_arg, &destroy_ctx_userdata))?;
-
-      let destroy_ctx: BindCtx = destroy_ctx_userdata.take()?;
-      destroy_ctx.into_actions()
-    };
-
-    // 7. Create BindDef
-    let bind_def = BindDef {
-      id,
-      inputs: resolved_inputs.clone(),
-      create_actions,
-      update_actions,
-      outputs: outputs.clone(),
-      destroy_actions,
-    };
-
-    // 8. Compute hash
-    let hash = bind_def
-      .compute_hash()
-      .map_err(|e| LuaError::external(format!("failed to compute bind hash: {}", e)))?;
-
-    // 9. Check for duplicate bind IDs (only for binds with IDs)
+    // Check for duplicate bind IDs (only for binds with IDs)
     if let Some(ref id) = bind_def.id {
       let manifest_ref = manifest.borrow();
       for (existing_hash, existing_def) in manifest_ref.bindings.iter() {
         if let Some(ref existing_id) = existing_def.id
           && existing_id == id
-          && *existing_hash != hash
+          && *existing_hash != bind_ref.hash
         {
           return Err(LuaError::external(format!(
             "duplicate bind id '{}': a bind with this id already exists (hash: {})",
@@ -391,45 +232,20 @@ pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<M
       }
     }
 
-    // 10. Add to manifest (deduplicate by hash)
+    // Add to manifest (deduplicate by hash)
     {
       let mut manifest = manifest.borrow_mut();
-      if manifest.bindings.contains_key(&hash) {
+      if manifest.bindings.contains_key(&bind_ref.hash) {
         tracing::warn!(
-          hash = %hash.0,
+          hash = %bind_ref.hash.0,
           "duplicate bind detected, skipping insertion"
         );
       } else {
-        manifest.bindings.insert(hash.clone(), bind_def);
+        manifest.bindings.insert(bind_ref.hash.clone(), bind_def.clone());
       }
     }
 
-    // 11. Create and return BindRef as Lua table
-    let ref_table = lua.create_table()?;
-    ref_table.set("hash", hash.0.as_str())?;
-
-    // Add inputs to ref (nil if not specified)
-    if let Some(inputs) = &resolved_inputs {
-      ref_table.set("inputs", bind_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
-    }
-
-    // Convert outputs to Lua table with placeholders for runtime resolution (if present)
-    if let Some(ref outs) = outputs {
-      let outputs_table = lua.create_table()?;
-      let hash = &hash.0;
-      for k in outs.keys() {
-        let placeholder = format!("$${{bind:{}:{}}}", hash, k);
-        outputs_table.set(k.as_str(), placeholder.as_str())?;
-      }
-      ref_table.set("outputs", outputs_table)?;
-    }
-
-    // Set metatable with __type marker
-    let mt = lua.create_table()?;
-    mt.set("__type", BIND_REF_TYPE)?;
-    ref_table.set_metatable(Some(mt))?;
-
-    Ok(ref_table)
+    lua.pack(bind_ref)
   })?;
 
   sys_table.set("bind", bind_fn)?;
@@ -595,10 +411,10 @@ mod tests {
       let (_, bind) = manifest.bindings.iter().next().unwrap();
       let inputs = bind.inputs.as_ref().expect("should have inputs");
       match inputs {
-        BindInputs::Table(map) => {
+        BindInputsDef::Table(map) => {
           let pkg = map.get("pkg").expect("should have pkg key");
           match pkg {
-            BindInputs::Build(build_hash) => {
+            BindInputsDef::Build(build_hash) => {
               // Verify it's a truncated hash (HASH_PREFIX_LEN hex chars)
               assert_eq!(build_hash.0.len(), OBJ_HASH_PREFIX_LEN);
               // Verify the referenced build exists
@@ -639,9 +455,15 @@ mod tests {
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
       let inputs = bind_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        BindInputs::Table(map) => {
-          assert_eq!(map.get("src"), Some(&BindInputs::String("/path/to/source".to_string())));
-          assert_eq!(map.get("dest"), Some(&BindInputs::String("/path/to/dest".to_string())));
+        BindInputsDef::Table(map) => {
+          assert_eq!(
+            map.get("src"),
+            Some(&BindInputsDef::String("/path/to/source".to_string()))
+          );
+          assert_eq!(
+            map.get("dest"),
+            Some(&BindInputsDef::String("/path/to/dest".to_string()))
+          );
         }
         _ => panic!("expected Table inputs"),
       }
@@ -677,10 +499,10 @@ mod tests {
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
       let inputs = bind_def.inputs.as_ref().expect("should have inputs");
       match inputs {
-        BindInputs::Table(map) => {
+        BindInputsDef::Table(map) => {
           assert_eq!(
             map.get("computed"),
-            Some(&BindInputs::String("dynamic-value".to_string()))
+            Some(&BindInputsDef::String("dynamic-value".to_string()))
           );
         }
         _ => panic!("expected Table inputs"),
@@ -854,66 +676,6 @@ mod tests {
       let manifest = manifest.borrow();
       // Should only have 1 bind, not 2
       assert_eq!(manifest.bindings.len(), 1);
-
-      Ok(())
-    }
-
-    #[test]
-    fn bind_ref_includes_inputs() -> LuaResult<()> {
-      let (lua, _) = create_test_lua_with_manifest()?;
-
-      let result: LuaTable = lua
-        .load(
-          r#"
-                return sys.bind({
-                    id = "my-bind",
-                    inputs = { src = "/path/to/source", dest = "/path/to/dest" },
-                    create = function(inputs, ctx)
-                        ctx:exec("ln -sf " .. inputs.src .. " " .. inputs.dest)
-                        return { dest = inputs.dest }
-                    end,
-                    destroy = function(outputs, ctx)
-                        ctx:exec("rm " .. outputs.dest)
-                    end,
-                })
-            "#,
-        )
-        .eval()?;
-
-      // Check that inputs are available on the BindRef
-      let inputs: LuaTable = result.get("inputs")?;
-      let src: String = inputs.get("src")?;
-      let dest: String = inputs.get("dest")?;
-
-      assert_eq!(src, "/path/to/source");
-      assert_eq!(dest, "/path/to/dest");
-
-      Ok(())
-    }
-
-    #[test]
-    fn bind_ref_inputs_is_nil_when_not_specified() -> LuaResult<()> {
-      let (lua, _) = create_test_lua_with_manifest()?;
-
-      let result: LuaTable = lua
-        .load(
-          r#"
-                return sys.bind({
-                    id = "my-bind",
-                    create = function(inputs, ctx)
-                        ctx:exec("ln -sf /src /dest")
-                    end,
-                    destroy = function(inputs, ctx)
-                        ctx:exec("rm /dest")
-                    end,
-                })
-            "#,
-        )
-        .eval()?;
-
-      // inputs should be nil, not an empty table
-      let inputs: LuaValue = result.get("inputs")?;
-      assert_eq!(inputs, LuaValue::Nil);
 
       Ok(())
     }

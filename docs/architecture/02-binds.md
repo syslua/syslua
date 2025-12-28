@@ -597,6 +597,176 @@ The `destroy` function in Lua is evaluated at plan time, just like `create`. Thi
 
 **Note:** Binds with `update_actions` do NOT have automatic rollback. If an update fails, the bind may be left in an inconsistent state. See [The Update Callback](#the-update-callback) for details.
 
+## The Check Callback (Drift Detection)
+
+The optional `check` callback enables drift detection for binds. It allows you to verify that the system state still matches what the bind created, without re-running the full create/destroy cycle.
+
+### When to Use Check
+
+Use the `check` callback when:
+
+- The bind creates state that can be externally modified (files, symlinks, config)
+- You want to detect if someone manually changed what the bind manages
+- You need to verify system state matches expected state during `sys apply`
+
+### Check Signature
+
+```lua
+sys.bind({
+  id = 'my-file-link',
+  inputs = function()
+    return { source = '/store/content', target = '~/.config/myapp' }
+  end,
+  create = function(inputs, ctx)
+    ctx:exec({
+      bin = '/bin/ln',
+      args = { '-sf', inputs.source, inputs.target },
+    })
+    return { link = inputs.target }
+  end,
+  check = function(outputs, ctx)
+    -- outputs: the outputs from create (or update)
+    -- ctx: action context for verification commands
+    local result = ctx:exec({
+      bin = '/bin/test',
+      args = { '-L', outputs.link },
+    })
+    -- Return table with drifted status and optional message
+    return { drifted = (result ~= '0'), message = 'symlink missing or broken' }
+  end,
+  destroy = function(outputs, ctx)
+    ctx:exec({ bin = '/bin/rm', args = { outputs.link } })
+  end,
+})
+```
+
+### Check Callback Parameters
+
+| Parameter | Description                                              |
+| --------- | -------------------------------------------------------- |
+| `outputs` | The outputs from the last successful create/update       |
+| `ctx`     | Action context for running verification commands         |
+
+### Check Return Value
+
+The check callback must return a table with:
+
+| Field     | Type    | Description                                         |
+| --------- | ------- | --------------------------------------------------- |
+| `drifted` | boolean | `true` if system state doesn't match expected state |
+| `message` | string? | Optional: explanation of what drifted               |
+
+### How Drift Detection Works
+
+1. During `sys apply`, after applying changes, the system checks **unchanged binds** (binds that exist in both old and new state with the same hash)
+2. For each unchanged bind with a `check` callback, the check actions are executed
+3. The `drifted` field from the return value indicates whether drift was detected
+4. Drift results are reported in the apply summary
+
+### Repair Mode
+
+When drift is detected, you can repair it using the `--repair` flag:
+
+```bash
+# Detect drift only (default)
+$ sys apply init.lua
+# Output: Drift detected: 2 bind(s)
+#         Run with --repair to fix drifted binds
+
+# Repair drifted binds
+$ sys apply init.lua --repair
+# Output: Binds repaired: 2
+```
+
+Repair works by re-executing the `create_actions` for drifted binds, effectively recreating the expected state.
+
+### Check Does Not Affect Hash
+
+**Important:** The `check` callback and its actions are intentionally **excluded from the bind hash calculation**. This means:
+
+- Adding or modifying a `check` callback does not cause the bind to be re-applied
+- The check is purely for monitoring/verification, not for determining bind identity
+- Two binds with identical create/update/destroy but different check callbacks have the same hash
+
+### Rust Types
+
+```rust
+/// Result of checking a bind for drift
+pub struct BindCheckResult {
+    /// Whether the bind has drifted from expected state
+    pub drifted: bool,
+    /// Optional message explaining the drift
+    pub message: Option<String>,
+}
+
+/// Evaluated bind definition (excerpt showing check fields)
+pub struct BindDef {
+    // ... other fields ...
+    
+    /// Actions to run during check (optional)
+    pub check_actions: Option<Vec<Action>>,
+    /// Expected outputs from check callback (optional)
+    pub check_outputs: Option<BindCheckOutputs>,
+}
+```
+
+### Example: File Existence Check
+
+```lua
+sys.bind({
+  inputs = function()
+    return { content = 'Hello World', path = '/tmp/myfile.txt' }
+  end,
+  create = function(inputs, ctx)
+    ctx:exec({
+      bin = '/bin/sh',
+      args = { '-c', 'echo "' .. inputs.content .. '" > ' .. inputs.path },
+    })
+    return { file = inputs.path }
+  end,
+  check = function(outputs, ctx)
+    -- Check if file exists and has expected content
+    local exists = ctx:exec({
+      bin = '/bin/test',
+      args = { '-f', outputs.file },
+    })
+    return { drifted = (exists ~= '0'), message = 'file deleted or modified' }
+  end,
+  destroy = function(outputs, ctx)
+    ctx:exec({ bin = '/bin/rm', args = { '-f', outputs.file } })
+  end,
+})
+```
+
+### Example: Symlink Verification
+
+```lua
+sys.bind({
+  inputs = function()
+    return { source = my_build.outputs.out, target = '/usr/local/bin/mytool' }
+  end,
+  create = function(inputs, ctx)
+    ctx:exec({
+      bin = '/bin/ln',
+      args = { '-sf', inputs.source, inputs.target },
+    })
+    return { link = inputs.target, expected_target = inputs.source }
+  end,
+  check = function(outputs, ctx)
+    -- Verify symlink exists and points to correct target
+    local actual = ctx:exec({
+      bin = '/bin/readlink',
+      args = { outputs.link },
+    })
+    local drifted = (actual ~= outputs.expected_target)
+    return { drifted = drifted, message = drifted and 'symlink target changed' or nil }
+  end,
+  destroy = function(outputs, ctx)
+    ctx:exec({ bin = '/bin/rm', args = { outputs.link } })
+  end,
+})
+```
+
 ## Related Documentation
 
 - [01-builds.md](./01-builds.md) - How builds produce content

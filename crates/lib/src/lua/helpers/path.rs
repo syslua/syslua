@@ -178,5 +178,22 @@ pub fn create_path_helpers(lua: &Lua) -> LuaResult<LuaTable> {
     })?,
   )?;
 
+  // sys.path.canonicalize(path) - Get canonical filesystem path
+  // Resolves symlinks and Windows 8.3 short names.
+  // Throws error if path doesn't exist.
+  path.set(
+    "canonicalize",
+    lua.create_function(|_, path_str: String| {
+      let path = std::path::Path::new(&path_str);
+      match dunce::canonicalize(path) {
+        Ok(canonical) => Ok(canonical.to_string_lossy().into_owned()),
+        Err(e) => Err(LuaError::runtime(format!(
+          "failed to canonicalize path '{}': {}",
+          path_str, e
+        ))),
+      }
+    })?,
+  )?;
+
   Ok(path)
 }

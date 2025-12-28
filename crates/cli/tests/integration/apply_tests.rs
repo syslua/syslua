@@ -89,3 +89,85 @@ fn apply_multi_build() {
     .success()
     .stdout(predicate::str::contains("Builds realized: 2"));
 }
+
+#[test]
+fn apply_shows_no_drift_when_file_exists() {
+  let env = TestEnv::from_fixture("bind_check.lua");
+  let marker_file = env.output_path().join("check-marker.txt");
+
+  env.sys_cmd().arg("apply").arg(&env.config_path).assert().success();
+
+  assert!(marker_file.exists(), "bind should create marker file");
+
+  env
+    .sys_cmd()
+    .arg("apply")
+    .arg(&env.config_path)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Drift detected").not());
+}
+
+#[test]
+fn apply_detects_drift_when_file_deleted() {
+  let env = TestEnv::from_fixture("bind_check.lua");
+  let marker_file = env.output_path().join("check-marker.txt");
+
+  env.sys_cmd().arg("apply").arg(&env.config_path).assert().success();
+
+  assert!(marker_file.exists(), "bind should create marker file");
+
+  std::fs::remove_file(&marker_file).expect("failed to delete marker file");
+
+  env
+    .sys_cmd()
+    .arg("apply")
+    .arg(&env.config_path)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Drift detected"))
+    .stdout(predicate::str::contains("check-test"));
+}
+
+#[test]
+fn apply_with_repair_fixes_drift() {
+  let env = TestEnv::from_fixture("bind_check.lua");
+  let marker_file = env.output_path().join("check-marker.txt");
+
+  env.sys_cmd().arg("apply").arg(&env.config_path).assert().success();
+
+  assert!(marker_file.exists(), "bind should create marker file");
+
+  std::fs::remove_file(&marker_file).expect("failed to delete marker file");
+
+  assert!(!marker_file.exists(), "marker file should be deleted");
+
+  env
+    .sys_cmd()
+    .arg("apply")
+    .arg("--repair")
+    .arg(&env.config_path)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Binds repaired:"));
+
+  assert!(marker_file.exists(), "repair should recreate marker file");
+}
+
+#[test]
+fn drift_does_not_affect_exit_code() {
+  let env = TestEnv::from_fixture("bind_check.lua");
+  let marker_file = env.output_path().join("check-marker.txt");
+
+  env.sys_cmd().arg("apply").arg(&env.config_path).assert().success();
+
+  std::fs::remove_file(&marker_file).expect("failed to delete marker file");
+
+  env
+    .sys_cmd()
+    .arg("apply")
+    .arg(&env.config_path)
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Drift detected"));
+}

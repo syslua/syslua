@@ -9,7 +9,7 @@ use petgraph::Direction;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use crate::bind::{BindDef, BindInputs};
+use crate::bind::{BindDef, BindInputsDef};
 use crate::build::BuildInputs;
 use crate::manifest::Manifest;
 use crate::util::hash::ObjectHash;
@@ -432,32 +432,32 @@ fn collect_build_dependencies(inputs: &BuildInputs, deps: &mut Vec<ObjectHash>) 
 /// Extract build and bind dependencies from BindInputs.
 ///
 /// BindInputs can contain both Build and Bind references.
-fn extract_bind_dependencies(inputs: &BindInputs) -> Vec<DagNode> {
+fn extract_bind_dependencies(inputs: &BindInputsDef) -> Vec<DagNode> {
   let mut deps = Vec::new();
   collect_bind_dependencies(inputs, &mut deps);
   deps
 }
 
 /// Recursively collect dependencies from nested BindInputs.
-fn collect_bind_dependencies(inputs: &BindInputs, deps: &mut Vec<DagNode>) {
+fn collect_bind_dependencies(inputs: &BindInputsDef, deps: &mut Vec<DagNode>) {
   match inputs {
-    BindInputs::Build(hash) => {
+    BindInputsDef::Build(hash) => {
       deps.push(DagNode::Build(hash.clone()));
     }
-    BindInputs::Bind(hash) => {
+    BindInputsDef::Bind(hash) => {
       deps.push(DagNode::Bind(hash.clone()));
     }
-    BindInputs::Table(map) => {
+    BindInputsDef::Table(map) => {
       for value in map.values() {
         collect_bind_dependencies(value, deps);
       }
     }
-    BindInputs::Array(arr) => {
+    BindInputsDef::Array(arr) => {
       for value in arr {
         collect_bind_dependencies(value, deps);
       }
     }
-    BindInputs::String(_) | BindInputs::Number(_) | BindInputs::Boolean(_) => {}
+    BindInputsDef::String(_) | BindInputsDef::Number(_) | BindInputsDef::Boolean(_) => {}
   }
 }
 
@@ -486,7 +486,7 @@ mod tests {
     }
   }
 
-  fn make_bind(inputs: Option<BindInputs>) -> BindDef {
+  fn make_bind(inputs: Option<BindInputsDef>) -> BindDef {
     BindDef {
       id: None,
       inputs,
@@ -499,6 +499,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 
@@ -703,7 +705,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::String("different".to_string())));
+    let bind_b = make_bind(Some(BindInputsDef::String("different".to_string())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -725,7 +727,7 @@ mod tests {
     let build = make_build("dep", None);
     let build_hash = build.compute_hash().unwrap();
 
-    let bind = make_bind(Some(BindInputs::Build(build_hash.clone())));
+    let bind = make_bind(Some(BindInputsDef::Build(build_hash.clone())));
     let bind_hash = bind.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -746,7 +748,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputsDef::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -794,7 +796,7 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputsDef::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -863,10 +865,10 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputsDef::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let bind_c = make_bind(Some(BindInputsDef::Bind(hash_b.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -902,17 +904,17 @@ mod tests {
     let bind_a = make_bind(None);
     let hash_a = bind_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputsDef::Bind(hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_a.clone())));
+    let bind_c = make_bind(Some(BindInputsDef::Bind(hash_a.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     // D depends on both B and C
     let mut d_inputs = BTreeMap::new();
-    d_inputs.insert("b".to_string(), BindInputs::Bind(hash_b.clone()));
-    d_inputs.insert("c".to_string(), BindInputs::Bind(hash_c.clone()));
-    let bind_d = make_bind(Some(BindInputs::Table(d_inputs)));
+    d_inputs.insert("b".to_string(), BindInputsDef::Bind(hash_b.clone()));
+    d_inputs.insert("c".to_string(), BindInputsDef::Bind(hash_c.clone()));
+    let bind_d = make_bind(Some(BindInputsDef::Table(d_inputs)));
     let hash_d = bind_d.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -967,10 +969,10 @@ mod tests {
     let build_a = make_build("a", None);
     let build_hash_a = build_a.compute_hash().unwrap();
 
-    let bind_b = make_bind(Some(BindInputs::Build(build_hash_a.clone())));
+    let bind_b = make_bind(Some(BindInputsDef::Build(build_hash_a.clone())));
     let hash_b = bind_b.compute_hash().unwrap();
 
-    let bind_c = make_bind(Some(BindInputs::Bind(hash_b.clone())));
+    let bind_c = make_bind(Some(BindInputsDef::Bind(hash_b.clone())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();
@@ -1026,11 +1028,11 @@ mod tests {
     let hash_a = bind_a.compute_hash().unwrap();
 
     // Make B different from A
-    let bind_b = make_bind(Some(BindInputs::String("different_b".to_string())));
+    let bind_b = make_bind(Some(BindInputsDef::String("different_b".to_string())));
     let hash_b = bind_b.compute_hash().unwrap();
 
     // Make C different from both
-    let bind_c = make_bind(Some(BindInputs::String("different_c".to_string())));
+    let bind_c = make_bind(Some(BindInputsDef::String("different_c".to_string())));
     let hash_c = bind_c.compute_hash().unwrap();
 
     let mut manifest = Manifest::default();

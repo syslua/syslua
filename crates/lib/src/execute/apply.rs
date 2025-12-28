@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
-use crate::bind::execute::{apply_bind, destroy_bind, update_bind};
+use crate::bind::execute::{apply_bind, check_bind, destroy_bind, update_bind};
 use crate::bind::state::{BindState, BindStateError, load_bind_state, remove_bind_state, save_bind_state};
 use crate::build::store::build_dir_path;
 use crate::eval::{EvalError, evaluate_config};
@@ -35,7 +35,7 @@ use crate::util::hash::ObjectHash;
 
 use super::dag::{DagNode, ExecutionDag};
 use super::resolver::ExecutionResolver;
-use super::types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError};
+use super::types::{BindResult, BuildResult, DagResult, DriftResult, ExecuteConfig, ExecuteError};
 
 /// Type alias for restore resolver data to reduce type complexity.
 type RestoreResolverData = (HashMap<ObjectHash, BuildResult>, HashMap<ObjectHash, BindResult>);
@@ -57,6 +57,9 @@ pub struct ApplyResult {
 
   /// Number of binds that were updated (same ID, different content).
   pub binds_updated: usize,
+
+  /// Results of drift checks on unchanged binds.
+  pub drift_results: Vec<super::types::DriftResult>,
 }
 
 /// Errors that can occur during apply.
@@ -133,6 +136,9 @@ pub struct ApplyOptions {
 
   /// Dry run mode - compute diff but don't apply.
   pub dry_run: bool,
+
+  /// Check unchanged binds for drift and repair if drifted.
+  pub repair: bool,
 }
 
 /// Options for the destroy operation.
@@ -229,6 +235,22 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   if diff.is_empty() {
     info!("no changes to apply");
 
+    // Check unchanged binds for drift even when no other changes
+    let drift_results = check_unchanged_binds(
+      &diff.binds_unchanged,
+      &desired_manifest,
+      &options.execute,
+      options.system,
+    )
+    .await?;
+
+    // Repair drifted binds if requested
+    let binds_repaired = if options.repair {
+      repair_drifted_binds(&drift_results, &desired_manifest, &options.execute, options.system).await?
+    } else {
+      0
+    };
+
     // Still create a snapshot to record the state
     let snapshot = Snapshot::new(
       generate_snapshot_id(),
@@ -239,12 +261,17 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     // Save snapshot and set as current
     snapshot_store.save_and_set_current(&snapshot)?;
 
+    if binds_repaired > 0 {
+      info!(binds_repaired = binds_repaired, "repaired drifted binds");
+    }
+
     return Ok(ApplyResult {
       snapshot,
       diff,
       execution: DagResult::default(),
       binds_destroyed: 0,
       binds_updated: 0,
+      drift_results,
     });
   }
 
@@ -257,6 +284,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
       execution: DagResult::default(),
       binds_destroyed: 0,
       binds_updated: 0,
+      drift_results: vec![],
     });
   }
 
@@ -363,7 +391,23 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   // Clean up state files for destroyed binds (only after full success)
   cleanup_destroyed_bind_states(&destroyed_hashes, options.system)?;
 
-  // 7. Create and save snapshot
+  // 7. Check unchanged binds for drift
+  let drift_results = check_unchanged_binds(
+    &diff.binds_unchanged,
+    &desired_manifest,
+    &options.execute,
+    options.system,
+  )
+  .await?;
+
+  // 8. Repair drifted binds if requested
+  let binds_repaired = if options.repair {
+    repair_drifted_binds(&drift_results, &desired_manifest, &options.execute, options.system).await?
+  } else {
+    0
+  };
+
+  // 9. Create and save snapshot
   let snapshot = Snapshot::new(
     generate_snapshot_id(),
     Some(config_path.to_path_buf()),
@@ -371,7 +415,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   );
 
   snapshot_store.save_and_set_current(&snapshot)?;
-  info!(snapshot_id = %snapshot.id, "snapshot saved");
+  info!(snapshot_id = %snapshot.id, binds_repaired = binds_repaired, "snapshot saved");
 
   Ok(ApplyResult {
     snapshot,
@@ -379,7 +423,160 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     execution: dag_result,
     binds_destroyed: destroyed_hashes.len(),
     binds_updated: updated_hashes.len(),
+    drift_results,
   })
+}
+
+/// Check unchanged binds for drift.
+///
+/// For each bind that has a `check` callback, executes the check actions
+/// and records the drift status. This allows detecting when system state
+/// has diverged from what the bind originally created.
+///
+/// # Arguments
+///
+/// * `hashes` - List of unchanged bind hashes to check
+/// * `manifest` - The manifest containing bind definitions
+/// * `config` - Execution configuration (currently unused but kept for consistency)
+/// * `system` - Whether to use system store paths
+///
+/// # Returns
+///
+/// A vector of `DriftResult` for each bind that has a check callback.
+pub async fn check_unchanged_binds(
+  hashes: &[ObjectHash],
+  manifest: &Manifest,
+  _config: &ExecuteConfig,
+  system: bool,
+) -> Result<Vec<DriftResult>, ApplyError> {
+  if hashes.is_empty() {
+    return Ok(vec![]);
+  }
+
+  info!(count = hashes.len(), "checking unchanged binds for drift");
+
+  let mut drift_results = Vec::new();
+  let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
+  let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
+
+  for hash in hashes {
+    let Some(bind_def) = manifest.bindings.get(hash) else {
+      warn!(hash = %hash.0, "bind definition not found in manifest");
+      continue;
+    };
+
+    if bind_def.check_actions.is_none() {
+      continue;
+    }
+
+    let Some(bind_state) = load_bind_state(hash, system)? else {
+      warn!(hash = %hash.0, "bind state not found for check");
+      continue;
+    };
+
+    let bind_result = BindResult {
+      outputs: bind_state.outputs.clone(),
+      action_results: vec![],
+    };
+
+    let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, String::new(), system);
+
+    match check_bind(hash, bind_def, &bind_result, &resolver).await {
+      Ok(Some(result)) => {
+        debug!(hash = %hash.0, drifted = result.drifted, "drift check complete");
+        drift_results.push(DriftResult {
+          hash: hash.clone(),
+          id: bind_def.id.clone(),
+          result,
+        });
+      }
+      Ok(None) => {}
+      Err(e) => {
+        warn!(hash = %hash.0, error = %e, "drift check failed");
+      }
+    }
+  }
+
+  info!(
+    drifted = drift_results.iter().filter(|r| r.result.drifted).count(),
+    "drift check complete"
+  );
+  Ok(drift_results)
+}
+
+async fn repair_drifted_binds(
+  drift_results: &[DriftResult],
+  manifest: &Manifest,
+  config: &ExecuteConfig,
+  system: bool,
+) -> Result<usize, ApplyError> {
+  let drifted: Vec<_> = drift_results
+    .iter()
+    .filter(|r| r.result.drifted)
+    .map(|r| r.hash.clone())
+    .collect();
+
+  if drifted.is_empty() {
+    return Ok(0);
+  }
+
+  info!(count = drifted.len(), "repairing drifted binds");
+
+  let semaphore = Arc::new(Semaphore::new(config.parallelism));
+  let mut join_set: JoinSet<Result<(ObjectHash, BindResult), ApplyError>> = JoinSet::new();
+
+  for hash in drifted {
+    let Some(bind_def) = manifest.bindings.get(&hash).cloned() else {
+      warn!(hash = %hash.0, "bind definition not found for repair");
+      continue;
+    };
+
+    let semaphore = semaphore.clone();
+    let manifest = manifest.clone();
+    let hash = hash.clone();
+
+    join_set.spawn(async move {
+      let _permit = semaphore.acquire().await.unwrap();
+
+      let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
+      let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
+
+      let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &manifest, String::new(), system);
+
+      let result = apply_bind(&hash, &bind_def, &resolver)
+        .await
+        .map_err(ApplyError::Execute)?;
+
+      let bind_state = BindState::new(result.outputs.clone());
+      save_bind_state(&hash, &bind_state, system).map_err(ApplyError::BindState)?;
+
+      info!(hash = %hash.0, "bind repaired");
+      Ok((hash, result))
+    });
+  }
+
+  let mut repaired = 0;
+  while let Some(join_result) = join_set.join_next().await {
+    match join_result {
+      Ok(Ok(_)) => {
+        repaired += 1;
+      }
+      Ok(Err(e)) => {
+        error!(error = %e, "failed to repair bind");
+        return Err(e);
+      }
+      Err(e) => {
+        error!(error = %e, "repair task panicked");
+        return Err(ApplyError::Execute(ExecuteError::CmdFailed {
+          cmd: "repair".to_string(),
+          code: None,
+        }));
+      }
+    }
+  }
+
+  info!(repaired = repaired, "repair complete");
+  Ok(repaired)
 }
 
 /// Destroy all binds from the current snapshot.
@@ -963,6 +1160,7 @@ mod tests {
       },
       system: false,
       dry_run: false,
+      repair: false,
     }
   }
 
@@ -1021,6 +1219,8 @@ mod tests {
         create_actions: vec![],
         update_actions: None,
         destroy_actions: vec![],
+        check_actions: None,
+        check_outputs: None,
       },
     );
     desired.bindings.insert(
@@ -1032,6 +1232,8 @@ mod tests {
         create_actions: vec![],
         update_actions: None,
         destroy_actions: vec![],
+        check_actions: None,
+        check_outputs: None,
       },
     );
 
@@ -1206,6 +1408,8 @@ mod tests {
           create_actions: vec![],
           update_actions: None,
           destroy_actions: vec![],
+          check_actions: None,
+          check_outputs: None,
         },
       );
 
@@ -1240,6 +1444,8 @@ mod tests {
           create_actions: vec![],
           update_actions: None,
           destroy_actions: vec![],
+          check_actions: None,
+          check_outputs: None,
         },
       );
 
@@ -1283,6 +1489,8 @@ mod tests {
           create_actions: vec![],
           update_actions: None,
           destroy_actions: vec![],
+          check_actions: None,
+          check_outputs: None,
         },
       );
 
@@ -1376,6 +1584,8 @@ mod tests {
           create_actions: vec![],
           update_actions: Some(vec![]),
           destroy_actions: vec![],
+          check_actions: None,
+          check_outputs: None,
         },
       );
 
@@ -1429,6 +1639,7 @@ mod tests {
       execution: DagResult::default(),
       binds_destroyed: 3,
       binds_updated: 5,
+      drift_results: vec![],
     };
 
     assert_eq!(result.binds_destroyed, 3);

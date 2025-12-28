@@ -321,6 +321,30 @@ mod tests {
 
       Ok(())
     }
+
+    #[test]
+    fn canonicalize_resolves_existing_path() -> LuaResult<()> {
+      let lua = create_test_lua()?;
+      let temp_dir = std::env::temp_dir();
+      let temp_path = temp_dir.to_string_lossy();
+      let code = format!(r#"return sys.path.canonicalize("{}")"#, temp_path.replace('\\', "\\\\"));
+      let result: String = lua.load(&code).eval()?;
+      let expected = dunce::canonicalize(&temp_dir).unwrap();
+      assert_eq!(result, expected.to_string_lossy());
+      Ok(())
+    }
+
+    #[test]
+    fn canonicalize_throws_on_nonexistent_path() -> LuaResult<()> {
+      let lua = create_test_lua()?;
+      let result: Result<String, _> = lua
+        .load(r#"return sys.path.canonicalize("/this/path/definitely/does/not/exist/12345")"#)
+        .eval();
+      assert!(result.is_err());
+      let err = result.unwrap_err().to_string();
+      assert!(err.contains("failed to canonicalize path"));
+      Ok(())
+    }
   }
 
   mod ctx_method_registration {

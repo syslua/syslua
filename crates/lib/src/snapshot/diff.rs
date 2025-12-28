@@ -210,6 +210,8 @@ mod tests {
       create_actions: vec![],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 
@@ -229,6 +231,8 @@ mod tests {
         cwd: None,
       })]),
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 
@@ -240,6 +244,8 @@ mod tests {
       create_actions: vec![],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 

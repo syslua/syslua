@@ -13,13 +13,11 @@ use mlua::prelude::*;
 
 use crate::action::BUILD_CTX_METHODS_REGISTRY_KEY;
 use crate::action::actions::exec::parse_exec_opts;
-use crate::build::BuildInputs;
 use crate::manifest::Manifest;
 use crate::outputs::lua::parse_outputs;
-use crate::util::hash::Hashable;
 use crate::{bind::BIND_REF_TYPE, util::hash::ObjectHash};
 
-use super::{BUILD_REF_TYPE, BuildCtx, BuildDef};
+use super::{BUILD_REF_TYPE, BuildCtx, BuildDef, BuildInputs, BuildRef, BuildSpec};
 
 impl LuaUserData for BuildCtx {
   fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
@@ -135,7 +133,7 @@ pub fn parse_build_ref_table(t: &LuaTable, manifest: &Manifest) -> LuaResult<Bui
 ///
 /// For Build/Bind references, looks up the definition in the manifest to
 /// reconstruct the Lua table with placeholder outputs.
-pub fn build_inputs_ref_to_lua(lua: &Lua, inputs: &BuildInputs, manifest: &Manifest) -> LuaResult<LuaValue> {
+pub fn build_inputs_def_to_lua(lua: &Lua, inputs: &BuildInputs, manifest: &Manifest) -> LuaResult<LuaValue> {
   match inputs {
     BuildInputs::String(s) => Ok(LuaValue::String(lua.create_string(s)?)),
     BuildInputs::Number(n) => Ok(LuaValue::Number(*n)),
@@ -143,14 +141,14 @@ pub fn build_inputs_ref_to_lua(lua: &Lua, inputs: &BuildInputs, manifest: &Manif
     BuildInputs::Array(arr) => {
       let table = lua.create_table()?;
       for (i, val) in arr.iter().enumerate() {
-        table.set(i + 1, build_inputs_ref_to_lua(lua, val, manifest)?)?;
+        table.set(i + 1, build_inputs_def_to_lua(lua, val, manifest)?)?;
       }
       Ok(LuaValue::Table(table))
     }
     BuildInputs::Table(map) => {
       let table = lua.create_table()?;
       for (k, v) in map {
-        table.set(k.as_str(), build_inputs_ref_to_lua(lua, v, manifest)?)?;
+        table.set(k.as_str(), build_inputs_def_to_lua(lua, v, manifest)?)?;
       }
       Ok(LuaValue::Table(table))
     }
@@ -201,117 +199,34 @@ pub fn build_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> L
 /// 6. Returns a BuildRef as a Lua table with metatable marker
 pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<Manifest>>) -> LuaResult<()> {
   let build_fn = lua.create_function(move |lua, spec_table: LuaTable| {
-    // 1. Parse the BuildSpec from the Lua table
-    let id: Option<String> = spec_table.get("id")?;
+    let build_spec: BuildSpec = lua.unpack(LuaValue::Table(spec_table))?;
+    let id = build_spec.id.clone();
 
-    let create_fn: LuaFunction = spec_table
-      .get("create")
-      .map_err(|_| LuaError::external("build spec requires 'create' function"))?;
+    let build_def = BuildDef::from_spec(
+      lua,
+      &manifest,
+      build_spec,
+      lua_value_to_build_inputs_ref,
+      build_inputs_def_to_lua,
+      parse_outputs,
+    )?;
 
-    // 2. Resolve inputs (if provided)
-    let inputs_value: Option<LuaValue> = spec_table.get("inputs")?;
-    let resolved_inputs: Option<BuildInputs> = match inputs_value {
-      Some(LuaValue::Function(f)) => {
-        // Dynamic inputs - call the function to get resolved value
-        let result: LuaValue = f.call(())?;
-        if result == LuaValue::Nil {
-          None
-        } else {
-          Some(lua_value_to_build_inputs_ref(result, &manifest.borrow())?)
-        }
-      }
-      Some(LuaValue::Nil) => None,
-      Some(v) => Some(lua_value_to_build_inputs_ref(v, &manifest.borrow())?),
-      None => None,
-    };
+    let build_ref = BuildRef::from_def(&build_def)?;
 
-    // 3. Create BuildCtx and call the create function
-    let ctx = BuildCtx::new();
-    let ctx_userdata = lua.create_userdata(ctx)?;
-
-    // Prepare inputs argument for create function
-    let inputs_arg: LuaValue = match &resolved_inputs {
-      Some(inputs) => build_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?,
-      None => LuaValue::Table(lua.create_table()?), // Empty table if no inputs
-    };
-
-    // Call: create(inputs, ctx) -> outputs
-    let result: LuaValue = create_fn.call((inputs_arg, &ctx_userdata))?;
-
-    // 4. Extract outputs from return value (must be non-empty table)
-    let outputs: BTreeMap<String, String> = match result {
-      LuaValue::Table(t) => {
-        let parsed = parse_outputs(t)?;
-        if parsed.is_empty() {
-          return Err(LuaError::external("build create must return a non-empty outputs table"));
-        }
-        parsed
-      }
-      LuaValue::Nil => {
-        return Err(LuaError::external(
-          "build create must return a non-empty outputs table, got nil",
-        ));
-      }
-      _ => {
-        return Err(LuaError::external("build create must return a table of outputs"));
-      }
-    };
-
-    // 5. Extract actions from BuildCtx
-    let ctx: BuildCtx = ctx_userdata.take()?;
-
-    // 6. Create BuildDef
-    let build_def = BuildDef {
-      id: id.clone(),
-      inputs: resolved_inputs.clone(),
-      create_actions: ctx.into_actions(),
-      outputs: Some(outputs.clone()),
-    };
-
-    // 7. Compute hash
-    let hash = build_def
-      .compute_hash()
-      .map_err(|e| LuaError::external(format!("failed to compute build hash: {}", e)))?;
-
-    // 8. Add to manifest (deduplicate by hash)
     {
       let mut manifest = manifest.borrow_mut();
-      if manifest.builds.contains_key(&hash) {
+      if manifest.builds.contains_key(&build_ref.hash) {
         tracing::warn!(
-          hash = %hash.0,
+          hash = %build_ref.hash.0,
           id = ?id,
           "duplicate build detected, skipping insertion"
         );
       } else {
-        manifest.builds.insert(hash.clone(), build_def);
+        manifest.builds.insert(build_ref.hash.clone(), build_def);
       }
     }
 
-    // 9. Create and return BuildRef as Lua table
-    let ref_table = lua.create_table()?;
-    ref_table.set("id", id.as_deref())?;
-    ref_table.set("hash", hash.0.as_str())?;
-
-    // Add inputs to ref (nil if not specified)
-    if let Some(inputs) = &resolved_inputs {
-      ref_table.set("inputs", build_inputs_ref_to_lua(lua, inputs, &manifest.borrow())?)?;
-    }
-
-    // Convert outputs to Lua table with placeholders for runtime resolution
-    let outputs_table = lua.create_table()?;
-    let short_hash = &hash.0;
-    for k in outputs.keys() {
-      let placeholder = format!("$${{build:{}:{}}}", short_hash, k);
-      outputs_table.set(k.as_str(), placeholder.as_str())?;
-    }
-    ref_table.set("outputs", outputs_table)?;
-
-    // Set metatable with __type marker
-    let mt = lua.create_table()?;
-    mt.set("__type", BUILD_REF_TYPE)?;
-    ref_table.set_metatable(Some(mt))?;
-
-    Ok(ref_table)
+    lua.pack(build_ref)
   })?;
 
   sys_table.set("build", build_fn)?;
@@ -670,61 +585,6 @@ mod tests {
       let manifest = manifest.borrow();
       // Should only have 1 build, not 2
       assert_eq!(manifest.builds.len(), 1);
-
-      Ok(())
-    }
-
-    #[test]
-    fn build_ref_includes_inputs() -> LuaResult<()> {
-      let (lua, _) = create_test_lua_with_manifest()?;
-
-      let result: LuaTable = lua
-        .load(
-          r#"
-                return sys.build({
-                    id = "with-inputs",
-                    inputs = { url = "https://example.com/src.tar.gz", sha256 = "abc123" },
-                    create = function(inputs, ctx)
-                        ctx:fetch_url(inputs.url, inputs.sha256)
-                        return { out = "/output" }
-                    end,
-                })
-            "#,
-        )
-        .eval()?;
-
-      // Check that inputs are available on the BuildRef
-      let inputs: LuaTable = result.get("inputs")?;
-      let url: String = inputs.get("url")?;
-      let sha256: String = inputs.get("sha256")?;
-
-      assert_eq!(url, "https://example.com/src.tar.gz");
-      assert_eq!(sha256, "abc123");
-
-      Ok(())
-    }
-
-    #[test]
-    fn build_ref_inputs_is_nil_when_not_specified() -> LuaResult<()> {
-      let (lua, _) = create_test_lua_with_manifest()?;
-
-      let result: LuaTable = lua
-        .load(
-          r#"
-                return sys.build({
-                    id = "no-inputs",
-                    create = function(inputs, ctx)
-                        ctx:exec("make")
-                        return { out = "/output" }
-                    end,
-                })
-            "#,
-        )
-        .eval()?;
-
-      // inputs should be nil, not an empty table
-      let inputs: LuaValue = result.get("inputs")?;
-      assert_eq!(inputs, LuaValue::Nil);
 
       Ok(())
     }

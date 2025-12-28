@@ -25,7 +25,12 @@ enum Commands {
     path: String,
   },
   /// Evaluate a config and apply changes to the system
-  Apply { file: String },
+  Apply {
+    file: String,
+    /// Check unchanged binds for drift and repair if needed
+    #[arg(long)]
+    repair: bool,
+  },
   /// Evaluate a config and create a plan without applying
   Plan { file: String },
   /// Remove all binds from the current snapshot
@@ -65,7 +70,7 @@ fn main() -> ExitCode {
 
   let result = match cli.command {
     Commands::Init { path } => cmd_init(&path),
-    Commands::Apply { file } => cmd_apply(&file),
+    Commands::Apply { file, repair } => cmd_apply(&file, repair),
     Commands::Plan { file } => cmd_plan(&file),
     Commands::Destroy { dry_run } => cmd_destroy(dry_run),
     Commands::Update {

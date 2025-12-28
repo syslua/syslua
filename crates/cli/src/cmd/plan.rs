@@ -9,47 +9,76 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use syslua_lib::eval::evaluate_config;
+use syslua_lib::execute::{ExecuteConfig, check_unchanged_binds};
 use syslua_lib::platform::{self, paths};
+use syslua_lib::snapshot::{SnapshotStore, compute_diff};
+use syslua_lib::store::paths::StorePaths;
 use syslua_lib::util::hash::Hashable;
 
-/// Execute the plan command.
-///
-/// Evaluates the given Lua configuration file and writes the manifest to:
-/// - `/syslua/plans/<hash>/manifest.json` if running as root/admin
-/// - `~/.local/share/syslua/plans/<hash>/manifest.json` otherwise
-///
-/// Prints a summary including the plan hash, build/bind counts, and output path.
 pub fn cmd_plan(file: &str) -> Result<()> {
   let path = Path::new(file);
+  let system = platform::is_elevated();
 
-  // Evaluate the Lua config
   let manifest = evaluate_config(path).with_context(|| format!("Failed to evaluate config: {}", file))?;
 
-  // Compute manifest hash (truncated)
   let hash = manifest.compute_hash().context("Failed to compute manifest hash")?;
 
-  // Determine base directory based on privileges
-  let base_dir = if platform::is_elevated() {
-    paths::root_dir()
-  } else {
-    paths::data_dir()
-  };
+  let base_dir = if system { paths::root_dir() } else { paths::data_dir() };
 
-  // Create plan directory
   let plan_dir = base_dir.join("plans").join(&hash.0);
   fs::create_dir_all(&plan_dir).with_context(|| format!("Failed to create plan directory: {}", plan_dir.display()))?;
 
-  // Write manifest as pretty-printed JSON
   let manifest_path = plan_dir.join("manifest.json");
   let manifest_json = serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
   fs::write(&manifest_path, &manifest_json)
     .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
 
-  // Print summary
+  let snapshot_store = SnapshotStore::default_store(&system);
+  let current_snapshot = snapshot_store
+    .load_current()
+    .context("Failed to load current snapshot")?;
+  let current_manifest = current_snapshot.as_ref().map(|s| &s.manifest);
+
+  let store_path = if system {
+    StorePaths::system_store_path()
+  } else {
+    StorePaths::user_store_path()
+  };
+  let diff = compute_diff(&manifest, current_manifest, &store_path);
+
   println!("Plan: {}", &hash);
   println!("Builds: {}", manifest.builds.len());
+  println!("  To realize: {}", diff.builds_to_realize.len());
+  println!("  Cached: {}", diff.builds_cached.len());
   println!("Binds: {}", manifest.bindings.len());
+  println!("  To apply: {}", diff.binds_to_apply.len());
+  println!("  To update: {}", diff.binds_to_update.len());
+  println!("  To destroy: {}", diff.binds_to_destroy.len());
+  println!("  Unchanged: {}", diff.binds_unchanged.len());
   println!("Path: {}", manifest_path.display());
+
+  if !diff.binds_unchanged.is_empty() {
+    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    let config = ExecuteConfig { parallelism: 4, system };
+
+    let drift_results = rt
+      .block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config, system))
+      .context("Failed to check for drift")?;
+
+    let drifted_count = drift_results.iter().filter(|r| r.result.drifted).count();
+    if drifted_count > 0 {
+      println!();
+      println!("Drift detected: {} bind(s)", drifted_count);
+      for drift in drift_results.iter().filter(|r| r.result.drifted) {
+        let id = drift.id.as_deref().unwrap_or(&drift.hash.0);
+        if let Some(ref msg) = drift.result.message {
+          println!("  - {}: {}", id, msg);
+        } else {
+          println!("  - {}", id);
+        }
+      }
+    }
+  }
 
   Ok(())
 }

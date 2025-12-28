@@ -26,7 +26,9 @@ use crate::{
 use dag::DagNode;
 use resolver::ExecutionResolver;
 
-pub use apply::{ApplyError, ApplyOptions, ApplyResult, DestroyOptions, DestroyResult, apply, destroy};
+pub use apply::{
+  ApplyError, ApplyOptions, ApplyResult, DestroyOptions, DestroyResult, apply, check_unchanged_binds, destroy,
+};
 pub use dag::ExecutionDag;
 pub use types::{BindResult, BuildResult, DagResult, ExecuteConfig, ExecuteError, FailedDependency};
 
@@ -594,7 +596,7 @@ mod tests {
   use super::*;
   use crate::{
     action::{Action, actions::exec::ExecOpts},
-    bind::BindInputs,
+    bind::BindInputsDef,
     build::{BuildDef, BuildInputs},
     util::{
       hash::Hashable,
@@ -885,7 +887,7 @@ mod tests {
 
   use crate::bind::BindDef;
 
-  fn make_bind(id: &str, script: &str, inputs: Option<BindInputs>) -> BindDef {
+  fn make_bind(id: &str, script: &str, inputs: Option<BindInputsDef>) -> BindDef {
     let (cmd, args) = shell_cmd(script);
     BindDef {
       id: Some(id.to_string()),
@@ -899,6 +901,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 
@@ -909,7 +913,7 @@ mod tests {
       let build = make_build("app", None);
       let build_hash = build.compute_hash().unwrap();
 
-      let bind = make_bind("bind1", "echo linking", Some(BindInputs::Build(build_hash.clone())));
+      let bind = make_bind("bind1", "echo linking", Some(BindInputsDef::Build(build_hash.clone())));
       let bind_hash = bind.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -934,10 +938,10 @@ mod tests {
       let bind_a = make_bind("bind1", "echo step_a", None);
       let hash_a = bind_a.compute_hash().unwrap();
 
-      let bind_b = make_bind("bind2", "echo step_b", Some(BindInputs::Bind(hash_a.clone())));
+      let bind_b = make_bind("bind2", "echo step_b", Some(BindInputsDef::Bind(hash_a.clone())));
       let hash_b = bind_b.compute_hash().unwrap();
 
-      let bind_c = make_bind("bind3", "echo step_c", Some(BindInputs::Bind(hash_b.clone())));
+      let bind_c = make_bind("bind3", "echo step_c", Some(BindInputsDef::Bind(hash_b.clone())));
       let hash_c = bind_c.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();
@@ -980,7 +984,7 @@ mod tests {
       let (bind_cmd, bind_args) = shell_cmd(&format!("echo using $$${{build:{}:bin}}", build_hash.0));
       let bind = BindDef {
         id: None,
-        inputs: Some(BindInputs::Build(build_hash.clone())),
+        inputs: Some(BindInputsDef::Build(build_hash.clone())),
         outputs: None,
         create_actions: vec![Action::Exec(ExecOpts {
           bin: bind_cmd.to_string(),
@@ -990,6 +994,8 @@ mod tests {
         })],
         update_actions: None,
         destroy_actions: vec![],
+        check_actions: None,
+        check_outputs: None,
       };
       let bind_hash = bind.compute_hash().unwrap();
 
@@ -1049,6 +1055,8 @@ mod tests {
           env: None,
           cwd: None,
         })],
+        check_actions: None,
+        check_outputs: None,
       };
       let hash_a = bind_a.compute_hash().unwrap();
 
@@ -1056,7 +1064,7 @@ mod tests {
       let (exit_cmd, exit_args) = shell_cmd("exit 1");
       let bind_b = BindDef {
         id: None,
-        inputs: Some(BindInputs::Bind(hash_a.clone())),
+        inputs: Some(BindInputsDef::Bind(hash_a.clone())),
         outputs: None,
         create_actions: vec![Action::Exec(ExecOpts {
           bin: exit_cmd.to_string(),
@@ -1066,6 +1074,8 @@ mod tests {
         })],
         update_actions: None,
         destroy_actions: vec![],
+        check_actions: None,
+        check_outputs: None,
       };
       let hash_b = bind_b.compute_hash().unwrap();
 
@@ -1127,7 +1137,7 @@ mod tests {
       let bind = make_bind(
         "bind",
         "echo should-not-run",
-        Some(BindInputs::Build(build_hash.clone())),
+        Some(BindInputsDef::Build(build_hash.clone())),
       );
       let bind_hash = bind.compute_hash().unwrap();
 
@@ -1163,7 +1173,7 @@ mod tests {
       let bind_x = make_bind("bind-x", "echo x", None);
       let hash_x = bind_x.compute_hash().unwrap();
 
-      let bind_y = make_bind("bind-y", "echo y", Some(BindInputs::Bind(hash_x.clone())));
+      let bind_y = make_bind("bind-y", "echo y", Some(BindInputsDef::Bind(hash_x.clone())));
       let hash_y = bind_y.compute_hash().unwrap();
 
       let mut manifest = Manifest::default();

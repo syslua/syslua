@@ -22,7 +22,7 @@ use syslua_lib::platform::{self, paths};
 /// - Saves new snapshot
 ///
 /// Prints a summary including counts of builds realized, binds applied/destroyed, and the snapshot ID.
-pub fn cmd_apply(file: &str) -> Result<()> {
+pub fn cmd_apply(file: &str, repair: bool) -> Result<()> {
   let path = Path::new(file);
 
   // Determine if running as elevated
@@ -32,6 +32,7 @@ pub fn cmd_apply(file: &str) -> Result<()> {
     execute: ExecuteConfig { parallelism: 4, system },
     system,
     dry_run: false,
+    repair,
   };
 
   // Run async apply
@@ -48,6 +49,25 @@ pub fn cmd_apply(file: &str) -> Result<()> {
   println!("  Binds updated: {}", result.binds_updated);
   println!("  Binds destroyed: {}", result.binds_destroyed);
   println!("  Binds unchanged: {}", result.diff.binds_unchanged.len());
+
+  let drifted_count = result.drift_results.iter().filter(|r| r.result.drifted).count();
+  if drifted_count > 0 {
+    println!();
+    println!("  Drift detected: {} bind(s)", drifted_count);
+    for drift in result.drift_results.iter().filter(|r| r.result.drifted) {
+      let id = drift.id.as_deref().unwrap_or(&drift.hash.0);
+      if let Some(ref msg) = drift.result.message {
+        println!("    - {}: {}", id, msg);
+      } else {
+        println!("    - {}", id);
+      }
+    }
+    if repair {
+      println!("  Binds repaired: {}", drifted_count);
+    } else {
+      println!("  Run with --repair to fix drifted binds");
+    }
+  }
 
   if !result.execution.is_success() {
     if let Some((hash, ref err)) = result.execution.build_failed {

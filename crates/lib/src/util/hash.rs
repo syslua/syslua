@@ -17,6 +17,8 @@ use walkdir::WalkDir;
 
 use crate::consts::OBJ_HASH_PREFIX_LEN;
 
+pub type HashError = serde_json::Error;
+
 /// A content-addressed hash identifying a unique object.
 ///
 /// The hash is a 20-character truncated SHA-256 of the JSON-serialized struct.
@@ -35,7 +37,7 @@ impl std::fmt::Display for ObjectHash {
 }
 
 pub trait Hashable: Serialize {
-  fn compute_hash(&self) -> Result<ObjectHash, serde_json::Error> {
+  fn compute_hash(&self) -> Result<ObjectHash, HashError> {
     let serialized = serde_json::to_string(self)?;
     let mut hasher = Sha256::new();
     hasher.update(serialized.as_bytes());

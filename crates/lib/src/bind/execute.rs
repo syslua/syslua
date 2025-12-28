@@ -171,6 +171,76 @@ pub async fn update_bind<R: Resolver>(
   })
 }
 
+/// Check if a bind has drifted from its expected state.
+///
+/// Executes the bind's check_actions and interprets the result.
+/// Returns `None` if the bind has no check callback defined.
+pub async fn check_bind<R: Resolver>(
+  hash: &ObjectHash,
+  bind_def: &BindDef,
+  bind_result: &BindResult,
+  resolver: &R,
+) -> Result<Option<crate::bind::BindCheckResult>, ExecuteError> {
+  let Some(ref check_actions) = bind_def.check_actions else {
+    return Ok(None);
+  };
+  let Some(ref check_outputs) = bind_def.check_outputs else {
+    return Ok(None);
+  };
+
+  debug!(hash = %hash.0, "checking bind for drift");
+
+  let temp_dir = TempDir::new()?;
+  let out_dir = temp_dir.path();
+
+  let check_resolver = BindCheckResolver {
+    inner: resolver,
+    out_dir: out_dir.to_string_lossy().to_string(),
+    applied_outputs: &bind_result.outputs,
+    action_results: Vec::new(),
+  };
+
+  let action_results = execute_bind_check_actions(check_actions, check_resolver, out_dir).await?;
+
+  let final_resolver = BindCheckResolver {
+    inner: resolver,
+    out_dir: out_dir.to_string_lossy().to_string(),
+    applied_outputs: &bind_result.outputs,
+    action_results: action_results.iter().map(|r| r.output.clone()).collect(),
+  };
+
+  let drifted_str = placeholder::substitute(&check_outputs.drifted, &final_resolver)?;
+  let drifted = drifted_str == "true";
+
+  let message = match &check_outputs.message {
+    Some(msg_pattern) => Some(placeholder::substitute(msg_pattern, &final_resolver)?),
+    None => None,
+  };
+
+  debug!(hash = %hash.0, drifted = drifted, "check complete");
+
+  Ok(Some(crate::bind::BindCheckResult { drifted, message }))
+}
+
+async fn execute_bind_check_actions<R: Resolver>(
+  actions: &[Action],
+  mut resolver: BindCheckResolver<'_, R>,
+  out_dir: &Path,
+) -> Result<Vec<ActionResult>, ExecuteError> {
+  let mut action_results = Vec::new();
+
+  for (idx, action) in actions.iter().enumerate() {
+    debug!(action_idx = idx, "executing check action");
+
+    let result = execute_action(action, &resolver, out_dir).await?;
+
+    resolver.action_results.push(result.output.clone());
+    action_results.push(result);
+  }
+
+  Ok(action_results)
+}
+
 /// Execute bind actions and resolve outputs.
 async fn execute_bind_actions<R: Resolver>(
   actions: &[Action],
@@ -377,6 +447,36 @@ impl<R: Resolver> Resolver for BindUpdateResolver<'_, R> {
   }
 }
 
+struct BindCheckResolver<'a, R: Resolver> {
+  inner: &'a R,
+  out_dir: String,
+  #[allow(dead_code)]
+  applied_outputs: &'a HashMap<String, String>,
+  action_results: Vec<String>,
+}
+
+impl<R: Resolver> Resolver for BindCheckResolver<'_, R> {
+  fn resolve_action(&self, index: usize) -> Result<&str, crate::placeholder::PlaceholderError> {
+    self
+      .action_results
+      .get(index)
+      .map(|s| s.as_str())
+      .ok_or(crate::placeholder::PlaceholderError::UnresolvedAction(index))
+  }
+
+  fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
+    self.inner.resolve_build(hash, output)
+  }
+
+  fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
+    self.inner.resolve_bind(hash, output)
+  }
+
+  fn resolve_out(&self) -> Result<&str, crate::placeholder::PlaceholderError> {
+    Ok(&self.out_dir)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use std::vec;
@@ -462,6 +562,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     }
   }
 
@@ -492,6 +594,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -516,6 +620,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -548,6 +654,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
 
@@ -585,6 +693,8 @@ mod tests {
         env: None,
         cwd: None,
       })],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -629,6 +739,8 @@ mod tests {
       })],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -673,6 +785,8 @@ mod tests {
       ],
       update_actions: None,
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
     let resolver = TestResolver::new();
@@ -711,6 +825,8 @@ mod tests {
         cwd: None,
       })]),
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let old_hash = ObjectHash("old_hash".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
@@ -753,6 +869,8 @@ mod tests {
         cwd: None,
       })]),
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
@@ -786,6 +904,8 @@ mod tests {
       })],
       update_actions: None, // No update actions!
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
@@ -841,6 +961,8 @@ mod tests {
         }),
       ]),
       destroy_actions: vec![],
+      check_actions: None,
+      check_outputs: None,
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
@@ -857,5 +979,150 @@ mod tests {
 
     assert_eq!(result.action_results.len(), 3);
     assert_eq!(result.outputs["result"], "step1-step2");
+  }
+
+  // ============ check_bind tests ============
+
+  #[tokio::test]
+  async fn check_bind_returns_none_without_check_actions() {
+    // A bind with no check_actions should return None
+    let bind_def = make_simple_bind();
+    let hash = bind_def.compute_hash().unwrap();
+    let resolver = TestResolver::new();
+    let bind_result = BindResult {
+      outputs: HashMap::new(),
+      action_results: vec![],
+    };
+
+    let result = check_bind(&hash, &bind_def, &bind_result, &resolver).await.unwrap();
+
+    assert!(result.is_none());
+  }
+
+  #[tokio::test]
+  async fn check_bind_parses_drifted_true() {
+    use crate::bind::BindCheckOutputs;
+
+    // Create a bind with check that returns drifted=true
+    let (cmd, args) = echo_msg("true");
+    let bind_def = BindDef {
+      id: Some("check-test".to_string()),
+      inputs: None,
+      outputs: None,
+      create_actions: vec![],
+      update_actions: None,
+      destroy_actions: vec![],
+      check_actions: Some(vec![Action::Exec(ExecOpts {
+        bin: cmd.to_string(),
+        args: Some(args),
+        env: None,
+        cwd: None,
+      })]),
+      check_outputs: Some(BindCheckOutputs {
+        drifted: "$${action:0}".to_string(),
+        message: Some("file missing".to_string()),
+      }),
+    };
+    let hash = bind_def.compute_hash().unwrap();
+    let resolver = TestResolver::new();
+    let bind_result = BindResult {
+      outputs: HashMap::new(),
+      action_results: vec![],
+    };
+
+    let result = check_bind(&hash, &bind_def, &bind_result, &resolver).await.unwrap();
+
+    assert!(result.is_some());
+    let check_result = result.unwrap();
+    assert!(check_result.drifted);
+    assert_eq!(check_result.message, Some("file missing".to_string()));
+  }
+
+  #[tokio::test]
+  async fn check_bind_parses_drifted_false() {
+    use crate::bind::BindCheckOutputs;
+
+    // Create a bind with check that returns drifted=false
+    let (cmd, args) = echo_msg("false");
+    let bind_def = BindDef {
+      id: Some("check-test".to_string()),
+      inputs: None,
+      outputs: None,
+      create_actions: vec![],
+      update_actions: None,
+      destroy_actions: vec![],
+      check_actions: Some(vec![Action::Exec(ExecOpts {
+        bin: cmd.to_string(),
+        args: Some(args),
+        env: None,
+        cwd: None,
+      })]),
+      check_outputs: Some(BindCheckOutputs {
+        drifted: "$${action:0}".to_string(),
+        message: None,
+      }),
+    };
+    let hash = bind_def.compute_hash().unwrap();
+    let resolver = TestResolver::new();
+    let bind_result = BindResult {
+      outputs: HashMap::new(),
+      action_results: vec![],
+    };
+
+    let result = check_bind(&hash, &bind_def, &bind_result, &resolver).await.unwrap();
+
+    assert!(result.is_some());
+    let check_result = result.unwrap();
+    assert!(!check_result.drifted);
+    assert!(check_result.message.is_none());
+  }
+
+  #[tokio::test]
+  async fn check_bind_executes_actions_and_resolves_placeholders() {
+    use crate::bind::BindCheckOutputs;
+
+    // Create a bind that executes multiple check actions and uses placeholders
+    let (cmd1, args1) = echo_msg("check1");
+    let (cmd2, args2) = echo_msg("$${action:0}-check2");
+    let bind_def = BindDef {
+      id: Some("multi-check".to_string()),
+      inputs: None,
+      outputs: None,
+      create_actions: vec![],
+      update_actions: None,
+      destroy_actions: vec![],
+      check_actions: Some(vec![
+        Action::Exec(ExecOpts {
+          bin: cmd1.to_string(),
+          args: Some(args1),
+          env: None,
+          cwd: None,
+        }),
+        Action::Exec(ExecOpts {
+          bin: cmd2.to_string(),
+          args: Some(args2),
+          env: None,
+          cwd: None,
+        }),
+      ]),
+      check_outputs: Some(BindCheckOutputs {
+        drifted: "true".to_string(),
+        message: Some("$${action:1}".to_string()),
+      }),
+    };
+    let hash = bind_def.compute_hash().unwrap();
+    let resolver = TestResolver::new();
+    let bind_result = BindResult {
+      outputs: HashMap::new(),
+      action_results: vec![],
+    };
+
+    let result = check_bind(&hash, &bind_def, &bind_result, &resolver).await.unwrap();
+
+    assert!(result.is_some());
+    let check_result = result.unwrap();
+    assert!(check_result.drifted);
+    // The second action should have received the resolved first action output
+    assert_eq!(check_result.message, Some("check1-check2".to_string()));
   }
 }

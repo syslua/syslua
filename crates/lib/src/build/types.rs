@@ -9,21 +9,80 @@
 //! Builds are identified by content-addressed hashes ([`BuildHash`]) computed from
 //! their [`BuildDef`]. This enables deduplication and caching.
 
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+use mlua::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
   action::{Action, ActionCtx, actions::exec::ExecOpts},
+  manifest::Manifest,
   util::hash::{Hashable, ObjectHash},
 };
 
-/// Marker type name for BuildRef metatables in Lua.
+/// Lua-side specification for build inputs.
 ///
-/// This constant is used to identify Lua userdata that represents a reference
-/// to a build. BuildRefs are Lua tables with metatables that allow accessing
-/// build outputs (e.g., `build.out` or `build.bin`).
-pub const BUILD_REF_TYPE: &str = "BuildRef";
+/// This enum captures what the user provided in the `inputs` field of `sys.build{}`:
+/// - A static value (table, string, etc.)
+/// - A function that will be called to get the value
+/// - Nil (no inputs)
+pub enum BuildInputsSpec {
+  Value(LuaValue),
+  Function(LuaFunction),
+  Nil,
+}
+
+impl FromLua for BuildInputsSpec {
+  fn from_lua(value: LuaValue, _lua: &Lua) -> LuaResult<Self> {
+    match value {
+      LuaValue::Boolean(b) => Ok(BuildInputsSpec::Value(LuaValue::Boolean(b))),
+      LuaValue::Integer(n) => Ok(BuildInputsSpec::Value(LuaValue::Integer(n))),
+      LuaValue::Number(n) => Ok(BuildInputsSpec::Value(LuaValue::Number(n))),
+      LuaValue::String(s) => Ok(BuildInputsSpec::Value(LuaValue::String(s))),
+      LuaValue::Table(t) => Ok(BuildInputsSpec::Value(LuaValue::Table(t))),
+      LuaValue::Function(f) => Ok(BuildInputsSpec::Function(f)),
+      LuaValue::Nil => Ok(BuildInputsSpec::Nil),
+      _ => Err(LuaError::FromLuaConversionError {
+        from: value.type_name(),
+        to: "BuildInputsSpec".to_string(),
+        message: Some("expected boolean, number, string, table, function, or nil".to_string()),
+      }),
+    }
+  }
+}
+
+/// Lua-side specification for a build.
+///
+/// This struct captures what the user provided in the `sys.build{}` call.
+/// It contains Lua closures and is not serializable.
+pub struct BuildSpec {
+  pub id: Option<String>,
+  pub inputs: Option<BuildInputsSpec>,
+  pub create: LuaFunction,
+}
+
+impl FromLua for BuildSpec {
+  fn from_lua(value: LuaValue, _lua: &Lua) -> LuaResult<Self> {
+    let table = match value {
+      LuaValue::Table(t) => t,
+      _ => {
+        return Err(LuaError::FromLuaConversionError {
+          from: value.type_name(),
+          to: "BuildSpec".to_string(),
+          message: Some("expected table".to_string()),
+        });
+      }
+    };
+
+    let id: Option<String> = table.get("id")?;
+    let inputs: Option<BuildInputsSpec> = table.get("inputs")?;
+    let create: LuaFunction = table
+      .get("create")
+      .map_err(|_| LuaError::external("build spec requires 'create' function"))?;
+
+    Ok(BuildSpec { id, inputs, create })
+  }
+}
 
 /// A resolved, serializable input value.
 ///
@@ -80,6 +139,27 @@ pub enum BuildInputs {
   Build(ObjectHash),
 }
 
+impl BuildInputs {
+  pub fn from_spec(
+    manifest: &Rc<RefCell<Manifest>>,
+    spec: BuildInputsSpec,
+    lua_value_to_def: impl Fn(LuaValue, &Manifest) -> LuaResult<BuildInputs>,
+  ) -> LuaResult<Option<Self>> {
+    match spec {
+      BuildInputsSpec::Value(v) => Ok(Some(lua_value_to_def(v, &manifest.borrow())?)),
+      BuildInputsSpec::Function(f) => {
+        let result = f.call::<LuaValue>(())?;
+        if result.is_nil() {
+          Ok(None)
+        } else {
+          Ok(Some(lua_value_to_def(result, &manifest.borrow())?))
+        }
+      }
+      BuildInputsSpec::Nil => Ok(None),
+    }
+  }
+}
+
 /// The evaluated, serializable definition of a build.
 ///
 /// This is the manifest-side representation produced by evaluating a [`BuildSpec`].
@@ -112,6 +192,59 @@ pub struct BuildDef {
 }
 
 impl Hashable for BuildDef {}
+
+impl BuildDef {
+  pub fn from_spec(
+    lua: &Lua,
+    manifest: &Rc<RefCell<Manifest>>,
+    spec: BuildSpec,
+    lua_value_to_def: impl Fn(LuaValue, &Manifest) -> LuaResult<BuildInputs>,
+    inputs_def_to_lua: impl Fn(&Lua, &BuildInputs, &Manifest) -> LuaResult<LuaValue>,
+    parse_outputs: impl Fn(LuaTable) -> LuaResult<BTreeMap<String, String>>,
+  ) -> LuaResult<Self> {
+    let inputs = match spec.inputs {
+      Some(input_spec) => BuildInputs::from_spec(manifest, input_spec, &lua_value_to_def)?,
+      None => None,
+    };
+
+    let ctx = BuildCtx::new();
+    let ctx_userdata = lua.create_userdata(ctx)?;
+
+    let inputs_arg: LuaValue = match &inputs {
+      Some(inputs) => inputs_def_to_lua(lua, inputs, &manifest.borrow())?,
+      None => LuaValue::Table(lua.create_table()?),
+    };
+
+    let result: LuaValue = spec.create.call((inputs_arg, &ctx_userdata))?;
+
+    let outputs: BTreeMap<String, String> = match result {
+      LuaValue::Table(t) => {
+        let parsed = parse_outputs(t)?;
+        if parsed.is_empty() {
+          return Err(LuaError::external("build create must return a non-empty outputs table"));
+        }
+        parsed
+      }
+      LuaValue::Nil => {
+        return Err(LuaError::external(
+          "build create must return a non-empty outputs table, got nil",
+        ));
+      }
+      _ => {
+        return Err(LuaError::external("build create must return a table of outputs"));
+      }
+    };
+
+    let ctx: BuildCtx = ctx_userdata.take()?;
+
+    Ok(BuildDef {
+      id: spec.id,
+      inputs,
+      create_actions: ctx.into_actions(),
+      outputs: Some(outputs),
+    })
+  }
+}
 
 /// Context for build `create` functions.
 ///
@@ -147,6 +280,74 @@ impl BuildCtx {
   /// Consume the context and return the recorded actions.
   pub fn into_actions(self) -> Vec<Action> {
     self.0.into_actions()
+  }
+}
+
+/// Marker type name for BuildRef metatables in Lua.
+///
+/// This constant is used to identify Lua userdata that represents a reference
+/// to a build. BuildRefs are Lua tables with metatables that allow accessing
+/// build outputs (e.g., `build.out` or `build.bin`).
+pub const BUILD_REF_TYPE: &str = "BuildRef";
+
+/// A reference to a build, returned to Lua after creating a build.
+///
+/// This struct encapsulates the data returned to Lua code after a `sys.build{}` call.
+/// It contains the id, hash, and outputs with placeholders for runtime resolution.
+pub struct BuildRef {
+  /// Optional human-readable identifier for the build.
+  pub id: Option<String>,
+  /// The content-addressed hash of the build definition.
+  pub hash: ObjectHash,
+  /// Named outputs from the build (keys only, values become placeholders).
+  pub outputs: BTreeMap<String, String>,
+}
+
+impl BuildRef {
+  /// Create a BuildRef from a BuildDef.
+  ///
+  /// Computes the content-addressed hash from the definition.
+  pub fn from_def(def: &BuildDef) -> Result<Self, LuaError> {
+    let hash = match def.compute_hash() {
+      Ok(it) => it,
+      Err(err) => return Err(LuaError::external(format!("failed to compute build hash: {}", err))),
+    };
+    Ok(Self {
+      id: def.id.clone(),
+      hash,
+      // BuildDef always has outputs (enforced during creation)
+      outputs: def.outputs.clone().unwrap_or_default(),
+    })
+  }
+}
+
+impl IntoLua for BuildRef {
+  /// Convert this BuildRef to a Lua table.
+  ///
+  /// Creates a table with:
+  /// - `id`: The build's human-readable identifier (optional)
+  /// - `hash`: The build's content-addressed hash
+  /// - `outputs`: Table of output keys mapped to `$${build:hash:key}` placeholders
+  /// - Metatable with `__type = "BuildRef"`
+  fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
+    let ref_table = lua.create_table()?;
+    ref_table.set("id", self.id.as_deref())?;
+    ref_table.set("hash", self.hash.0.as_str())?;
+
+    // Convert outputs to Lua table with placeholders for runtime resolution
+    let outputs_table = lua.create_table()?;
+    for k in self.outputs.keys() {
+      let placeholder = format!("$${{build:{}:{}}}", self.hash.0, k);
+      outputs_table.set(k.as_str(), placeholder.as_str())?;
+    }
+    ref_table.set("outputs", outputs_table)?;
+
+    // Set metatable with __type marker
+    let mt = lua.create_table()?;
+    mt.set("__type", BUILD_REF_TYPE)?;
+    ref_table.set_metatable(Some(mt))?;
+
+    Ok(LuaValue::Table(ref_table))
   }
 }
 

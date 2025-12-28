@@ -185,7 +185,10 @@ sys.path.is_absolute(path) -- Check if path is absolute
 sys.path.normalize(path) -- Normalize path (resolve . and ..)
 sys.path.relative(from, to) -- Get relative path
 sys.path.split(path) -- Split into components
+sys.path.canonicalize(path) -- Get canonical filesystem path (resolves symlinks, Windows 8.3 names)
 ```
+
+**Note:** `canonicalize` is the only path function that touches the filesystem. It throws an error if the path doesn't exist. Use it when you need a consistent path representation for hashing or storage.
 
 ## Lua Language Server (LuaLS) Integration
 

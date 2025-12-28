@@ -1,7 +1,6 @@
---- Tests the update lifecycle feature.
---- Bind changes inputs, triggering an update instead of destroy+create.
+--- Bind with check callback for drift detection tests.
+--- Tests that check callbacks detect drift when files are modified/deleted.
 
-local VERSION = os.getenv('TEST_VERSION') or 'v1'
 local TEST_DIR = os.getenv('TEST_OUTPUT_DIR')
 if TEST_DIR then
   TEST_DIR = sys.path.canonicalize(TEST_DIR)
@@ -39,31 +38,30 @@ return {
   inputs = {},
   setup = function(_)
     sys.bind({
-      id = 'versioned-file',
-      inputs = { version = VERSION },
-      create = function(inputs, ctx)
+      id = 'check-test',
+      create = function(_, ctx)
         if sys.os == 'windows' then
           sh(ctx, 'New-Item -ItemType Directory -Force -Path "' .. TEST_DIR .. '" | Out-Null')
-          sh(ctx, 'Set-Content -Path "' .. TEST_DIR .. '\\version.txt" -Value "Created ' .. inputs.version .. '"')
+          sh(ctx, 'Set-Content -Path "' .. TEST_DIR .. '\\check-marker.txt" -Value "exists"')
         else
           sh(ctx, 'mkdir -p ' .. TEST_DIR)
-          sh(ctx, 'echo "Created ' .. inputs.version .. '" > ' .. TEST_DIR .. '/version.txt')
+          sh(ctx, 'echo exists > ' .. TEST_DIR .. '/check-marker.txt')
         end
-        return {
-          file = TEST_DIR .. (sys.os == 'windows' and '\\version.txt' or '/version.txt'),
-          version = inputs.version,
-        }
+        return { file = TEST_DIR .. (sys.os == 'windows' and '\\check-marker.txt' or '/check-marker.txt') }
       end,
-      update = function(outputs, inputs, ctx)
+      check = function(outputs, _, ctx)
+        local drifted
         if sys.os == 'windows' then
-          sh(ctx, 'Set-Content -Path "' .. outputs.file .. '" -Value "Updated to ' .. inputs.version .. '"')
+          drifted = sh(
+            ctx,
+            'if (Test-Path "'
+              .. outputs.file
+              .. '") { Write-Host -NoNewline "false" } else { Write-Host -NoNewline "true" }'
+          )
         else
-          sh(ctx, 'echo "Updated to ' .. inputs.version .. '" > ' .. outputs.file)
+          drifted = sh(ctx, 'test -f "' .. outputs.file .. '" && printf false || printf true')
         end
-        return {
-          file = outputs.file,
-          version = inputs.version,
-        }
+        return { drifted = drifted, message = 'file does not exist' }
       end,
       destroy = function(outputs, ctx)
         if sys.os == 'windows' then

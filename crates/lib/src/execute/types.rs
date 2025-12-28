@@ -137,6 +137,17 @@ pub struct BindResult {
   pub action_results: Vec<ActionResult>,
 }
 
+/// Result of checking a bind for drift.
+#[derive(Debug, Clone)]
+pub struct DriftResult {
+  /// The bind's hash.
+  pub hash: ObjectHash,
+  /// The bind's ID (if any).
+  pub id: Option<String>,
+  /// The check result.
+  pub result: crate::bind::BindCheckResult,
+}
+
 /// Result of executing the entire DAG.
 #[derive(Debug, Default)]
 pub struct DagResult {
