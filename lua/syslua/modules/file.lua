@@ -44,7 +44,10 @@ M.setup = function(opts)
               },
             })
           else
-            ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('cp -r "%s" "%s"', inputs.source, inputs.target) } })
+            ctx:exec({
+              bin = '/bin/sh',
+              args = { '-c', string.format('cp -r "%s" "%s"', inputs.source, inputs.target) },
+            })
           end
         else
           if sys.os == 'windows' then
@@ -57,7 +60,10 @@ M.setup = function(opts)
               },
             })
           else
-            ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('echo "%s" > "%s"', inputs.content, inputs.target) } })
+            ctx:exec({
+              bin = '/bin/sh',
+              args = { '-c', string.format('echo "%s" > "%s"', inputs.content, inputs.target) },
+            })
           end
         end
 

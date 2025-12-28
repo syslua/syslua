@@ -59,12 +59,16 @@ impl TestEnv {
 
   /// Store path (isolated per test).
   pub fn store_path(&self) -> PathBuf {
-    self.temp.path().join("store")
+    let p = self.temp.path().join("store");
+    std::fs::create_dir_all(&p).unwrap();
+    dunce::canonicalize(&p).unwrap_or(p)
   }
 
   /// Data path for snapshots, plans, etc.
   pub fn data_path(&self) -> PathBuf {
-    self.temp.path().join("data")
+    let p = self.temp.path().join("data");
+    std::fs::create_dir_all(&p).unwrap();
+    dunce::canonicalize(&p).unwrap_or(p)
   }
 
   /// Output path for bind test artifacts.
@@ -73,7 +77,7 @@ impl TestEnv {
   pub fn output_path(&self) -> PathBuf {
     let p = self.temp.path().join("output");
     std::fs::create_dir_all(&p).unwrap();
-    p
+    dunce::canonicalize(&p).unwrap_or(p)
   }
 
   /// Get a pre-configured Command for the sys binary.

@@ -33,7 +33,7 @@
 ---@field hash string Hash of actions for deduplication
 
 ---@class BindCheckResult
----@field drifted boolean Whether the bind has drifted from expected state
+---@field drifted boolean | string Whether the bind has drifted from expected state
 ---@field message? string Optional message explaining the drift
 
 ---@class BindSpec
@@ -54,6 +54,7 @@
 ---@field normalize fun(path: string): string Normalizes the given path, resolving '..' and '.' segments
 ---@field relative fun(from: string, to: string): string Returns the relative path from one path to another
 ---@field split fun(path: string): table<string> Splits the path into its components
+---@field canonicalize fun(path: string): string Returns the canonical filesystem path (resolves symlinks, Windows 8.3 names). Throws if path doesn't exist.
 
 ---@alias Platform "x86_64-windows" | "aarch64-windows" | "x86_64-linux" | "aarch64-linux" | "i386-linux" | "x86_64-darwin" | "aarch64-darwin"
 ---@alias Os "windows" | "linux" | "darwin"

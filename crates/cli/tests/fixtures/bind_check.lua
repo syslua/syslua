@@ -1,7 +1,12 @@
 --- Bind with check callback for drift detection tests.
 --- Tests that check callbacks detect drift when files are modified/deleted.
 
-local TEST_DIR = os.getenv('TEST_OUTPUT_DIR') or '/tmp/syslua-test'
+local TEST_DIR = os.getenv('TEST_OUTPUT_DIR')
+if TEST_DIR then
+  TEST_DIR = sys.path.canonicalize(TEST_DIR)
+else
+  TEST_DIR = '/tmp/syslua-test'
+end
 
 --- Cross-platform shell execution with PATH injection for sandbox.
 --- @param ctx BuildCtx | BindCtx
@@ -47,7 +52,12 @@ return {
       check = function(outputs, _, ctx)
         local drifted
         if sys.os == 'windows' then
-          drifted = sh(ctx, 'if (Test-Path "' .. outputs.file .. '") { Write-Host -NoNewline "false" } else { Write-Host -NoNewline "true" }')
+          drifted = sh(
+            ctx,
+            'if (Test-Path "'
+              .. outputs.file
+              .. '") { Write-Host -NoNewline "false" } else { Write-Host -NoNewline "true" }'
+          )
         else
           drifted = sh(ctx, 'test -f "' .. outputs.file .. '" && printf false || printf true')
         end

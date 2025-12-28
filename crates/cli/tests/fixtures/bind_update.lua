@@ -2,7 +2,12 @@
 --- Bind changes inputs, triggering an update instead of destroy+create.
 
 local VERSION = os.getenv('TEST_VERSION') or 'v1'
-local TEST_DIR = os.getenv('TEST_OUTPUT_DIR') or '/tmp/syslua-test'
+local TEST_DIR = os.getenv('TEST_OUTPUT_DIR')
+if TEST_DIR then
+  TEST_DIR = sys.path.canonicalize(TEST_DIR)
+else
+  TEST_DIR = '/tmp/syslua-test'
+end
 
 --- Cross-platform shell execution with PATH injection for sandbox.
 --- @param ctx BuildCtx | BindCtx

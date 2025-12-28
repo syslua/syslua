@@ -6,7 +6,12 @@
 --- 3. 'failing-bind' fails during create
 --- 4. Rollback should restore 'original-bind'
 
-local TEST_DIR = os.getenv('TEST_OUTPUT_DIR') or '/tmp/syslua-test'
+local TEST_DIR = os.getenv('TEST_OUTPUT_DIR')
+if TEST_DIR then
+  TEST_DIR = sys.path.canonicalize(TEST_DIR)
+else
+  TEST_DIR = '/tmp/syslua-test'
+end
 local PHASE = os.getenv('TEST_PHASE') or 'initial'
 
 --- Cross-platform shell execution with PATH injection for sandbox.
