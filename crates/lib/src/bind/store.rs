@@ -1,25 +1,19 @@
 use std::path::PathBuf;
 
-use crate::{store::paths::StorePaths, util::hash::ObjectHash};
+use crate::{platform::paths::store_dir, util::hash::ObjectHash};
 
-/// Generate the store bind directory name for a binding.
 pub fn bind_dir_name(hash: &ObjectHash) -> String {
-  let hash = hash.0.as_str();
-  hash.to_string()
+  hash.0.clone()
 }
 
-pub fn bind_dir_path(hash: &ObjectHash, system: bool) -> PathBuf {
-  let store = if system {
-    StorePaths::system_store_path()
-  } else {
-    StorePaths::user_store_path()
-  };
-  store.join("bind").join(bind_dir_name(hash))
+pub fn bind_dir_path(hash: &ObjectHash) -> PathBuf {
+  store_dir().join("bind").join(bind_dir_name(hash))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
 
   #[test]
   fn test_bind_dir_name() {
@@ -29,19 +23,15 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn test_bind_path_includes_bind_dir() {
-    use std::path::Path;
-
-    let hash = ObjectHash("abc123def45678901234".to_string());
-    let path = bind_dir_path(&hash, false);
-    // Check that path ends with bind/{hash}
-    // Note: We don't check for "store" because SYSLUA_USER_STORE env var can override to any path
-    let expected_suffix = Path::new("bind").join("abc123def45678901234");
-    assert!(
-      path.ends_with(&expected_suffix),
-      "Path {:?} should end with {:?}",
-      path,
-      expected_suffix
+    temp_env::with_vars(
+      [("SYSLUA_STORE", Some("/test/store")), ("SYSLUA_ROOT", None::<&str>)],
+      || {
+        let hash = ObjectHash("abc123def45678901234".to_string());
+        let path = bind_dir_path(&hash);
+        assert_eq!(path, PathBuf::from("/test/store/bind/abc123def45678901234"));
+      },
     );
   }
 }

@@ -42,7 +42,7 @@
 ---@field create fun(inputs: table, ctx: BindCtx): table | nil Required: binding logic, optionally returns outputs
 ---@field update? fun(outputs: table, inputs: table, ctx: BindCtx): table | nil Optional: update logic, optionally returns outputs
 ---@field destroy fun(outputs: table, ctx: BindCtx): nil Required: cleanup logic, receives outputs from create or update
----@field check? fun(outputs: table, ctx: BindCtx): BindCheckResult Optional: drift detection, returns drifted status
+---@field check? fun(outputs: table, inputs: table, ctx: BindCtx): BindCheckResult Optional: drift detection, returns drifted status
 
 ---@class PathHelpers
 ---@field resolve fun(...: string): string Resolves a sequence of path segments into an absolute path

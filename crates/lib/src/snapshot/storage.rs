@@ -14,15 +14,11 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use crate::platform::paths::data_dir;
-use crate::platform::paths::root_dir;
+use crate::platform::paths::snapshots_dir;
 
 use super::types::{
   SNAPSHOT_INDEX_VERSION, Snapshot, SnapshotError, SnapshotIndex, SnapshotMetadata, generate_snapshot_id,
 };
-
-/// Directory name for snapshots within the data directory.
-const SNAPSHOTS_DIR: &str = "snapshots";
 
 /// Index file name.
 const INDEX_FILENAME: &str = "index.json";
@@ -50,14 +46,10 @@ impl SnapshotStore {
 
   /// Create a snapshot store at the default location.
   ///
-  /// Uses the platform-specific data directory:
-  /// - Linux/macOS: `~/.local/share/syslua/snapshots`
-  /// - Windows: `%APPDATA%\syslua\snapshots`
-  pub fn default_store(system: &bool) -> Self {
-    if *system {
-      return Self::new(root_dir().join(SNAPSHOTS_DIR));
-    }
-    Self::new(data_dir().join(SNAPSHOTS_DIR))
+  /// Uses `snapshots_dir()` which automatically determines the location
+  /// based on elevation status and environment variables.
+  pub fn default_store() -> Self {
+    Self::new(snapshots_dir())
   }
 
   /// Get the path to the index file.

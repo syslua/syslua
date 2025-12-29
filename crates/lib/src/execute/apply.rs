@@ -25,12 +25,13 @@ use tracing::{debug, error, info, warn};
 
 use crate::bind::execute::{apply_bind, check_bind, destroy_bind, update_bind};
 use crate::bind::state::{BindState, BindStateError, load_bind_state, remove_bind_state, save_bind_state};
+use crate::bind::store::bind_dir_path;
 use crate::build::store::build_dir_path;
 use crate::eval::{EvalError, evaluate_config};
 use crate::execute::execute_manifest;
 use crate::manifest::Manifest;
+use crate::platform::paths::store_dir;
 use crate::snapshot::{Snapshot, SnapshotError, SnapshotStore, StateDiff, compute_diff, generate_snapshot_id};
-use crate::store::paths::StorePaths;
 use crate::util::hash::ObjectHash;
 
 use super::dag::{DagNode, ExecutionDag};
@@ -131,9 +132,6 @@ pub struct ApplyOptions {
   /// Execution configuration (parallelism, shell, etc.)
   pub execute: ExecuteConfig,
 
-  /// Whether to use the system store (vs user store).
-  pub system: bool,
-
   /// Dry run mode - compute diff but don't apply.
   pub dry_run: bool,
 
@@ -146,9 +144,6 @@ pub struct ApplyOptions {
 pub struct DestroyOptions {
   /// Execution configuration (parallelism, etc.)
   pub execute: ExecuteConfig,
-
-  /// Whether to use the system store (vs user store).
-  pub system: bool,
 
   /// Dry run mode - show what would be destroyed without making changes.
   pub dry_run: bool,
@@ -194,7 +189,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   }
 
   // 1. Load current state
-  let snapshot_store = SnapshotStore::default_store(&options.system);
+  let snapshot_store = SnapshotStore::default_store();
   let current_snapshot = snapshot_store.load_current()?;
   let current_manifest = current_snapshot.as_ref().map(|s| &s.manifest);
 
@@ -214,11 +209,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   );
 
   // 3. Compute diff
-  let store_path = if options.system {
-    StorePaths::system_store_path()
-  } else {
-    StorePaths::user_store_path()
-  };
+  let store_path = store_dir();
   let diff = compute_diff(&desired_manifest, current_manifest, &store_path);
 
   info!(
@@ -236,17 +227,11 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     info!("no changes to apply");
 
     // Check unchanged binds for drift even when no other changes
-    let drift_results = check_unchanged_binds(
-      &diff.binds_unchanged,
-      &desired_manifest,
-      &options.execute,
-      options.system,
-    )
-    .await?;
+    let drift_results = check_unchanged_binds(&diff.binds_unchanged, &desired_manifest, &options.execute).await?;
 
     // Repair drifted binds if requested
     let binds_repaired = if options.repair {
-      repair_drifted_binds(&drift_results, &desired_manifest, &options.execute, options.system).await?
+      repair_drifted_binds(&drift_results, &desired_manifest, &options.execute).await?
     } else {
       0
     };
@@ -296,13 +281,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
       if !destroy_err.destroyed.is_empty()
         && let Some(ref current_snapshot) = current_snapshot
       {
-        let _ = restore_destroyed_binds(
-          &destroy_err.destroyed,
-          &current_snapshot.manifest,
-          &options.execute,
-          options.system,
-        )
-        .await;
+        let _ = restore_destroyed_binds(&destroy_err.destroyed, &current_snapshot.manifest, &options.execute).await;
       }
       return Err(ApplyError::DestroyFailed {
         hash: destroy_err.failed_hash,
@@ -348,14 +327,7 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
     if !destroyed_hashes.is_empty()
       && let Some(ref current_snapshot) = current_snapshot
     {
-      match restore_destroyed_binds(
-        &destroyed_hashes,
-        &current_snapshot.manifest,
-        &options.execute,
-        options.system,
-      )
-      .await
-      {
+      match restore_destroyed_binds(&destroyed_hashes, &current_snapshot.manifest, &options.execute).await {
         Ok(_) => {
           // Restore succeeded - point snapshot back to previous
           if let Some(ref prev_id) = previous_snapshot_id {
@@ -384,25 +356,19 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   // Save bind state for newly applied binds
   for (hash, result) in &dag_result.applied {
     let bind_state = BindState::new(result.outputs.clone());
-    save_bind_state(hash, &bind_state, options.system)?;
+    save_bind_state(hash, &bind_state)?;
     debug!(bind = %hash.0, "saved bind state");
   }
 
   // Clean up state files for destroyed binds (only after full success)
-  cleanup_destroyed_bind_states(&destroyed_hashes, options.system)?;
+  cleanup_destroyed_bind_states(&destroyed_hashes)?;
 
   // 7. Check unchanged binds for drift
-  let drift_results = check_unchanged_binds(
-    &diff.binds_unchanged,
-    &desired_manifest,
-    &options.execute,
-    options.system,
-  )
-  .await?;
+  let drift_results = check_unchanged_binds(&diff.binds_unchanged, &desired_manifest, &options.execute).await?;
 
   // 8. Repair drifted binds if requested
   let binds_repaired = if options.repair {
-    repair_drifted_binds(&drift_results, &desired_manifest, &options.execute, options.system).await?
+    repair_drifted_binds(&drift_results, &desired_manifest, &options.execute).await?
   } else {
     0
   };
@@ -438,7 +404,6 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
 /// * `hashes` - List of unchanged bind hashes to check
 /// * `manifest` - The manifest containing bind definitions
 /// * `config` - Execution configuration (currently unused but kept for consistency)
-/// * `system` - Whether to use system store paths
 ///
 /// # Returns
 ///
@@ -447,7 +412,6 @@ pub async fn check_unchanged_binds(
   hashes: &[ObjectHash],
   manifest: &Manifest,
   _config: &ExecuteConfig,
-  system: bool,
 ) -> Result<Vec<DriftResult>, ApplyError> {
   if hashes.is_empty() {
     return Ok(vec![]);
@@ -469,7 +433,7 @@ pub async fn check_unchanged_binds(
       continue;
     }
 
-    let Some(bind_state) = load_bind_state(hash, system)? else {
+    let Some(bind_state) = load_bind_state(hash)? else {
       warn!(hash = %hash.0, "bind state not found for check");
       continue;
     };
@@ -479,7 +443,7 @@ pub async fn check_unchanged_binds(
       action_results: vec![],
     };
 
-    let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, String::new(), system);
+    let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, String::new());
 
     match check_bind(hash, bind_def, &bind_result, &resolver).await {
       Ok(Some(result)) => {
@@ -508,7 +472,6 @@ async fn repair_drifted_binds(
   drift_results: &[DriftResult],
   manifest: &Manifest,
   config: &ExecuteConfig,
-  system: bool,
 ) -> Result<usize, ApplyError> {
   let drifted: Vec<_> = drift_results
     .iter()
@@ -541,14 +504,14 @@ async fn repair_drifted_binds(
       let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
       let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
 
-      let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &manifest, String::new(), system);
+      let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &manifest, String::new());
 
       let result = apply_bind(&hash, &bind_def, &resolver)
         .await
         .map_err(ApplyError::Execute)?;
 
       let bind_state = BindState::new(result.outputs.clone());
-      save_bind_state(&hash, &bind_state, system).map_err(ApplyError::BindState)?;
+      save_bind_state(&hash, &bind_state).map_err(ApplyError::BindState)?;
 
       info!(hash = %hash.0, "bind repaired");
       Ok((hash, result))
@@ -596,10 +559,10 @@ async fn repair_drifted_binds(
 ///
 /// A [`DestroyResult`] containing counts of destroyed binds and orphaned builds.
 pub async fn destroy(options: &DestroyOptions) -> Result<DestroyResult, ApplyError> {
-  info!(system = options.system, dry_run = options.dry_run, "starting destroy");
+  info!(dry_run = options.dry_run, "starting destroy");
 
   // 1. Load current state
-  let snapshot_store = SnapshotStore::default_store(&options.system);
+  let snapshot_store = SnapshotStore::default_store();
   debug!(snapshot_store_path = ?snapshot_store.base_path(), "using snapshot store");
   let current_snapshot = snapshot_store.load_current()?;
 
@@ -667,7 +630,7 @@ pub async fn destroy(options: &DestroyOptions) -> Result<DestroyResult, ApplyErr
       );
 
       // Clean up state files for binds that were successfully destroyed
-      if let Err(e) = cleanup_destroyed_bind_states(&destroy_err.destroyed, options.system) {
+      if let Err(e) = cleanup_destroyed_bind_states(&destroy_err.destroyed) {
         warn!(error = %e, "failed to clean up some bind state files");
       }
 
@@ -679,7 +642,7 @@ pub async fn destroy(options: &DestroyOptions) -> Result<DestroyResult, ApplyErr
   };
 
   // 5. Clean up bind state files
-  cleanup_destroyed_bind_states(&destroyed_hashes, options.system)?;
+  cleanup_destroyed_bind_states(&destroyed_hashes)?;
 
   // 6. Clear the current snapshot pointer
   snapshot_store.clear_current()?;
@@ -735,13 +698,13 @@ fn build_execution_manifest(desired: &Manifest, diff: &StateDiff) -> Manifest {
 async fn destroy_removed_binds(
   hashes: &[ObjectHash],
   current_manifest: Option<&Manifest>,
-  config: &ExecuteConfig,
+  _config: &ExecuteConfig,
 ) -> Result<Vec<ObjectHash>, DestroyPhaseError> {
   if hashes.is_empty() {
     return Ok(Vec::new());
   }
 
-  info!(count = hashes.len(), system = config.system, "destroying removed binds");
+  info!(count = hashes.len(), "destroying removed binds");
   debug!(bind_hashes = ?hashes.iter().map(|h| &h.0).collect::<Vec<_>>(), "binds to destroy");
 
   let mut destroyed = Vec::new();
@@ -751,25 +714,19 @@ async fn destroy_removed_binds(
   let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
   let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
   let empty_manifest = Manifest::default();
-  let resolver = ExecutionResolver::new(
-    &empty_builds,
-    &empty_binds,
-    &empty_manifest,
-    "/tmp".to_string(),
-    config.system,
-  );
+  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &empty_manifest, "/tmp".to_string());
 
   // Log the bind state directory for debugging
-  let bind_store_path = crate::store::paths::StorePaths::user_store_path().join("bind");
+  let bind_store_path = store_dir().join("bind");
   debug!(bind_store_path = ?bind_store_path, "checking bind state directory");
 
   for hash in hashes {
     // Log the expected bind state path
-    let bind_state_path = crate::bind::store::bind_dir_path(hash, config.system);
+    let bind_state_path = bind_dir_path(hash);
     debug!(bind = %hash.0, bind_state_path = ?bind_state_path, "looking for bind state");
 
     // Load bind state (outputs from when it was applied)
-    let bind_state = match load_bind_state(hash, config.system) {
+    let bind_state = match load_bind_state(hash) {
       Ok(Some(state)) => {
         debug!(bind = %hash.0, outputs = ?state.outputs, "loaded bind state");
         state
@@ -837,9 +794,9 @@ async fn destroy_removed_binds(
 ///
 /// This is called only after apply fully succeeds, to clean up state files
 /// for binds that were destroyed and whose state is no longer needed.
-fn cleanup_destroyed_bind_states(destroyed_hashes: &[ObjectHash], system: bool) -> Result<(), BindStateError> {
+fn cleanup_destroyed_bind_states(destroyed_hashes: &[ObjectHash]) -> Result<(), BindStateError> {
   for hash in destroyed_hashes {
-    remove_bind_state(hash, system)?;
+    remove_bind_state(hash)?;
   }
   Ok(())
 }
@@ -867,7 +824,7 @@ async fn update_modified_binds(
   updates: &[(ObjectHash, ObjectHash)],
   _current: Option<&Manifest>,
   desired: &Manifest,
-  config: &ExecuteConfig,
+  _config: &ExecuteConfig,
 ) -> Result<Vec<ObjectHash>, ApplyError> {
   if updates.is_empty() {
     return Ok(Vec::new());
@@ -879,11 +836,11 @@ async fn update_modified_binds(
 
   // Build resolver data for placeholder resolution during update
   // We need access to builds and existing binds for placeholder resolution
-  let (completed_builds, completed_binds) = build_restore_resolver_data(desired, config.system)?;
+  let (completed_builds, completed_binds) = build_restore_resolver_data(desired)?;
 
   for (old_hash, new_hash) in updates {
     // Load old bind state (outputs from when it was originally applied)
-    let old_bind_state = match load_bind_state(old_hash, config.system) {
+    let old_bind_state = match load_bind_state(old_hash) {
       Ok(Some(state)) => state,
       Ok(None) => {
         error!(old_hash = %old_hash.0, "no bind state found for update, cannot proceed");
@@ -926,13 +883,7 @@ async fn update_modified_binds(
     };
 
     // Create resolver for update
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      desired,
-      "/tmp".to_string(),
-      config.system,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, desired, "/tmp".to_string());
 
     // Create old bind result from saved state
     let old_bind_result = BindResult {
@@ -956,11 +907,11 @@ async fn update_modified_binds(
 
     // Save new bind state
     let new_bind_state = BindState::new(update_result.outputs.clone());
-    save_bind_state(new_hash, &new_bind_state, config.system)?;
+    save_bind_state(new_hash, &new_bind_state)?;
 
     // Remove old bind state if hash changed
     if old_hash != new_hash {
-      remove_bind_state(old_hash, config.system)?;
+      remove_bind_state(old_hash)?;
     }
 
     updated.push(new_hash.clone());
@@ -976,13 +927,13 @@ async fn update_modified_binds(
 /// Loads bind state for all binds in the manifest (destroyed + unchanged)
 /// and computes build store paths from the manifest. This allows placeholder
 /// resolution during restore (e.g., `$${build:hash:out}`, `$${bind:hash:output}`).
-fn build_restore_resolver_data(manifest: &Manifest, system: bool) -> Result<RestoreResolverData, ApplyError> {
+fn build_restore_resolver_data(manifest: &Manifest) -> Result<RestoreResolverData, ApplyError> {
   let mut builds = HashMap::new();
   let mut binds = HashMap::new();
 
   // Compute BuildResult for each build (just need store_path and outputs)
   for (hash, build_def) in &manifest.builds {
-    let store_path = build_dir_path(hash, system);
+    let store_path = build_dir_path(hash);
 
     // Resolve outputs - for now use the definition's output patterns
     // In practice, builds in the store should have their outputs already resolved
@@ -1009,7 +960,7 @@ fn build_restore_resolver_data(manifest: &Manifest, system: bool) -> Result<Rest
 
   // Load BindState for each bind and convert to BindResult
   for hash in manifest.bindings.keys() {
-    if let Some(state) = load_bind_state(hash, system)? {
+    if let Some(state) = load_bind_state(hash)? {
       binds.insert(
         hash.clone(),
         BindResult {
@@ -1033,7 +984,6 @@ fn build_restore_resolver_data(manifest: &Manifest, system: bool) -> Result<Rest
 /// * `destroyed_hashes` - Hashes of binds that were destroyed and need restoration
 /// * `manifest` - The previous manifest (from the snapshot before apply started)
 /// * `config` - Execution configuration
-/// * `system` - Whether to use system store
 ///
 /// # Returns
 ///
@@ -1042,7 +992,6 @@ async fn restore_destroyed_binds(
   destroyed_hashes: &[ObjectHash],
   manifest: &Manifest,
   config: &ExecuteConfig,
-  system: bool,
 ) -> Result<(), ApplyError> {
   if destroyed_hashes.is_empty() {
     return Ok(());
@@ -1053,7 +1002,7 @@ async fn restore_destroyed_binds(
   let destroyed_set: HashSet<_> = destroyed_hashes.iter().collect();
 
   // Build resolver data with all binds from previous manifest
-  let (completed_builds, mut completed_binds) = build_restore_resolver_data(manifest, system)?;
+  let (completed_builds, mut completed_binds) = build_restore_resolver_data(manifest)?;
 
   // Build DAG from the full manifest to get correct dependency ordering
   let dag = ExecutionDag::from_manifest(manifest)?;
@@ -1094,13 +1043,7 @@ async fn restore_destroyed_binds(
       join_set.spawn(async move {
         let _permit = semaphore.acquire().await.unwrap();
 
-        let resolver = ExecutionResolver::new(
-          &completed_builds,
-          &completed_binds,
-          &manifest,
-          "/tmp".to_string(),
-          system,
-        );
+        let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/tmp".to_string());
 
         let result = apply_bind(&hash, &bind_def, &resolver)
           .await
@@ -1111,7 +1054,7 @@ async fn restore_destroyed_binds(
 
         // Save bind state
         let bind_state = BindState::new(result.outputs.clone());
-        save_bind_state(&hash, &bind_state, system).map_err(|e| ApplyError::RestoreFailed {
+        save_bind_state(&hash, &bind_state).map_err(|e| ApplyError::RestoreFailed {
           hash: hash.clone(),
           source: Box::new(e),
         })?;
@@ -1154,11 +1097,7 @@ mod tests {
 
   fn test_options() -> ApplyOptions {
     ApplyOptions {
-      execute: ExecuteConfig {
-        parallelism: 1,
-        system: false,
-      },
-      system: false,
+      execute: ExecuteConfig { parallelism: 1 },
       dry_run: false,
       repair: false,
     }
@@ -1172,10 +1111,7 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     temp_env::with_vars(
       [
-        (
-          "SYSLUA_USER_STORE",
-          Some(temp_dir.path().join("store").to_str().unwrap()),
-        ),
+        ("SYSLUA_STORE", Some(temp_dir.path().join("store").to_str().unwrap())),
         ("XDG_DATA_HOME", Some(temp_dir.path().join("data").to_str().unwrap())),
       ],
       || f(&temp_dir),
@@ -1291,10 +1227,7 @@ mod tests {
     // Set env vars for test isolation
     temp_env::with_vars(
       [
-        (
-          "SYSLUA_USER_STORE",
-          Some(temp_dir.path().join("store").to_str().unwrap()),
-        ),
+        ("SYSLUA_STORE", Some(temp_dir.path().join("store").to_str().unwrap())),
         ("XDG_DATA_HOME", Some(temp_dir.path().join("data").to_str().unwrap())),
       ],
       || {
@@ -1324,19 +1257,19 @@ mod tests {
       outputs.insert("link".to_string(), "/test/path".to_string());
       let state = BindState::new(outputs);
 
-      save_bind_state(&hash1, &state, false).unwrap();
-      save_bind_state(&hash2, &state, false).unwrap();
+      save_bind_state(&hash1, &state).unwrap();
+      save_bind_state(&hash2, &state).unwrap();
 
       // Verify they exist
-      assert!(load_bind_state(&hash1, false).unwrap().is_some());
-      assert!(load_bind_state(&hash2, false).unwrap().is_some());
+      assert!(load_bind_state(&hash1).unwrap().is_some());
+      assert!(load_bind_state(&hash2).unwrap().is_some());
 
       // Clean up
-      cleanup_destroyed_bind_states(&[hash1.clone(), hash2.clone()], false).unwrap();
+      cleanup_destroyed_bind_states(&[hash1.clone(), hash2.clone()]).unwrap();
 
       // Verify they're gone
-      assert!(load_bind_state(&hash1, false).unwrap().is_none());
-      assert!(load_bind_state(&hash2, false).unwrap().is_none());
+      assert!(load_bind_state(&hash1).unwrap().is_none());
+      assert!(load_bind_state(&hash2).unwrap().is_none());
     });
   }
 
@@ -1345,7 +1278,7 @@ mod tests {
   fn cleanup_destroyed_bind_states_handles_empty_list() {
     with_temp_env(|_temp_dir| {
       // Should succeed with empty list
-      cleanup_destroyed_bind_states(&[], false).unwrap();
+      cleanup_destroyed_bind_states(&[]).unwrap();
     });
   }
 
@@ -1368,7 +1301,7 @@ mod tests {
         },
       );
 
-      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+      let (builds, binds) = build_restore_resolver_data(&manifest).unwrap();
 
       // Should have one build result
       assert_eq!(builds.len(), 1);
@@ -1395,7 +1328,7 @@ mod tests {
       let mut outputs = HashMap::new();
       outputs.insert("link".to_string(), "/home/user/.config/test".to_string());
       let state = BindState::new(outputs.clone());
-      save_bind_state(&hash, &state, false).unwrap();
+      save_bind_state(&hash, &state).unwrap();
 
       // Create manifest with the bind
       let mut manifest = Manifest::default();
@@ -1413,7 +1346,7 @@ mod tests {
         },
       );
 
-      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+      let (builds, binds) = build_restore_resolver_data(&manifest).unwrap();
 
       // No builds
       assert!(builds.is_empty());
@@ -1449,7 +1382,7 @@ mod tests {
         },
       );
 
-      let (builds, binds) = build_restore_resolver_data(&manifest, false).unwrap();
+      let (builds, binds) = build_restore_resolver_data(&manifest).unwrap();
 
       // No builds
       assert!(builds.is_empty());
@@ -1515,7 +1448,7 @@ mod tests {
 
       // Create state file but no manifest entry
       let state = BindState::new(HashMap::new());
-      save_bind_state(&hash, &state, false).unwrap();
+      save_bind_state(&hash, &state).unwrap();
 
       let manifest = Manifest::default(); // No bindings
 
@@ -1531,7 +1464,7 @@ mod tests {
       assert!(result.unwrap().is_empty());
 
       // State file should still exist (not cleaned up on skip)
-      assert!(load_bind_state(&hash, false).unwrap().is_some());
+      assert!(load_bind_state(&hash).unwrap().is_some());
     });
   }
 
@@ -1543,7 +1476,7 @@ mod tests {
       let config = ExecuteConfig::default();
 
       let rt = tokio::runtime::Runtime::new().unwrap();
-      let result = rt.block_on(restore_destroyed_binds(&[], &manifest, &config, false));
+      let result = rt.block_on(restore_destroyed_binds(&[], &manifest, &config));
 
       assert!(result.is_ok());
     });
@@ -1612,7 +1545,7 @@ mod tests {
 
       // Create old state but no new bind in manifest
       let state = BindState::new([("path".to_string(), "/old/path".to_string())].into_iter().collect());
-      save_bind_state(&old_hash, &state, false).unwrap();
+      save_bind_state(&old_hash, &state).unwrap();
 
       let manifest = Manifest::default(); // No bindings!
       let config = ExecuteConfig::default();

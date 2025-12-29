@@ -204,16 +204,12 @@ impl DagResult {
 pub struct ExecuteConfig {
   /// Maximum number of builds to execute in parallel.
   pub parallelism: usize,
-
-  /// Whether to use system store paths (vs user store).
-  pub system: bool,
 }
 
 impl Default for ExecuteConfig {
   fn default() -> Self {
     Self {
       parallelism: num_cpus(),
-      system: false,
     }
   }
 }
@@ -343,6 +339,5 @@ mod tests {
   fn execute_config_default_parallelism() {
     let config = ExecuteConfig::default();
     assert!(config.parallelism >= 1);
-    assert!(!config.system);
   }
 }

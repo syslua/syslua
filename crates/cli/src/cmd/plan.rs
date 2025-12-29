@@ -10,22 +10,18 @@ use anyhow::{Context, Result};
 
 use syslua_lib::eval::evaluate_config;
 use syslua_lib::execute::{ExecuteConfig, check_unchanged_binds};
-use syslua_lib::platform::{self, paths};
+use syslua_lib::platform::paths::{plans_dir, store_dir};
 use syslua_lib::snapshot::{SnapshotStore, compute_diff};
-use syslua_lib::store::paths::StorePaths;
 use syslua_lib::util::hash::Hashable;
 
 pub fn cmd_plan(file: &str) -> Result<()> {
   let path = Path::new(file);
-  let system = platform::is_elevated();
 
   let manifest = evaluate_config(path).with_context(|| format!("Failed to evaluate config: {}", file))?;
 
   let hash = manifest.compute_hash().context("Failed to compute manifest hash")?;
 
-  let base_dir = if system { paths::root_dir() } else { paths::data_dir() };
-
-  let plan_dir = base_dir.join("plans").join(&hash.0);
+  let plan_dir = plans_dir().join(&hash.0);
   fs::create_dir_all(&plan_dir).with_context(|| format!("Failed to create plan directory: {}", plan_dir.display()))?;
 
   let manifest_path = plan_dir.join("manifest.json");
@@ -33,17 +29,13 @@ pub fn cmd_plan(file: &str) -> Result<()> {
   fs::write(&manifest_path, &manifest_json)
     .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
 
-  let snapshot_store = SnapshotStore::default_store(&system);
+  let snapshot_store = SnapshotStore::default_store();
   let current_snapshot = snapshot_store
     .load_current()
     .context("Failed to load current snapshot")?;
   let current_manifest = current_snapshot.as_ref().map(|s| &s.manifest);
 
-  let store_path = if system {
-    StorePaths::system_store_path()
-  } else {
-    StorePaths::user_store_path()
-  };
+  let store_path = store_dir();
   let diff = compute_diff(&manifest, current_manifest, &store_path);
 
   println!("Plan: {}", &hash);
@@ -59,10 +51,10 @@ pub fn cmd_plan(file: &str) -> Result<()> {
 
   if !diff.binds_unchanged.is_empty() {
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let config = ExecuteConfig { parallelism: 4, system };
+    let config = ExecuteConfig::default();
 
     let drift_results = rt
-      .block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config, system))
+      .block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config))
       .context("Failed to check for drift")?;
 
     let drifted_count = drift_results.iter().filter(|r| r.result.drifted).count();

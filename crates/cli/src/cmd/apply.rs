@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use syslua_lib::execute::{ApplyOptions, ExecuteConfig, apply};
-use syslua_lib::platform::{self, paths};
+use syslua_lib::platform::paths;
 
 /// Execute the apply command.
 ///
@@ -25,12 +25,8 @@ use syslua_lib::platform::{self, paths};
 pub fn cmd_apply(file: &str, repair: bool) -> Result<()> {
   let path = Path::new(file);
 
-  // Determine if running as elevated
-  let system = platform::is_elevated();
-
   let options = ApplyOptions {
-    execute: ExecuteConfig { parallelism: 4, system },
-    system,
+    execute: ExecuteConfig::default(),
     dry_run: false,
     repair,
   };
@@ -79,8 +75,7 @@ pub fn cmd_apply(file: &str, repair: bool) -> Result<()> {
   }
 
   // Print plan directory
-  let base_dir = if system { paths::root_dir() } else { paths::data_dir() };
-  let snapshot_path = base_dir.join("snapshots").join(format!("{}.json", result.snapshot.id));
+  let snapshot_path = paths::snapshots_dir().join(format!("{}.json", result.snapshot.id));
   info!(path = %snapshot_path.display(), "snapshot saved");
 
   Ok(())

@@ -1,13 +1,10 @@
-//! syslua-core: Core types and logic for SysLua
+//! syslua-lib: Core types and logic for SysLua
 //!
 //! This crate provides the fundamental types used throughout SysLua:
-//! - `Derivation`: immutable build recipes that produce store content
-//! - `Activation`: describes what to do with derivation outputs
+//! - `Build`: immutable build recipes that produce store content
+//! - `Bind`: describes what to do with derivation outputs
 //! - `Manifest`: the complete set of derivations and activations
 //! - `Snapshot`: rollback journal for restoring previous system state
-//!
-//! The types are designed to be Lua-runtime agnostic. The `syslua-lua` crate
-//! handles conversion between Lua values and these types.
 
 pub mod action;
 pub mod bind;
@@ -23,6 +20,5 @@ pub mod outputs;
 pub mod placeholder;
 pub mod platform;
 pub mod snapshot;
-pub mod store;
 pub mod update;
 pub mod util;

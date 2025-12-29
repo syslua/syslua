@@ -1,13 +1,20 @@
-use crate::consts::APP_NAME;
 use std::path::PathBuf;
+
+use crate::consts::APP_NAME;
+use crate::platform::is_elevated;
 
 #[cfg(windows)]
 pub fn root_dir() -> PathBuf {
   if let Ok(root) = std::env::var("SYSLUA_ROOT") {
     return PathBuf::from(root);
   }
-  let drive = std::env::var("SYSTEMDRIVE").expect("SYSTEMDRIVE not set");
-  PathBuf::from(format!("{}\\", drive)).join(APP_NAME)
+
+  if is_elevated() {
+    let drive = std::env::var("SYSTEMDRIVE").expect("SYSTEMDRIVE not set");
+    PathBuf::from(format!("{}\\", drive)).join(APP_NAME)
+  } else {
+    data_dir()
+  }
 }
 
 #[cfg(not(windows))]
@@ -15,7 +22,12 @@ pub fn root_dir() -> PathBuf {
   if let Ok(root) = std::env::var("SYSLUA_ROOT") {
     return PathBuf::from(root);
   }
-  PathBuf::from("/").join(APP_NAME)
+
+  if is_elevated() {
+    PathBuf::from("/").join(APP_NAME)
+  } else {
+    data_dir()
+  }
 }
 
 /// Returns the user's home directory
@@ -91,6 +103,24 @@ pub fn cache_dir() -> PathBuf {
     .map(PathBuf::from)
     .unwrap_or_else(|_| home_dir().join(".cache"));
   cache_home.join(APP_NAME)
+}
+
+pub fn store_dir() -> PathBuf {
+  std::env::var("SYSLUA_STORE")
+    .map(PathBuf::from)
+    .unwrap_or_else(|_| root_dir().join("store"))
+}
+
+pub fn snapshots_dir() -> PathBuf {
+  std::env::var("SYSLUA_SNAPSHOTS")
+    .map(PathBuf::from)
+    .unwrap_or_else(|_| root_dir().join("snapshots"))
+}
+
+pub fn plans_dir() -> PathBuf {
+  std::env::var("SYSLUA_PLANS")
+    .map(PathBuf::from)
+    .unwrap_or_else(|_| root_dir().join("plans"))
 }
 
 #[cfg(test)]

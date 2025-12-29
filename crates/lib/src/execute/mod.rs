@@ -407,7 +407,7 @@ async fn execute_bind_wave(
   for hash in binds {
     let hash = hash.clone();
     let manifest = manifest.clone();
-    let config = config.clone();
+    let _config = config.clone();
     let completed_builds = completed_builds.clone();
     let completed_binds = completed_binds.clone();
     let semaphore = semaphore.clone();
@@ -426,7 +426,6 @@ async fn execute_bind_wave(
         &completed_binds,
         &manifest,
         "/tmp".to_string(), // Temporary; apply_bind creates its own working dir
-        config.system,
       );
 
       let result = apply_bind(&hash, bind_def, &resolver).await;
@@ -488,7 +487,7 @@ async fn rollback_binds(
   applied_order: &[ObjectHash],
   applied_results: &HashMap<ObjectHash, BindResult>,
   manifest: &Manifest,
-  config: &ExecuteConfig,
+  _config: &ExecuteConfig,
 ) {
   if applied_order.is_empty() {
     return;
@@ -500,7 +499,7 @@ async fn rollback_binds(
   // (destroy actions typically don't need to reference other completed nodes)
   let empty_builds = HashMap::new();
   let empty_binds = HashMap::new();
-  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, "/tmp".to_string(), config.system);
+  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, "/tmp".to_string());
 
   // Rollback in reverse order
   for hash in applied_order.iter().rev() {
@@ -622,10 +621,7 @@ mod tests {
   }
 
   fn test_config() -> ExecuteConfig {
-    ExecuteConfig {
-      parallelism: 4,
-      system: false,
-    }
+    ExecuteConfig { parallelism: 4 }
   }
 
   /// Helper to set up a temp store and run a test.
@@ -637,7 +633,7 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let store_path = temp_dir.path().join("store");
 
-    temp_env::with_var("SYSLUA_USER_STORE", Some(store_path.to_str().unwrap()), || {
+    temp_env::with_var("SYSLUA_STORE", Some(store_path.to_str().unwrap()), || {
       tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

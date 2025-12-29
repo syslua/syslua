@@ -144,7 +144,7 @@ pub async fn realize_build(
   );
 
   // Compute the store path for this build
-  let store_path = build_dir_path(hash, config.system);
+  let store_path = build_dir_path(hash);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -180,12 +180,7 @@ pub async fn realize_build(
   fs::create_dir_all(&store_path).await?;
 
   // Create resolver for this build
-  let mut resolver = BuildResolver::new(
-    completed_builds,
-    manifest,
-    store_path.to_string_lossy().to_string(),
-    config.system,
-  );
+  let mut resolver = BuildResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
 
   // Execute actions in order
   let mut action_results = Vec::new();
@@ -259,7 +254,7 @@ pub async fn realize_build_with_resolver(
   );
 
   // Compute the store path for this build
-  let store_path = build_dir_path(hash, config.system);
+  let store_path = build_dir_path(hash);
 
   // Check if already built (cache hit)
   if store_path.exists() {
@@ -308,7 +303,6 @@ pub async fn realize_build_with_resolver(
     completed_binds,
     manifest,
     store_path.to_string_lossy().to_string(),
-    config.system,
   );
 
   // Execute actions in order
@@ -360,7 +354,7 @@ fn resolve_outputs(
   action_results: &[ActionResult],
   completed_builds: &HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
-  config: &ExecuteConfig,
+  _config: &ExecuteConfig,
 ) -> Result<HashMap<String, String>, ExecuteError> {
   let mut outputs = HashMap::new();
 
@@ -370,12 +364,7 @@ fn resolve_outputs(
   // Resolve user-defined outputs
   if let Some(def_outputs) = &build_def.outputs {
     // Create a resolver with the action results
-    let mut resolver = BuildResolver::new(
-      completed_builds,
-      manifest,
-      store_path.to_string_lossy().to_string(),
-      config.system,
-    );
+    let mut resolver = BuildResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
     for result in action_results {
       resolver.push_action_result(result.output.clone());
     }
@@ -400,7 +389,7 @@ fn resolve_outputs_with_resolver(
   completed_builds: &HashMap<ObjectHash, BuildResult>,
   completed_binds: &HashMap<ObjectHash, BindResult>,
   manifest: &Manifest,
-  config: &ExecuteConfig,
+  _config: &ExecuteConfig,
 ) -> Result<HashMap<String, String>, ExecuteError> {
   let mut outputs = HashMap::new();
 
@@ -415,7 +404,6 @@ fn resolve_outputs_with_resolver(
       completed_binds,
       manifest,
       store_path.to_string_lossy().to_string(),
-      config.system,
     );
     for result in action_results {
       resolver.push_action_result(result.output.clone());
@@ -456,10 +444,7 @@ mod tests {
   }
 
   fn test_config() -> ExecuteConfig {
-    ExecuteConfig {
-      parallelism: 1,
-      system: false,
-    }
+    ExecuteConfig { parallelism: 1 }
   }
 
   /// Helper to set up a temp store and run a test.
@@ -472,7 +457,7 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     let store_path = temp_dir.path().join("store");
 
-    temp_env::with_var("SYSLUA_USER_STORE", Some(store_path.to_str().unwrap()), || {
+    temp_env::with_var("SYSLUA_STORE", Some(store_path.to_str().unwrap()), || {
       tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -706,7 +691,7 @@ mod tests {
       let config = test_config();
 
       // Pre-create the store path WITHOUT a marker (simulating interrupted build)
-      let store_path = build_dir_path(&hash, config.system);
+      let store_path = build_dir_path(&hash);
       tokio::fs::create_dir_all(&store_path).await.unwrap();
       tokio::fs::write(store_path.join("partial-file"), "incomplete")
         .await

@@ -7,9 +7,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use syslua_lib::execute::{DestroyOptions, ExecuteConfig, destroy};
-use syslua_lib::platform;
-use syslua_lib::platform::paths::data_dir;
-use syslua_lib::store::paths::StorePaths;
+use syslua_lib::platform::paths::{data_dir, store_dir};
 
 /// Execute the destroy command.
 ///
@@ -21,15 +19,10 @@ use syslua_lib::store::paths::StorePaths;
 ///
 /// Prints a summary including counts of binds destroyed and builds orphaned.
 pub fn cmd_destroy(dry_run: bool) -> Result<()> {
-  // Determine if running as elevated
-  let system = platform::is_elevated();
-
   // Log environment info for debugging
   info!(
-    system = system,
     dry_run = dry_run,
-    user_store = %StorePaths::user_store_path().display(),
-    system_store = %StorePaths::system_store_path().display(),
+    store = %store_dir().display(),
     data_dir = %data_dir().display(),
     "destroy command starting"
   );
@@ -40,17 +33,13 @@ pub fn cmd_destroy(dry_run: bool) -> Result<()> {
     if let Ok(appdata) = std::env::var("APPDATA") {
       info!(appdata = %appdata, "APPDATA env var");
     }
-    if let Ok(store) = std::env::var("SYSLUA_USER_STORE") {
-      info!(syslua_user_store = %store, "SYSLUA_USER_STORE env var");
-    }
-    if let Ok(store) = std::env::var("SYSLUA_SYSTEM_STORE") {
-      info!(syslua_system_store = %store, "SYSLUA_SYSTEM_STORE env var");
+    if let Ok(store) = std::env::var("SYSLUA_STORE") {
+      info!(syslua_store = %store, "SYSLUA_STORE env var");
     }
   }
 
   let options = DestroyOptions {
-    execute: ExecuteConfig { parallelism: 4, system },
-    system,
+    execute: ExecuteConfig::default(),
     dry_run,
   };
 

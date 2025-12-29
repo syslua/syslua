@@ -33,25 +33,16 @@ pub struct BuildResolver<'a> {
 
   /// Output directory for the current build.
   out_dir: String,
-
-  /// Whether to use system store paths.
-  system: bool,
 }
 
 impl<'a> BuildResolver<'a> {
   /// Create a new resolver for a build.
-  pub fn new(
-    completed_builds: &'a HashMap<ObjectHash, BuildResult>,
-    manifest: &'a Manifest,
-    out_dir: String,
-    system: bool,
-  ) -> Self {
+  pub fn new(completed_builds: &'a HashMap<ObjectHash, BuildResult>, manifest: &'a Manifest, out_dir: String) -> Self {
     Self {
       action_results: Vec::new(),
       completed_builds,
       manifest,
       out_dir,
-      system,
     }
   }
 
@@ -76,7 +67,7 @@ impl Resolver for BuildResolver<'_> {
   }
 
   fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
-    resolve_build_output(hash, output, self.completed_builds, self.manifest, self.system)
+    resolve_build_output(hash, output, self.completed_builds, self.manifest)
   }
 
   fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
@@ -117,9 +108,6 @@ pub struct ExecutionResolver<'a> {
 
   /// Output directory for the current node.
   out_dir: String,
-
-  /// Whether to use system store paths.
-  system: bool,
 }
 
 impl<'a> ExecutionResolver<'a> {
@@ -129,7 +117,6 @@ impl<'a> ExecutionResolver<'a> {
     completed_binds: &'a HashMap<ObjectHash, BindResult>,
     manifest: &'a Manifest,
     out_dir: String,
-    system: bool,
   ) -> Self {
     Self {
       action_results: Vec::new(),
@@ -137,7 +124,6 @@ impl<'a> ExecutionResolver<'a> {
       completed_binds,
       manifest,
       out_dir,
-      system,
     }
   }
 
@@ -163,7 +149,7 @@ impl Resolver for ExecutionResolver<'_> {
   }
 
   fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
-    resolve_build_output(hash, output, self.completed_builds, self.manifest, self.system)
+    resolve_build_output(hash, output, self.completed_builds, self.manifest)
   }
 
   fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
@@ -196,7 +182,6 @@ fn resolve_build_output<'a>(
   output: &str,
   completed_builds: &'a HashMap<ObjectHash, BuildResult>,
   manifest: &Manifest,
-  system: bool,
 ) -> Result<&'a str, PlaceholderError> {
   // First, try to find a completed build with matching hash prefix
   let matching_hash = completed_builds.keys().find(|h| h.0.starts_with(hash)).cloned();
@@ -227,7 +212,7 @@ fn resolve_build_output<'a>(
     let full_hash = manifest.builds.keys().find(|h| h.0.starts_with(hash)).cloned();
 
     if let Some(full_hash) = full_hash {
-      let store_path = build_dir_path(&full_hash, system);
+      let store_path = build_dir_path(&full_hash);
       // This is a bit awkward - we need to return a reference but we're computing a value.
       // For now, return an error indicating the build hasn't been realized yet.
       return Err(PlaceholderError::UnresolvedBuild {
@@ -257,7 +242,7 @@ mod tests {
   fn resolve_action_success() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     resolver.push_action_result("/tmp/downloaded.tar.gz".to_string());
     resolver.push_action_result("/build/output".to_string());
@@ -270,7 +255,7 @@ mod tests {
   fn resolve_action_out_of_bounds() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_action(0);
     assert!(matches!(result, Err(PlaceholderError::UnresolvedAction(0))));
@@ -280,12 +265,7 @@ mod tests {
   fn resolve_out_success() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(
-      &completed,
-      &manifest,
-      "/store/build/myapp-1.0-abc123".to_string(),
-      false,
-    );
+    let resolver = BuildResolver::new(&completed, &manifest, "/store/build/myapp-1.0-abc123".to_string());
 
     assert_eq!(resolver.resolve_out().unwrap(), "/store/build/myapp-1.0-abc123");
   }
@@ -306,7 +286,7 @@ mod tests {
     completed.insert(hash.clone(), result);
 
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     // Resolve by full hash
     assert_eq!(
@@ -325,7 +305,7 @@ mod tests {
   fn resolve_build_not_found() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_build("nonexistent", "out");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBuild { .. })));
@@ -335,7 +315,7 @@ mod tests {
   fn resolve_bind_not_supported() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_bind("somebind", "path");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBind { .. })));
@@ -345,7 +325,7 @@ mod tests {
   fn action_count_tracks_results() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string(), false);
+    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
 
     assert_eq!(resolver.action_count(), 0);
 
@@ -376,13 +356,7 @@ mod tests {
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(resolver.resolve_build("build123", "bin").unwrap(), "/store/obj/app/bin");
     assert_eq!(resolver.resolve_build("build123", "out").unwrap(), "/store/obj/app");
@@ -405,13 +379,7 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(
       resolver.resolve_bind("bind456", "link").unwrap(),
@@ -436,13 +404,7 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     // Should resolve by prefix
     assert_eq!(resolver.resolve_bind("bind456", "path").unwrap(), "/some/path");
@@ -454,13 +416,7 @@ mod tests {
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     let result = resolver.resolve_bind("nonexistent", "output");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBind { .. })));
@@ -480,13 +436,7 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     // Bind exists but output doesn't
     let result = resolver.resolve_bind("bind456", "nonexistent_output");
@@ -499,13 +449,7 @@ mod tests {
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let mut resolver = ExecutionResolver::new(
-      &completed_builds,
-      &completed_binds,
-      &manifest,
-      "/out".to_string(),
-      false,
-    );
+    let mut resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(resolver.action_count(), 0);
 
@@ -529,7 +473,6 @@ mod tests {
       &completed_binds,
       &manifest,
       "/my/output/dir".to_string(),
-      false,
     );
 
     assert_eq!(resolver.resolve_out().unwrap(), "/my/output/dir");
