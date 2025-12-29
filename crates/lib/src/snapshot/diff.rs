@@ -15,7 +15,7 @@ use crate::util::hash::ObjectHash;
 ///
 /// This struct describes what changes need to be made to transform
 /// the current state into the desired state.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StateDiff {
   /// Builds that need to be realized (not in store).
   pub builds_to_realize: Vec<ObjectHash>,

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use owo_colors::{OwoColorize, Stream};
 
 use syslua_lib::action::Action;
 use syslua_lib::action::actions::exec::ExecOpts;
@@ -8,7 +9,9 @@ use syslua_lib::platform::paths::{snapshots_dir, store_dir};
 use syslua_lib::snapshot::{Snapshot, SnapshotStore, StateDiff, compute_diff};
 use syslua_lib::util::hash::ObjectHash;
 
-pub fn cmd_diff(snapshot_a: Option<String>, snapshot_b: Option<String>, verbose: bool) -> Result<()> {
+use crate::output::{print_json, symbols, truncate_hash};
+
+pub fn cmd_diff(snapshot_a: Option<String>, snapshot_b: Option<String>, verbose: bool, json: bool) -> Result<()> {
   let store = SnapshotStore::new(snapshots_dir());
 
   let (snap_a, snap_b) = load_snapshots_to_compare(&store, snapshot_a, snapshot_b)?;
@@ -16,7 +19,16 @@ pub fn cmd_diff(snapshot_a: Option<String>, snapshot_b: Option<String>, verbose:
   let store_path = store_dir();
   let diff = compute_diff(&snap_b.manifest, Some(&snap_a.manifest), &store_path);
 
-  print_human_diff(&snap_a, &snap_b, &diff, verbose);
+  if json {
+    let diff_output = serde_json::json!({
+      "snapshot_a": snap_a,
+      "snapshot_b": snap_b,
+      "diff": diff
+    });
+    print_json(&diff_output)?;
+  } else {
+    print_human_diff(&snap_a, &snap_b, &diff, verbose);
+  }
 
   Ok(())
 }
@@ -99,10 +111,18 @@ fn print_summary_diff(diff: &StateDiff) {
   if has_build_changes || !diff.builds_cached.is_empty() {
     println!("Builds:");
     if !diff.builds_to_realize.is_empty() {
-      println!("  + {} added", diff.builds_to_realize.len());
+      println!(
+        "  {} {} added",
+        symbols::PLUS.if_supports_color(Stream::Stdout, |s| s.green()),
+        diff.builds_to_realize.len()
+      );
     }
     if !diff.builds_orphaned.is_empty() {
-      println!("  - {} removed", diff.builds_orphaned.len());
+      println!(
+        "  {} {} removed",
+        symbols::MINUS.if_supports_color(Stream::Stdout, |s| s.red()),
+        diff.builds_orphaned.len()
+      );
     }
     println!();
   }
@@ -110,13 +130,25 @@ fn print_summary_diff(diff: &StateDiff) {
   if has_bind_changes || !diff.binds_unchanged.is_empty() {
     println!("Binds:");
     if !diff.binds_to_apply.is_empty() {
-      println!("  + {} added", diff.binds_to_apply.len());
+      println!(
+        "  {} {} added",
+        symbols::PLUS.if_supports_color(Stream::Stdout, |s| s.green()),
+        diff.binds_to_apply.len()
+      );
     }
     if !diff.binds_to_update.is_empty() {
-      println!("  ~ {} updated", diff.binds_to_update.len());
+      println!(
+        "  {} {} updated",
+        symbols::TILDE.if_supports_color(Stream::Stdout, |s| s.yellow()),
+        diff.binds_to_update.len()
+      );
     }
     if !diff.binds_to_destroy.is_empty() {
-      println!("  - {} removed", diff.binds_to_destroy.len());
+      println!(
+        "  {} {} removed",
+        symbols::MINUS.if_supports_color(Stream::Stdout, |s| s.red()),
+        diff.binds_to_destroy.len()
+      );
     }
     if !diff.binds_unchanged.is_empty() {
       println!("  = {} unchanged", diff.binds_unchanged.len());
@@ -189,13 +221,23 @@ fn print_verbose_diff(snap_a: &Snapshot, snap_b: &Snapshot, diff: &StateDiff) {
 fn print_build(hash: &ObjectHash, build: &BuildDef, prefix: &str) {
   let name = build.id.as_deref().unwrap_or("(unnamed)");
   let short_hash = truncate_hash(&hash.0);
-  println!("  {} {} ({})", prefix, name, short_hash);
+  let colored_prefix = if prefix == "+" {
+    prefix.if_supports_color(Stream::Stdout, |s| s.green()).to_string()
+  } else {
+    prefix.if_supports_color(Stream::Stdout, |s| s.red()).to_string()
+  };
+  println!("  {} {} ({})", colored_prefix, name, short_hash);
 }
 
 fn print_bind_added(hash: &ObjectHash, bind: &BindDef) {
   let name = bind.id.as_deref().unwrap_or("(unnamed)");
   let short_hash = truncate_hash(&hash.0);
-  println!("  + {} ({})", name, short_hash);
+  println!(
+    "  {} {} ({})",
+    symbols::PLUS.if_supports_color(Stream::Stdout, |s| s.green()),
+    name,
+    short_hash
+  );
   print_actions("create", &bind.create_actions);
 }
 
@@ -203,7 +245,14 @@ fn print_bind_updated(old_hash: &ObjectHash, new_hash: &ObjectHash, bind: &BindD
   let name = bind.id.as_deref().unwrap_or("(unnamed)");
   let old_short = truncate_hash(&old_hash.0);
   let new_short = truncate_hash(&new_hash.0);
-  println!("  ~ {} ({} → {})", name, old_short, new_short);
+  println!(
+    "  {} {} ({} {} {})",
+    symbols::TILDE.if_supports_color(Stream::Stdout, |s| s.yellow()),
+    name,
+    old_short,
+    symbols::ARROW,
+    new_short
+  );
   if let Some(ref actions) = bind.update_actions {
     print_actions("update", actions);
   } else {
@@ -214,7 +263,12 @@ fn print_bind_updated(old_hash: &ObjectHash, new_hash: &ObjectHash, bind: &BindD
 fn print_bind_removed(hash: &ObjectHash, bind: &BindDef) {
   let name = bind.id.as_deref().unwrap_or("(unnamed)");
   let short_hash = truncate_hash(&hash.0);
-  println!("  - {} ({})", name, short_hash);
+  println!(
+    "  {} {} ({})",
+    symbols::MINUS.if_supports_color(Stream::Stdout, |s| s.red()),
+    name,
+    short_hash
+  );
   print_actions("destroy", &bind.destroy_actions);
 }
 
@@ -265,8 +319,4 @@ fn format_exec(opts: &ExecOpts) -> String {
   } else {
     formatted
   }
-}
-
-fn truncate_hash(hash: &str) -> &str {
-  if hash.len() >= 12 { &hash[..12] } else { hash }
 }

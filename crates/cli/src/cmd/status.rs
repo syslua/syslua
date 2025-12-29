@@ -1,59 +1,83 @@
+use anyhow::Result;
 use std::path::Path;
-use std::process::ExitCode;
 
 use syslua_lib::bind::store::bind_dir_path;
 use syslua_lib::build::store::build_dir_path;
 use syslua_lib::platform::paths::snapshots_dir;
 use syslua_lib::snapshot::SnapshotStore;
 
-pub fn cmd_status(verbose: bool) -> ExitCode {
+use crate::output::{
+  self, format_bytes, print_error, print_info, print_json, print_stat, print_success, truncate_hash,
+};
+
+pub fn cmd_status(verbose: bool, json: bool) -> Result<()> {
   let store = SnapshotStore::new(snapshots_dir());
 
   let snapshot = match store.load_current() {
     Ok(Some(snap)) => snap,
     Ok(None) => {
-      println!("No snapshot found. Run 'sys apply' to create one.");
-      return ExitCode::SUCCESS;
+      print_info("No snapshot found. Run 'sys apply' to create one.");
+      return Ok(());
     }
     Err(e) => {
-      eprintln!("Error loading snapshot: {}", e);
-      return ExitCode::FAILURE;
+      print_error(&format!("Error loading snapshot: {}", e));
+      return Err(e.into());
     }
   };
 
-  println!("Current snapshot: {}", snapshot.id);
-  println!("Created: {}", snapshot.created_at);
-  println!();
-  println!("Builds: {}", snapshot.manifest.builds.len());
-  println!("Binds: {}", snapshot.manifest.bindings.len());
+  let usage = calculate_store_usage(&snapshot.manifest);
 
-  if verbose {
-    if !snapshot.manifest.builds.is_empty() {
-      println!();
-      for (hash, build) in &snapshot.manifest.builds {
-        match &build.id {
-          Some(id) => println!("  {}-{}", id, hash.0),
-          None => println!("  {}", hash.0),
+  if json {
+    let build_list: Vec<_> = snapshot
+      .manifest
+      .builds
+      .iter()
+      .map(|(hash, build)| serde_json::json!({ "id": build.id, "hash": hash.0 }))
+      .collect();
+    let bind_list: Vec<_> = snapshot
+      .manifest
+      .bindings
+      .iter()
+      .map(|(hash, bind)| serde_json::json!({ "id": bind.id, "hash": hash.0 }))
+      .collect();
+    let json_output = serde_json::json!({ "snapshot_id": snapshot.id, "created_at": snapshot.created_at, "builds": { "count": snapshot.manifest.builds.len(), "items": build_list }, "binds": { "count": snapshot.manifest.bindings.len(), "items": bind_list }, "store_usage_bytes": usage });
+    print_json(&json_output)?;
+  } else {
+    print_success(&format!("Current snapshot: {}", snapshot.id));
+    print_stat("Created", &snapshot.created_at.to_string());
+    println!();
+    print_stat("Builds", &snapshot.manifest.builds.len().to_string());
+    print_stat("Binds", &snapshot.manifest.bindings.len().to_string());
+
+    if verbose {
+      if !snapshot.manifest.builds.is_empty() {
+        println!();
+        println!("Builds:");
+        for (hash, build) in &snapshot.manifest.builds {
+          match &build.id {
+            Some(id) => println!("  {} {}-{}", output::symbols::INFO, id, truncate_hash(&hash.0)),
+            None => println!("  {} {}", output::symbols::INFO, truncate_hash(&hash.0)),
+          }
+        }
+      }
+
+      if !snapshot.manifest.bindings.is_empty() {
+        println!();
+        println!("Binds:");
+        for (hash, bind) in &snapshot.manifest.bindings {
+          match &bind.id {
+            Some(id) => println!("  {} {}-{}", output::symbols::INFO, id, truncate_hash(&hash.0)),
+            None => println!("  {} {}", output::symbols::INFO, truncate_hash(&hash.0)),
+          }
         }
       }
     }
 
-    if !snapshot.manifest.bindings.is_empty() {
-      println!();
-      for (hash, bind) in &snapshot.manifest.bindings {
-        match &bind.id {
-          Some(id) => println!("  {}-{}", id, hash.0),
-          None => println!("  {}", hash.0),
-        }
-      }
-    }
+    println!();
+    print_stat("Store usage", &format_bytes(usage));
   }
 
-  let usage = calculate_store_usage(&snapshot.manifest);
-  println!();
-  println!("Store usage: {}", format_bytes(usage));
-
-  ExitCode::SUCCESS
+  Ok(())
 }
 
 fn dir_size(path: &Path) -> u64 {
@@ -89,20 +113,4 @@ fn calculate_store_usage(manifest: &syslua_lib::manifest::Manifest) -> u64 {
   }
 
   total
-}
-
-fn format_bytes(bytes: u64) -> String {
-  const KB: u64 = 1024;
-  const MB: u64 = KB * 1024;
-  const GB: u64 = MB * 1024;
-
-  if bytes >= GB {
-    format!("{:.1} GB", bytes as f64 / GB as f64)
-  } else if bytes >= MB {
-    format!("{:.1} MB", bytes as f64 / MB as f64)
-  } else if bytes >= KB {
-    format!("{:.1} KB", bytes as f64 / KB as f64)
-  } else {
-    format!("{} bytes", bytes)
-  }
 }

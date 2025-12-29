@@ -105,7 +105,7 @@ fn apply_shows_no_drift_when_file_exists() {
     .arg(&env.config_path)
     .assert()
     .success()
-    .stdout(predicate::str::contains("Drift detected").not());
+    .stderr(predicate::str::contains("Drift detected").not());
 }
 
 #[test]
@@ -125,8 +125,8 @@ fn apply_detects_drift_when_file_deleted() {
     .arg(&env.config_path)
     .assert()
     .success()
-    .stdout(predicate::str::contains("Drift detected"))
-    .stdout(predicate::str::contains("check-test"));
+    .stderr(predicate::str::contains("Drift detected"))
+    .stderr(predicate::str::contains("check-test"));
 }
 
 #[test]
@@ -169,5 +169,5 @@ fn drift_does_not_affect_exit_code() {
     .arg(&env.config_path)
     .assert()
     .success()
-    .stdout(predicate::str::contains("Drift detected"));
+    .stderr(predicate::str::contains("Drift detected"));
 }

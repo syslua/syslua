@@ -183,7 +183,7 @@ impl BindInputsDef {
 /// This is the runtime result after executing check actions and resolving
 /// all placeholders. It contains the final boolean drift status and optional
 /// message.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BindCheckResult {
   /// Whether the bind has drifted from expected state.
   pub drifted: bool,

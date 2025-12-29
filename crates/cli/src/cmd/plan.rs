@@ -5,16 +5,21 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 
 use syslua_lib::eval::evaluate_config;
+
+use crate::output::{format_duration, print_json, print_stat, symbols, truncate_hash};
 use syslua_lib::execute::{ExecuteConfig, check_unchanged_binds};
 use syslua_lib::platform::paths::{plans_dir, store_dir};
 use syslua_lib::snapshot::{SnapshotStore, compute_diff};
 use syslua_lib::util::hash::Hashable;
 
-pub fn cmd_plan(file: &str) -> Result<()> {
+pub fn cmd_plan(file: &str, json: bool) -> Result<()> {
+  let start = Instant::now();
   let path = Path::new(file);
 
   let manifest = evaluate_config(path).with_context(|| format!("Failed to evaluate config: {}", file))?;
@@ -38,35 +43,79 @@ pub fn cmd_plan(file: &str) -> Result<()> {
   let store_path = store_dir();
   let diff = compute_diff(&manifest, current_manifest, &store_path);
 
-  println!("Plan: {}", &hash);
-  println!("Builds: {}", manifest.builds.len());
-  println!("  To realize: {}", diff.builds_to_realize.len());
-  println!("  Cached: {}", diff.builds_cached.len());
-  println!("Binds: {}", manifest.bindings.len());
-  println!("  To apply: {}", diff.binds_to_apply.len());
-  println!("  To update: {}", diff.binds_to_update.len());
-  println!("  To destroy: {}", diff.binds_to_destroy.len());
-  println!("  Unchanged: {}", diff.binds_unchanged.len());
-  println!("Path: {}", manifest_path.display());
+  if json {
+    // For JSON output, we need to check for drift first
+    let drift_results = if !diff.binds_unchanged.is_empty() {
+      let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+      let config = ExecuteConfig::default();
+      Some(
+        rt.block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config))
+          .context("Failed to check for drift")?,
+      )
+    } else {
+      None
+    };
 
-  if !diff.binds_unchanged.is_empty() {
-    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let config = ExecuteConfig::default();
+    let plan_output = serde_json::json!({
+      "plan_hash": hash.0,
+      "manifest": manifest,
+      "diff": diff,
+      "drift_results": drift_results,
+      "plan_path": manifest_path.display().to_string()
+    });
+    print_json(&plan_output)?;
+  } else {
+    println!("{} Plan: {}", symbols::INFO.cyan(), truncate_hash(&hash.0).cyan());
+    print_stat("Builds", &manifest.builds.len().to_string());
+    println!(
+      "    {} To realize: {}",
+      symbols::ADD.green(),
+      diff.builds_to_realize.len()
+    );
+    println!("    {} Cached: {}", symbols::INFO.dimmed(), diff.builds_cached.len());
+    print_stat("Binds", &manifest.bindings.len().to_string());
+    println!("    {} To apply: {}", symbols::ADD.green(), diff.binds_to_apply.len());
+    println!(
+      "    {} To update: {}",
+      symbols::MODIFY.yellow(),
+      diff.binds_to_update.len()
+    );
+    println!(
+      "    {} To destroy: {}",
+      symbols::REMOVE.red(),
+      diff.binds_to_destroy.len()
+    );
+    println!(
+      "    {} Unchanged: {}",
+      symbols::INFO.dimmed(),
+      diff.binds_unchanged.len()
+    );
+    print_stat("Path", &manifest_path.display().to_string());
+    print_stat("Duration", &format_duration(start.elapsed()));
 
-    let drift_results = rt
-      .block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config))
-      .context("Failed to check for drift")?;
+    if !diff.binds_unchanged.is_empty() {
+      let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+      let config = ExecuteConfig::default();
 
-    let drifted_count = drift_results.iter().filter(|r| r.result.drifted).count();
-    if drifted_count > 0 {
-      println!();
-      println!("Drift detected: {} bind(s)", drifted_count);
-      for drift in drift_results.iter().filter(|r| r.result.drifted) {
-        let id = drift.id.as_deref().unwrap_or(&drift.hash.0);
-        if let Some(ref msg) = drift.result.message {
-          println!("  - {}: {}", id, msg);
-        } else {
-          println!("  - {}", id);
+      let drift_results = rt
+        .block_on(check_unchanged_binds(&diff.binds_unchanged, &manifest, &config))
+        .context("Failed to check for drift")?;
+
+      let drifted_count = drift_results.iter().filter(|r| r.result.drifted).count();
+      if drifted_count > 0 {
+        println!();
+        println!(
+          "{} {}",
+          symbols::WARNING.yellow(),
+          format!("Drift detected: {} bind(s)", drifted_count).yellow()
+        );
+        for drift in drift_results.iter().filter(|r| r.result.drifted) {
+          let id = drift.id.as_deref().unwrap_or(&drift.hash.0);
+          if let Some(ref msg) = drift.result.message {
+            println!("  {} {}: {}", symbols::MODIFY.yellow(), id, msg.dimmed());
+          } else {
+            println!("  {} {}", symbols::MODIFY.yellow(), id);
+          }
         }
       }
     }

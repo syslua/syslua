@@ -16,7 +16,7 @@ use crate::util::hash::{DirHashError, ObjectHash};
 /// When a node in the execution DAG fails, all dependent nodes are skipped.
 /// This enum tracks which dependency caused the skip, enabling better error
 /// reporting and debugging.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FailedDependency {
   /// A build dependency failed.
   Build(ObjectHash),
@@ -34,7 +34,7 @@ impl std::fmt::Display for FailedDependency {
 }
 
 /// Errors that can occur during build execution.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, serde::Serialize, serde::Deserialize)]
 pub enum ExecuteError {
   /// A placeholder could not be resolved.
   #[error("placeholder error: {0}")]
@@ -61,8 +61,8 @@ pub enum ExecuteError {
   CmdError { message: String },
 
   /// I/O error during execution.
-  #[error("io error: {0}")]
-  Io(#[from] std::io::Error),
+  #[error("io error: {message}")]
+  Io { message: String },
 
   /// Build dependency failed, so this build was skipped.
   #[error("dependency failed: {0}")]
@@ -93,27 +93,27 @@ pub enum ExecuteError {
   HashOutput(#[from] DirHashError),
 
   /// Failed to write build marker file.
-  #[error("failed to write build marker: {0}")]
-  WriteMarker(#[source] std::io::Error),
+  #[error("failed to write build marker: {message}")]
+  WriteMarker { message: String },
 
   /// Failed to read build marker file.
-  #[error("failed to read build marker: {0}")]
-  ReadMarker(#[source] std::io::Error),
+  #[error("failed to read build marker: {message}")]
+  ReadMarker { message: String },
 
   /// Failed to parse build marker JSON.
-  #[error("failed to parse build marker: {0}")]
-  ParseMarker(#[source] serde_json::Error),
+  #[error("failed to parse build marker: {message}")]
+  ParseMarker { message: String },
 }
 
 /// Result of executing a single action.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActionResult {
   /// The output of the action (file path for FetchUrl, stdout for Cmd).
   pub output: String,
 }
 
 /// Result of realizing a single build.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildResult {
   /// The store path where the build outputs were written.
   pub store_path: PathBuf,
@@ -127,7 +127,7 @@ pub struct BuildResult {
 }
 
 /// Result of applying a single bind.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BindResult {
   /// Resolved outputs from the bind (output name -> resolved value).
   /// These are the values from BindDef.outputs with placeholders resolved.
@@ -138,7 +138,7 @@ pub struct BindResult {
 }
 
 /// Result of checking a bind for drift.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DriftResult {
   /// The bind's hash.
   pub hash: ObjectHash,
@@ -149,7 +149,7 @@ pub struct DriftResult {
 }
 
 /// Result of executing the entire DAG.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DagResult {
   // === Builds ===
   /// Successfully realized builds.
@@ -200,7 +200,7 @@ impl DagResult {
 }
 
 /// Configuration for build execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExecuteConfig {
   /// Maximum number of builds to execute in parallel.
   pub parallelism: usize,
@@ -339,5 +339,10 @@ mod tests {
   fn execute_config_default_parallelism() {
     let config = ExecuteConfig::default();
     assert!(config.parallelism >= 1);
+  }
+}
+impl From<std::io::Error> for ExecuteError {
+  fn from(err: std::io::Error) -> Self {
+    ExecuteError::Io { message: err.to_string() }
   }
 }

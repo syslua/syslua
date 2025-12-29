@@ -3,10 +3,15 @@
 //! This command re-resolves inputs (fetching latest revisions) and
 //! updates the lock file and .luarc.json.
 
+use std::time::Instant;
+
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 
 use syslua_lib::platform;
 use syslua_lib::update::{UpdateOptions, find_config_path, update_inputs};
+
+use crate::output::{format_duration, symbols};
 
 /// Execute the update command.
 ///
@@ -23,6 +28,7 @@ use syslua_lib::update::{UpdateOptions, find_config_path, update_inputs};
 ///
 /// Returns an error if the config cannot be found or input resolution fails.
 pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> Result<()> {
+  let start = Instant::now();
   let config_path = find_config_path(config).context("Failed to find config file")?;
   let system = platform::is_elevated();
 
@@ -36,7 +42,7 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
 
   // Print results
   if dry_run {
-    println!("Dry run - no changes written");
+    println!("{}", "Dry run - no changes written".yellow());
     println!();
   }
 
@@ -45,7 +51,14 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
     let prefix = if dry_run { "Would update" } else { "Updated" };
     let old_short = &old_rev[..old_rev.len().min(8)];
     let new_short = &new_rev[..new_rev.len().min(8)];
-    println!("  {prefix}: {name} {old_short} -> {new_short}");
+    println!(
+      "  {} {}: {} {} {}",
+      symbols::MODIFY.yellow(),
+      prefix,
+      name.cyan(),
+      format!("{} ->", old_short).dimmed(),
+      new_short.green()
+    );
 
     // Print transitive updates for this input
     print_transitive_updates(name, &result.transitive_updated, &result.transitive_added, dry_run);
@@ -56,7 +69,13 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
     let prefix = if dry_run { "Would add" } else { "Added" };
     if let Some(resolved) = result.resolved.get(name) {
       let rev_short = &resolved.rev[..resolved.rev.len().min(8)];
-      println!("  {prefix}: {name} ({rev_short})");
+      println!(
+        "  {} {}: {} ({})",
+        symbols::ADD.green(),
+        prefix,
+        name.cyan(),
+        rev_short.dimmed()
+      );
 
       // Print transitive adds for this input
       print_transitive_updates(name, &result.transitive_updated, &result.transitive_added, dry_run);
@@ -66,7 +85,7 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
   // Print unchanged inputs
   if !result.unchanged.is_empty() {
     let names = result.unchanged.join(", ");
-    println!("  Unchanged: {names}");
+    println!("  {} Unchanged: {}", symbols::INFO.dimmed(), names.dimmed());
   }
 
   // Summary
@@ -76,16 +95,22 @@ pub fn cmd_update(config: Option<&str>, inputs: Vec<String>, dry_run: bool) -> R
     || !result.transitive_added.is_empty();
 
   if !has_changes {
-    println!("All inputs are up to date.");
+    println!("{} All inputs are up to date.", symbols::SUCCESS.green());
   } else if !dry_run {
     println!();
     println!(
-      "Lock file updated: {}",
+      "{} Lock file updated: {}",
+      symbols::SUCCESS.green(),
       config_path
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("syslua.lock")
         .display()
+    );
+    println!(
+      "  {} Duration: {}",
+      symbols::INFO.dimmed(),
+      format_duration(start.elapsed()).dimmed()
     );
   }
 
@@ -106,7 +131,14 @@ fn print_transitive_updates(
       let old_short = &old_rev[..old_rev.len().min(8)];
       let new_short = &new_rev[..new_rev.len().min(8)];
       let rel_path = &path[parent.len() + 1..]; // Remove parent prefix
-      println!("    {prefix}: {rel_path} {old_short} -> {new_short}");
+      println!(
+        "    {} {}: {} {} {}",
+        symbols::MODIFY.yellow(),
+        prefix,
+        rel_path.cyan(),
+        format!("{} ->", old_short).dimmed(),
+        new_short.green()
+      );
     }
   }
 
@@ -115,7 +147,7 @@ fn print_transitive_updates(
     if path.starts_with(&format!("{}/", parent)) {
       let prefix = if dry_run { "Would add" } else { "Added" };
       let rel_path = &path[parent.len() + 1..]; // Remove parent prefix
-      println!("    {prefix}: {rel_path}");
+      println!("    {} {}: {}", symbols::ADD.green(), prefix, rel_path.cyan());
     }
   }
 }

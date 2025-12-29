@@ -61,7 +61,7 @@ pub enum Segment {
 }
 
 /// Errors that can occur during placeholder parsing or resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, serde::Serialize, serde::Deserialize)]
 pub enum PlaceholderError {
   #[error("unclosed placeholder at position {0}")]
   Unclosed(usize),

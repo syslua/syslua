@@ -42,7 +42,7 @@ use super::types::{BindResult, BuildResult, DagResult, DriftResult, ExecuteConfi
 type RestoreResolverData = (HashMap<ObjectHash, BuildResult>, HashMap<ObjectHash, BindResult>);
 
 /// Result of an apply operation.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ApplyResult {
   /// The snapshot that was created.
   pub snapshot: Snapshot,
@@ -116,7 +116,7 @@ pub enum ApplyError {
 ///
 /// This is used internally to track which binds were successfully destroyed
 /// before a failure occurred, enabling restoration of those binds.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DestroyPhaseError {
   /// Bind hashes that were successfully destroyed before the failure.
   destroyed: Vec<ObjectHash>,
@@ -150,7 +150,7 @@ pub struct DestroyOptions {
 }
 
 /// Result of a destroy operation.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DestroyResult {
   /// Number of binds that were destroyed.
   pub binds_destroyed: usize,

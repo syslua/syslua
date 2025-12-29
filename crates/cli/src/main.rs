@@ -1,4 +1,5 @@
 mod cmd;
+mod output;
 
 use std::process::ExitCode;
 
@@ -7,11 +8,24 @@ use cmd::{cmd_apply, cmd_destroy, cmd_diff, cmd_info, cmd_init, cmd_plan, cmd_st
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum ColorChoice {
+  #[default]
+  Auto,
+  Always,
+  Never,
+}
+
 #[derive(Parser)]
 #[command(name = "syslua", author, version, about, long_about = None)]
 struct Cli {
-  #[arg(short, long, global = true)]
-  verbose: bool,
+  /// Enable debug logging (DEBUG level instead of INFO)
+  #[arg(short = 'd', long, global = true)]
+  debug: bool,
+
+  /// Control colored output
+  #[arg(long, value_enum, default_value = "auto", global = true)]
+  color: ColorChoice,
 
   #[command(subcommand)]
   command: Commands,
@@ -30,14 +44,25 @@ enum Commands {
     /// Check unchanged binds for drift and repair if needed
     #[arg(long)]
     repair: bool,
+    /// Output JSON instead of human-readable text
+    #[arg(long)]
+    json: bool,
   },
   /// Evaluate a config and create a plan without applying
-  Plan { file: String },
+  Plan {
+    file: String,
+    /// Output JSON instead of human-readable text
+    #[arg(long)]
+    json: bool,
+  },
   /// Remove all binds from the current snapshot
   Destroy {
     /// Show what would be destroyed without making changes
     #[arg(long)]
     dry_run: bool,
+    /// Output JSON instead of human-readable text
+    #[arg(long)]
+    json: bool,
   },
   /// Compare two snapshots and show differences
   Diff {
@@ -50,6 +75,9 @@ enum Commands {
     snapshot_b: Option<String>,
 
     /// Show detailed changes with actions
+    /// Output JSON instead of human-readable text
+    #[arg(long)]
+    json: bool,
     #[arg(short, long)]
     verbose: bool,
   },
@@ -74,30 +102,42 @@ enum Commands {
     /// Show all builds and binds
     #[arg(short, long)]
     verbose: bool,
+    /// Output JSON instead of human-readable text
+    #[arg(long)]
+    json: bool,
   },
 }
 
 fn main() -> ExitCode {
   let cli = Cli::parse();
 
-  let level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+  match cli.color {
+    ColorChoice::Always => owo_colors::set_override(true),
+    ColorChoice::Never => owo_colors::set_override(false),
+    ColorChoice::Auto => {}
+  }
 
-  FmtSubscriber::builder()
-    .with_max_level(level)
-    .with_target(false)
-    .without_time()
-    .init();
+  let level = if cli.debug { Level::DEBUG } else { Level::INFO };
+
+  let subscriber = FmtSubscriber::builder().with_max_level(level).with_target(false);
+
+  if cli.debug {
+    subscriber.init();
+  } else {
+    subscriber.without_time().init();
+  }
 
   let result = match cli.command {
     Commands::Init { path } => cmd_init(&path),
-    Commands::Apply { file, repair } => cmd_apply(&file, repair),
-    Commands::Plan { file } => cmd_plan(&file),
-    Commands::Destroy { dry_run } => cmd_destroy(dry_run),
+    Commands::Apply { file, repair, json } => cmd_apply(&file, repair, json),
+    Commands::Plan { file, json } => cmd_plan(&file, json),
+    Commands::Destroy { dry_run, json } => cmd_destroy(dry_run, json),
     Commands::Diff {
       snapshot_a,
       snapshot_b,
       verbose,
-    } => cmd_diff(snapshot_a, snapshot_b, verbose),
+      json,
+    } => cmd_diff(snapshot_a, snapshot_b, verbose, json),
     Commands::Update {
       config,
       inputs,
@@ -107,10 +147,7 @@ fn main() -> ExitCode {
       cmd_info();
       Ok(())
     }
-    Commands::Status { verbose } => {
-      cmd_status(verbose);
-      Ok(())
-    }
+    Commands::Status { verbose, json } => cmd_status(verbose, json),
   };
 
   match result {

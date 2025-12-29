@@ -6,9 +6,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 
 use syslua_lib::init::{InitOptions, init};
 use syslua_lib::platform;
+
+use crate::output::symbols;
 
 /// Execute the init command.
 ///
@@ -31,17 +34,47 @@ pub fn cmd_init(path: &str) -> Result<()> {
 
   let result = init(&options).context("Failed to initialize configuration")?;
 
-  println!("Initialized syslua configuration!");
+  println!(
+    "{} {}",
+    symbols::SUCCESS.green(),
+    "Initialized syslua configuration!".green().bold()
+  );
   println!();
-  println!("  Config directory: {}", result.config_dir.display());
-  println!("  Entry point:      {}", result.init_lua.display());
-  println!("  LuaLS config:     {}", result.luarc_json.display());
-  println!("  Type definitions: {}", result.types_dir.display());
-  println!("  Store:            {}", result.store_dir.display());
+  println!(
+    "  {} Config directory: {}",
+    symbols::INFO.cyan(),
+    result.config_dir.display()
+  );
+  println!(
+    "  {} Entry point:      {}",
+    symbols::INFO.cyan(),
+    result.init_lua.display()
+  );
+  println!(
+    "  {} LuaLS config:     {}",
+    symbols::INFO.cyan(),
+    result.luarc_json.display()
+  );
+  println!(
+    "  {} Type definitions: {}",
+    symbols::INFO.cyan(),
+    result.types_dir.display()
+  );
+  println!(
+    "  {} Store:            {}",
+    symbols::INFO.cyan(),
+    result.store_dir.display()
+  );
   println!();
-  println!("Next steps:");
-  println!("  1. Edit {} to configure your system", result.init_lua.display());
-  println!("  2. Run: sys apply {}", result.config_dir.display());
+  println!("{}", "Next steps:".bold());
+  println!(
+    "  1. Edit {} to configure your system",
+    result.init_lua.display().to_string().cyan()
+  );
+  println!(
+    "  2. Run: {}",
+    format!("sys apply {}", result.config_dir.display()).cyan()
+  );
 
   Ok(())
 }

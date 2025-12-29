@@ -3,11 +3,16 @@
 //! This command destroys all binds from the current snapshot, effectively
 //! removing everything syslua has applied.
 
+use std::time::Instant;
+
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 use tracing::info;
 
 use syslua_lib::execute::{DestroyOptions, ExecuteConfig, destroy};
 use syslua_lib::platform::paths::{data_dir, store_dir};
+
+use crate::output::{format_duration, print_json, print_stat, symbols};
 
 /// Execute the destroy command.
 ///
@@ -18,7 +23,9 @@ use syslua_lib::platform::paths::{data_dir, store_dir};
 /// - Clears the current snapshot pointer
 ///
 /// Prints a summary including counts of binds destroyed and builds orphaned.
-pub fn cmd_destroy(dry_run: bool) -> Result<()> {
+pub fn cmd_destroy(dry_run: bool, json: bool) -> Result<()> {
+  let start = Instant::now();
+
   // Log environment info for debugging
   info!(
     dry_run = dry_run,
@@ -53,18 +60,28 @@ pub fn cmd_destroy(dry_run: bool) -> Result<()> {
     "destroy command completed"
   );
 
-  // Print summary
-  println!();
-  if dry_run {
-    println!("Destroy dry run:");
-    println!("  Would destroy {} bind(s)", result.binds_destroyed);
-    println!("  Would orphan {} build(s) (for future GC)", result.builds_orphaned);
-  } else if result.binds_destroyed == 0 {
-    println!("Nothing to destroy.");
+  if json {
+    print_json(&result)?;
   } else {
-    println!("Destroy complete!");
-    println!("  Binds destroyed: {}", result.binds_destroyed);
-    println!("  Builds orphaned: {} (for future GC)", result.builds_orphaned);
+    println!();
+    if dry_run {
+      println!("{}", "Destroy dry run:".yellow());
+      print_stat("Would destroy", &format!("{} bind(s)", result.binds_destroyed));
+      print_stat(
+        "Would orphan",
+        &format!("{} build(s) (for future GC)", result.builds_orphaned),
+      );
+    } else if result.binds_destroyed == 0 {
+      println!("{} Nothing to destroy.", symbols::INFO.dimmed());
+    } else {
+      println!("{} {}", symbols::SUCCESS.green(), "Destroy complete!".green().bold());
+      print_stat("Binds destroyed", &result.binds_destroyed.to_string());
+      print_stat(
+        "Builds orphaned",
+        &format!("{} (for future GC)", result.builds_orphaned),
+      );
+      print_stat("Duration", &format_duration(start.elapsed()));
+    }
   }
 
   Ok(())
