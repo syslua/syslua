@@ -1180,6 +1180,7 @@ mod tests {
       binds_to_destroy: vec![],
       binds_unchanged: vec![ObjectHash("unchanged_bind".to_string())],
       binds_to_update: vec![],
+      builds_orphaned: vec![],
     };
 
     let exec_manifest = build_execution_manifest(&desired, &diff);

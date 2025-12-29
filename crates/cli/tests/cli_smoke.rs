@@ -289,6 +289,62 @@ fn info_shows_platform() {
 }
 
 // =============================================================================
+// status
+// =============================================================================
+
+#[test]
+fn status_no_snapshot() {
+  let env = TestEnv::empty();
+  env
+    .cmd()
+    .arg("status")
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("No snapshot found"));
+}
+
+#[test]
+fn status_after_apply() {
+  let env = TestEnv::with_config(BUILD_CONFIG);
+
+  env.cmd().arg("apply").arg(env.config()).assert().success();
+
+  env
+    .cmd()
+    .arg("status")
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Current snapshot:"))
+    .stdout(predicate::str::contains("Builds: 1"))
+    .stdout(predicate::str::contains("Binds: 0"));
+}
+
+#[test]
+fn status_verbose() {
+  let env = TestEnv::with_config(BUILD_CONFIG);
+
+  env.cmd().arg("apply").arg(env.config()).assert().success();
+
+  env
+    .cmd()
+    .arg("status")
+    .arg("--verbose")
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("test-pkg-"));
+}
+
+#[test]
+fn status_help() {
+  sys_cmd()
+    .arg("status")
+    .arg("--help")
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Show current system state"));
+}
+
+// =============================================================================
 // Error Handling
 // =============================================================================
 

@@ -35,12 +35,17 @@ pub struct StateDiff {
   /// Binds to update: (old_hash, new_hash) pairs where id matches but content changed
   /// and the new bind has update_actions defined.
   pub binds_to_update: Vec<(ObjectHash, ObjectHash)>,
+
+  /// Builds that are orphaned (in current, not in desired).
+  /// These builds are no longer referenced and can be garbage collected.
+  pub builds_orphaned: Vec<ObjectHash>,
 }
 
 impl StateDiff {
   /// Returns true if there are no changes to make.
   pub fn is_empty(&self) -> bool {
     self.builds_to_realize.is_empty()
+      && self.builds_orphaned.is_empty()
       && self.binds_to_apply.is_empty()
       && self.binds_to_destroy.is_empty()
       && self.binds_to_update.is_empty()
@@ -97,6 +102,15 @@ pub fn compute_diff(desired: &Manifest, current: Option<&Manifest>, store_path: 
       diff.builds_cached.push(hash.clone());
     } else {
       diff.builds_to_realize.push(hash.clone());
+    }
+  }
+
+  // Compute orphaned builds (in current but not in desired)
+  if let Some(current_manifest) = current {
+    for hash in current_manifest.builds.keys() {
+      if !desired.builds.contains_key(hash) {
+        diff.builds_orphaned.push(hash.clone());
+      }
     }
   }
 
@@ -830,5 +844,37 @@ mod tests {
     };
 
     assert_eq!(diff.total_binds(), 3);
+  }
+
+  #[test]
+  fn diff_orphaned_builds() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut current = Manifest::default();
+    current
+      .builds
+      .insert(ObjectHash("keep_build".to_string()), make_build_def("pkg1"));
+    current
+      .builds
+      .insert(ObjectHash("orphan_build".to_string()), make_build_def("pkg2"));
+
+    let mut desired = Manifest::default();
+    desired
+      .builds
+      .insert(ObjectHash("keep_build".to_string()), make_build_def("pkg1"));
+
+    let diff = compute_diff(&desired, Some(&current), temp_dir.path());
+
+    assert_eq!(diff.builds_orphaned.len(), 1);
+    assert!(diff.builds_orphaned.contains(&ObjectHash("orphan_build".to_string())));
+  }
+
+  #[test]
+  fn diff_is_empty_with_orphaned_builds_returns_false() {
+    let diff = StateDiff {
+      builds_orphaned: vec![ObjectHash("orphan".to_string())],
+      ..Default::default()
+    };
+    assert!(!diff.is_empty());
   }
 }

@@ -3,7 +3,7 @@ mod cmd;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use cmd::{cmd_apply, cmd_destroy, cmd_info, cmd_init, cmd_plan, cmd_update};
+use cmd::{cmd_apply, cmd_destroy, cmd_diff, cmd_info, cmd_init, cmd_plan, cmd_status, cmd_update};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -39,6 +39,20 @@ enum Commands {
     #[arg(long)]
     dry_run: bool,
   },
+  /// Compare two snapshots and show differences
+  Diff {
+    /// First snapshot ID (defaults to previous if not specified)
+    #[arg(value_name = "SNAPSHOT_A")]
+    snapshot_a: Option<String>,
+
+    /// Second snapshot ID (defaults to current if not specified)
+    #[arg(value_name = "SNAPSHOT_B")]
+    snapshot_b: Option<String>,
+
+    /// Show detailed changes with actions
+    #[arg(short, long)]
+    verbose: bool,
+  },
   /// Update inputs by re-resolving to latest revisions
   Update {
     /// Path to config file (default: ./init.lua or ~/.config/syslua/init.lua)
@@ -55,6 +69,12 @@ enum Commands {
   },
   /// Display system information
   Info,
+  /// Show current system state
+  Status {
+    /// Show all builds and binds
+    #[arg(short, long)]
+    verbose: bool,
+  },
 }
 
 fn main() -> ExitCode {
@@ -73,6 +93,11 @@ fn main() -> ExitCode {
     Commands::Apply { file, repair } => cmd_apply(&file, repair),
     Commands::Plan { file } => cmd_plan(&file),
     Commands::Destroy { dry_run } => cmd_destroy(dry_run),
+    Commands::Diff {
+      snapshot_a,
+      snapshot_b,
+      verbose,
+    } => cmd_diff(snapshot_a, snapshot_b, verbose),
     Commands::Update {
       config,
       inputs,
@@ -80,6 +105,10 @@ fn main() -> ExitCode {
     } => cmd_update(config.as_deref(), inputs, dry_run),
     Commands::Info => {
       cmd_info();
+      Ok(())
+    }
+    Commands::Status { verbose } => {
+      cmd_status(verbose);
       Ok(())
     }
   };
