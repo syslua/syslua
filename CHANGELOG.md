@@ -5,11 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-29
+
+### Features
+
+- Sys status and diff; better outputs and logging (#14) by @ian-pascoe in [#14](https://github.com/spirit-led-software/syslua/pull/14)
+- Bind check callback (#12) by @ian-pascoe in [#12](https://github.com/spirit-led-software/syslua/pull/12)
+
+### Refactoring
+
+- Unified store paths (#13) by @ian-pascoe in [#13](https://github.com/spirit-led-software/syslua/pull/13)
+
+
+
+**Full Changelog**: https://github.com/spirit-led-software/syslua/compare/v0.4.0...v0.5.0
 ## [0.4.0] - 2025-12-24
 
 ### Features
 
 - Destroy command (#9) by @ian-pascoe in [#9](https://github.com/spirit-led-software/syslua/pull/9)
+
+### Miscellaneous
+
+- Release v0.4.0 (#11) by @syslua-bot[bot] in [#11](https://github.com/spirit-led-software/syslua/pull/11)
 
 ### Refactoring
 
