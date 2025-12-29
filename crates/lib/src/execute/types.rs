@@ -219,6 +219,14 @@ fn num_cpus() -> usize {
   std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4)
 }
 
+impl From<std::io::Error> for ExecuteError {
+  fn from(err: std::io::Error) -> Self {
+    ExecuteError::Io {
+      message: err.to_string(),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -339,10 +347,5 @@ mod tests {
   fn execute_config_default_parallelism() {
     let config = ExecuteConfig::default();
     assert!(config.parallelism >= 1);
-  }
-}
-impl From<std::io::Error> for ExecuteError {
-  fn from(err: std::io::Error) -> Self {
-    ExecuteError::Io { message: err.to_string() }
   }
 }

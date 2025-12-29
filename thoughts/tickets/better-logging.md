@@ -1,7 +1,8 @@
 ---
-status: implemented
+status: reviewed
 research: thoughts/research/2025-12-29_better-logging.md
 plan: thoughts/plans/better-logging.md
+review: thoughts/reviews/better-logging-review.md
 ---
 
 # thoughts/tickets/better-logging.md
