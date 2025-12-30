@@ -1,3 +1,7 @@
+//! Diff command implementation.
+//!
+//! Compares two snapshots and displays added/removed/updated builds and binds.
+
 use anyhow::{Context, Result, bail};
 use owo_colors::{OwoColorize, Stream};
 

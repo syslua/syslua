@@ -1,3 +1,16 @@
+//! CLI command implementations.
+//!
+//! Each submodule implements a single CLI command:
+//!
+//! - [`apply`] - Evaluate config and apply changes to the system
+//! - [`destroy`] - Remove all managed binds from the system
+//! - [`diff`] - Show differences between snapshots
+//! - [`info`] - Display information about builds, binds, or inputs
+//! - [`init`] - Initialize a new syslua configuration
+//! - [`plan`] - Show what changes would be made without applying
+//! - [`status`] - Show current system state vs expected state
+//! - [`update`] - Update input locks to latest versions
+
 mod apply;
 mod destroy;
 mod diff;

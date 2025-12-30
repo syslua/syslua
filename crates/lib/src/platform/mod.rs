@@ -1,3 +1,7 @@
+//! Cross-platform abstractions.
+//!
+//! Provides platform detection, path conventions, and OS-specific utilities.
+
 pub mod arch;
 pub mod immutable;
 pub mod os;

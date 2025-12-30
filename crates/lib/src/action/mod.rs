@@ -1,3 +1,25 @@
+//! Build and bind action execution.
+//!
+//! This module provides the action execution system for builds and binds.
+//! Actions are the primitive operations that can be performed during build
+//! or bind execution, such as running shell commands (`exec`) or downloading
+//! files (`fetch_url`).
+//!
+//! # Action Types
+//!
+//! - [`Action::Exec`] - Execute a shell command with optional args, env, and cwd
+//! - [`Action::FetchUrl`] - Download a file from a URL with SHA256 verification
+//!
+//! # Placeholder Resolution
+//!
+//! Actions support placeholder syntax for dynamic values:
+//! - `$${out}` - The build/bind output directory
+//! - `$${action:N}` - Output from action at index N
+//! - `$${build:HASH:output}` - Output from a dependency build
+//! - `$${bind:HASH:output}` - Output from a dependency bind
+//!
+//! See [`crate::placeholder`] for the full placeholder system.
+
 pub mod actions;
 mod types;
 

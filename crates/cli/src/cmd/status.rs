@@ -1,3 +1,7 @@
+//! Status command implementation.
+//!
+//! Displays current snapshot state including build/bind counts and store usage.
+
 use anyhow::Result;
 use std::path::Path;
 

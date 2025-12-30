@@ -1,3 +1,8 @@
+//! CLI output formatting utilities.
+//!
+//! Provides consistent formatting for terminal output including colored status
+//! messages, human-readable byte/duration formatting, and Unicode symbols.
+
 use std::time::Duration;
 
 use anyhow::Context;
