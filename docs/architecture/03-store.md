@@ -2,7 +2,7 @@
 
 > **Core Principle:** The store is the realization engine for builds.
 
-Every object in `store/obj/` is the output of realizing a build. Objects use a human-readable naming scheme: `obj/name-version-hash/` (or `obj/name-hash/` if no version).
+Every object in `store/build/` is the output of realizing a build. Objects use content-addressed paths: `build/<hash>/` where hash is a 20-character truncated SHA-256.
 
 The store provides:
 
@@ -34,45 +34,42 @@ SysLua uses a multi-level store architecture:
 
 ```
 /syslua/store/
-├── obj/<name>-<version>-<hash>/  # Realized build outputs (immutable, world-readable)
-│   ├── bin/                      # The actual content produced by the build
-│   ├── lib/                      # Hash is 20 chars (truncated SHA-256)
+├── build/<hash>/                 # Realized build outputs (immutable, world-readable)
+│   ├── bin/                      # Executables produced by the build
+│   ├── lib/                      # Libraries (hash is 20-char truncated SHA-256)
 │   └── ...
 ├── bind/<hash>/                  # Bind state tracking (20-char hash)
-├── drv/<hash>.drv                # Serialized build descriptions (for debugging/rebuilds)
-├── drv-out/<hash>                # Maps build hash → output hash (cache index)
-└── metadata/
-    ├── manifest.json             # Current system manifest
-    ├── snapshots.json            # System snapshots
-    └── gc-roots/                 # GC roots to prevent cleanup
+│   └── state.json                # Bind execution state
+└── snapshots/
+    ├── index.json                # Index of all snapshots
+    └── <snapshot_id>.json        # Individual snapshot data
 ```
 
 ### Store Path Format
 
-- With version: `obj/ripgrep-15.1.0-abc123def456789012/`
-- Without version: `obj/my-config-abc123def456789012/`
+- Build path: `build/abc123def456789012/`
+- Bind path: `bind/abc123def456789012/`
 - Hash is 20 chars (truncated SHA-256, defined as `HASH_PREFIX_LEN` in `consts.rs`)
 
 ### Key Directories
 
-| Directory   | Purpose                                                               |
-| ----------- | --------------------------------------------------------------------- |
-| `obj/`      | **The actual store** - all build outputs live here                    |
-| `drv/`      | Build descriptions - enables rebuilds and debugging                   |
-| `drv-out/`  | Cache index - maps build hash to output hash for instant lookups      |
-| `metadata/` | State tracking - manifest, snapshots, GC roots                        |
+| Directory    | Purpose                                                               |
+| ------------ | --------------------------------------------------------------------- |
+| `build/`     | **The actual store** - all build outputs live here                    |
+| `bind/`      | Bind state tracking - execution state for each bind                   |
+| `snapshots/` | State tracking - index and individual snapshot data                   |
 
 ## User Store Layout
 
 ```
 ~/.local/share/syslua/
 ├── store/
-│   ├── obj/<name>-<version>-<hash>/  # User's packages (or hardlinks to system store)
-│   ├── drv/<hash>.drv                # User's build specs
-│   └── metadata/
-│       ├── manifest.json             # Current user manifest
-│       ├── snapshots.json            # User snapshots
-│       └── gc-roots/                 # User GC roots
+│   ├── build/<hash>/                 # User's build outputs (or hardlinks to system store)
+│   ├── bind/<hash>/                  # User's bind state
+│   │   └── state.json
+│   └── snapshots/
+│       ├── index.json                # User snapshot index
+│       └── <snapshot_id>.json        # Individual snapshots
 ├── zshenv                            # Generated environment script (bash/zsh)
 ├── env.fish                          # Generated environment script (fish)
 ├── env.ps1                           # Generated environment script (PowerShell)
@@ -162,7 +159,7 @@ sys apply ~/.config/syslua/init.lua
 
 ## Immutability
 
-Objects in `obj/<hash>/` are made immutable after extraction:
+Objects in `build/<hash>/` are made immutable after extraction:
 
 ### System Store Objects
 
@@ -229,37 +226,27 @@ Objects in `obj/<hash>/` are made immutable after extraction:
    build_hash = sha256(name + version + inputs + actions) = "abc123..."
 ```
 
-4. Store checks cache (drv-out/abc123...):
+4. Store checks cache:
 
 ```
-   If exists: output_hash = read("drv-out/abc123...")
-   If obj/jq-1.7.1-<output_hash>/ exists: CACHE HIT - skip build
+   If build/abc123def456789012/ exists: CACHE HIT - skip build
 ```
 
 5. If cache miss, store executes build:
    - Realize any input builds first
    - Execute actions (fetch, cmd, etc.)
-   - Compute output hash from result
-   - Move to obj/jq-1.7.1-<output_hash>/
+   - Compute content hash from result
+   - Move to build/<hash>/
    - Make immutable
-   - Write drv-out/abc123... → output_hash
 
 6. Result in store:
 
 ```
    /syslua/store/
-   ├── obj/
-   │ └── jq-1.7.1-def456789/
-   │ └── bin/
-   │ └── jq # The actual binary
-   ├── pkg/
-   │ └── jq/
-   │ └── 1.7.1/
-   │ └── aarch64-darwin → ../../../obj/jq-1.7.1-def456789/
-   ├── drv/
-   │ └── abc123....drv # Serialized build spec (for debugging)
-   └── drv-out/
-   └── abc123... # Contains: def456789
+   └── build/
+       └── abc123def456789012/
+           └── bin/
+               └── jq  # The actual binary
 ```
 
 **Key insight**: The build hash (`abc123...`) is computed from the _description_, while the output hash is computed from the _content_. This separation enables:
@@ -271,26 +258,17 @@ Objects in `obj/<hash>/` are made immutable after extraction:
 
 ## Build Caching
 
-Built packages are cached by **output hash** (hash of the actual built artifacts), not build hash. This avoids cache invalidation issues where rebuilding with the same inputs produces a different hash.
+Built packages are cached by **content hash** (hash computed from the build definition). This enables cache hits when the same build definition is used.
 
 ```
 store/
-├── obj/<output-hash>/    # Built artifacts (immutable)
-├── drv/<build-hash>.drv  # Build files (build instructions)
-└── drv-out/<build-hash>  # Maps build hash → output hash
+└── build/<hash>/    # Built artifacts (immutable, content-addressed)
 ```
-
-**Why output hash instead of build hash:**
-
-- Same source code built on different machines produces same output hash
-- Compiler version changes don't invalidate cache if output is identical
-- Binary cache hits are based on what you need, not how it was built
 
 **Cache lookup order:**
 
-1. Local store - check if output hash exists in `obj/`
-2. Binary cache - query official cache by output hash
-3. Build from source - execute build, compute output hash, store result
+1. Local store - check if `build/<hash>/` exists
+2. Build from source - execute build actions, store result
 
 ## Related Documentation
 

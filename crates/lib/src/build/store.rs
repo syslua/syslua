@@ -1,3 +1,7 @@
+//! Build artifact storage.
+//!
+//! Provides path resolution for build outputs in the store (`<store>/build/<hash>/`).
+
 use std::path::{Path, PathBuf};
 
 use crate::{platform::paths::store_dir, util::hash::ObjectHash};

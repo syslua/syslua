@@ -1,3 +1,7 @@
+//! Bind storage paths.
+//!
+//! Provides path resolution for bind metadata in the store (`<store>/bind/<hash>/`).
+
 use std::path::PathBuf;
 
 use crate::{platform::paths::store_dir, util::hash::ObjectHash};

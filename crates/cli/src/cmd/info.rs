@@ -1,3 +1,7 @@
+//! Info command implementation.
+//!
+//! Displays system information including the detected platform triple.
+
 use syslua_lib::platform::platform_triple;
 
 pub fn cmd_info() {

@@ -283,6 +283,17 @@ Run 'sys plan' to review the execution plan.
 
 **Idempotent re-apply**: After a failed apply and rollback, running `sys apply` again will attempt the same changes. Fix the underlying issue (e.g., the missing `libfoo` dependency) before re-running.
 
+## Repair Mode
+
+When `--repair` is passed to `sys apply`, the system checks for drift in unchanged binds:
+
+1. For each bind in `binds_unchanged`, run its `check` callback (if present)
+2. If `check` returns `drifted: true`, add to repair list
+3. Re-run `create` or `update` for drifted binds
+4. Report drift results in `ApplyResult.drift_results`
+
+This enables detecting and fixing configuration drift without a full re-apply.
+
 ## Plan Command
 
 Preview changes without applying (evaluates config to manifest, builds DAG, but doesn't execute):

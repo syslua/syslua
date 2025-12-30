@@ -42,10 +42,14 @@ pub struct Manifest {
 
 /// An evaluated bind definition (serializable).
 pub struct BindDef {
-    pub inputs: Option<InputsRef>,
-    pub apply_actions: Vec<BindAction>,
+    pub id: Option<String>,
+    pub inputs: Option<BindInputsDef>,
     pub outputs: Option<BTreeMap<String, String>>,
-    pub destroy_actions: Option<Vec<BindAction>>,
+    pub create_actions: Vec<Action>,
+    pub update_actions: Option<Vec<Action>>,
+    pub destroy_actions: Vec<Action>,
+    pub check_actions: Option<Vec<Action>>,
+    pub check_outputs: Option<BindCheckOutputs>,
 }
 
 /// Actions that can be performed during a bind.
@@ -63,14 +67,13 @@ pub enum BindAction {
 ```
 ~/.local/share/syslua/
 ├── snapshots/
-│   ├── metadata.json           # Index of all snapshots
+│   ├── index.json              # Index of all snapshots
 │   ├── <snapshot_id>.json      # Individual snapshot data
 │   └── ...
 └── store/
-    └── obj/                    # Build outputs (immutable, content-addressed)
-        ├── ripgrep-15.1.0-abc123def456789012/  # 20-char hash
-        ├── file-gitconfig-def456abc123789012/
-        └── env-editor-ghi789abc123456012/
+    └── build/                  # Build outputs (immutable, content-addressed)
+        ├── abc123def456789012/
+        └── ...
 ```
 
 ### Metadata Index
@@ -83,7 +86,7 @@ pub enum BindAction {
       "id": "1765208363188",
       "created_at": 1733667300,
       "build_count": 5,
-      "activation_count": 8
+      "bind_count": 8
     }
   ],
   "current": "1765208363188"
@@ -108,10 +111,10 @@ pub enum BindAction {
         "outputs": { "out": "/store/obj/ripgrep-abc123" }
       }
     ],
-    "activations": [
+    "bindings": [
       {
         "inputs": { "build": { "hash": "abc123", "outputs": { "out": "..." } } },
-        "apply_actions": [
+        "create_actions": [
           { "Cmd": { "cmd": "ln -sf /store/path/bin/rg /usr/local/bin/rg" } }
         ],
         "destroy_actions": [
