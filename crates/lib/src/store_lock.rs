@@ -168,8 +168,12 @@ fn try_lock(file: &File, mode: LockMode) -> io::Result<()> {
     LockMode::Exclusive => LOCKFILE_FAIL_IMMEDIATELY | LOCKFILE_EXCLUSIVE_LOCK,
   };
 
-  let mut overlapped = std::mem::zeroed();
-  let result = unsafe { LockFileEx(handle, flags, 0, 1, 0, &mut overlapped) };
+  // SAFETY: OVERLAPPED is a plain data struct that is valid when zero-initialized.
+  // LockFileEx is safe to call with a valid file handle and zeroed OVERLAPPED.
+  let result = unsafe {
+    let mut overlapped = std::mem::zeroed();
+    LockFileEx(handle, flags, 0, 1, 0, &mut overlapped)
+  };
 
   if result == 0 {
     Err(io::Error::last_os_error())

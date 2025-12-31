@@ -2,7 +2,7 @@
 type: feature
 priority: high
 created: 2025-12-31T10:24:00Z
-status: implemented
+status: reviewed
 tags: [cli, gc, garbage-collection, storage, locking]
 keywords:
   [gc, garbage collection, orphaned builds, destroyed binds, store cleanup, locking, .syslua-complete, inputs cache]
