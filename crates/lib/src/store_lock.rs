@@ -65,6 +65,21 @@ pub struct StoreLock {
 }
 
 impl StoreLock {
+  /// Reads the lock metadata from the held file handle.
+  ///
+  /// This is useful for tests and diagnostics where the caller already holds
+  /// the lock and needs to verify metadata without opening a new file handle
+  /// (which would fail on Windows due to mandatory locking).
+  pub fn read_metadata(&self) -> io::Result<LockMetadata> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = &self._file;
+    file.seek(SeekFrom::Start(0))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    serde_json::from_str(&contents).map_err(io::Error::other)
+  }
+
   pub fn acquire(mode: LockMode, command: &str) -> Result<Self, StoreLockError> {
     let store = store_dir();
     let lock_path = store.join(LOCK_FILENAME);
@@ -230,10 +245,8 @@ mod tests {
   fn lock_metadata_written() {
     with_temp_store(|| {
       let lock = StoreLock::acquire(LockMode::Exclusive, "my-command").unwrap();
-      let lock_path = lock.lock_path().to_path_buf();
 
-      let contents = std::fs::read_to_string(&lock_path).unwrap();
-      let metadata: LockMetadata = serde_json::from_str(&contents).unwrap();
+      let metadata = lock.read_metadata().unwrap();
 
       assert_eq!(metadata.version, 1);
       assert_eq!(metadata.command, "my-command");
