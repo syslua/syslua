@@ -4,7 +4,8 @@ mod output;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use cmd::{cmd_apply, cmd_destroy, cmd_diff, cmd_info, cmd_init, cmd_plan, cmd_status, cmd_update};
+use cmd::{cmd_apply, cmd_destroy, cmd_diff, cmd_gc, cmd_info, cmd_init, cmd_plan, cmd_status, cmd_update};
+use output::OutputFormat;
 use tracing::Level;
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -86,25 +87,25 @@ enum Commands {
     /// Check unchanged binds for drift and repair if needed
     #[arg(long)]
     repair: bool,
-    /// Output JSON instead of human-readable text
-    #[arg(long)]
-    json: bool,
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
   },
   /// Evaluate a config and create a plan without applying
   Plan {
     file: String,
-    /// Output JSON instead of human-readable text
-    #[arg(long)]
-    json: bool,
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
   },
   /// Remove all binds from the current snapshot
   Destroy {
     /// Show what would be destroyed without making changes
     #[arg(long)]
     dry_run: bool,
-    /// Output JSON instead of human-readable text
-    #[arg(long)]
-    json: bool,
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
   },
   /// Compare two snapshots and show differences
   Diff {
@@ -117,11 +118,11 @@ enum Commands {
     snapshot_b: Option<String>,
 
     /// Show detailed changes with actions
-    /// Output JSON instead of human-readable text
-    #[arg(long)]
-    json: bool,
     #[arg(short, long)]
     verbose: bool,
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
   },
   /// Update inputs by re-resolving to latest revisions
   Update {
@@ -144,9 +145,18 @@ enum Commands {
     /// Show all builds and binds
     #[arg(short, long)]
     verbose: bool,
-    /// Output JSON instead of human-readable text
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
+  },
+  /// Clean up unused builds and inputs from the store
+  Gc {
+    /// Show what would be removed without making changes
     #[arg(long)]
-    json: bool,
+    dry_run: bool,
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "text")]
+    output: OutputFormat,
   },
 }
 
@@ -199,15 +209,15 @@ fn main() -> ExitCode {
 
   let result = match cli.command {
     Commands::Init { path } => cmd_init(&path),
-    Commands::Apply { file, repair, json } => cmd_apply(&file, repair, json),
-    Commands::Plan { file, json } => cmd_plan(&file, json),
-    Commands::Destroy { dry_run, json } => cmd_destroy(dry_run, json),
+    Commands::Apply { file, repair, output } => cmd_apply(&file, repair, output),
+    Commands::Plan { file, output } => cmd_plan(&file, output),
+    Commands::Destroy { dry_run, output } => cmd_destroy(dry_run, output),
     Commands::Diff {
       snapshot_a,
       snapshot_b,
       verbose,
-      json,
-    } => cmd_diff(snapshot_a, snapshot_b, verbose, json),
+      output,
+    } => cmd_diff(snapshot_a, snapshot_b, verbose, output),
     Commands::Update {
       config,
       inputs,
@@ -217,7 +227,8 @@ fn main() -> ExitCode {
       cmd_info();
       Ok(())
     }
-    Commands::Status { verbose, json } => cmd_status(verbose, json),
+    Commands::Status { verbose, output } => cmd_status(verbose, output),
+    Commands::Gc { dry_run, output } => cmd_gc(dry_run, output),
   };
 
   match result {

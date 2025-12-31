@@ -14,6 +14,7 @@
 mod apply;
 mod destroy;
 mod diff;
+mod gc;
 mod info;
 mod init;
 mod plan;
@@ -23,6 +24,7 @@ mod update;
 pub use apply::cmd_apply;
 pub use destroy::cmd_destroy;
 pub use diff::cmd_diff;
+pub use gc::cmd_gc;
 pub use info::cmd_info;
 pub use init::cmd_init;
 pub use plan::cmd_plan;

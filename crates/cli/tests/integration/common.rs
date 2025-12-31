@@ -72,10 +72,15 @@ impl TestEnv {
   }
 
   /// Output path for bind test artifacts.
-  ///
-  /// Creates the directory if it doesn't exist.
   pub fn output_path(&self) -> PathBuf {
     let p = self.temp.path().join("output");
+    std::fs::create_dir_all(&p).unwrap();
+    dunce::canonicalize(&p).unwrap_or(p)
+  }
+
+  /// Cache path for downloads, etc.
+  pub fn cache_path(&self) -> PathBuf {
+    let p = self.temp.path().join("cache");
     std::fs::create_dir_all(&p).unwrap();
     dunce::canonicalize(&p).unwrap_or(p)
   }
@@ -85,13 +90,17 @@ impl TestEnv {
   /// Sets environment variables for isolated testing:
   /// - `SYSLUA_ROOT`: Isolated root path
   /// - `XDG_DATA_HOME`: Isolated data path (for snapshots)
+  /// - `XDG_CACHE_HOME`: Isolated cache path
   /// - `APPDATA`: Isolated data path (for Windows)
+  /// - `LOCALAPPDATA`: Isolated cache path (for Windows)
   /// - `TEST_OUTPUT_DIR`: Output path for test artifacts
   pub fn sys_cmd(&self) -> Command {
     let mut cmd: Command = cargo_bin_cmd!("sys");
     cmd.env("SYSLUA_ROOT", self.root_path());
     cmd.env("XDG_DATA_HOME", self.data_path());
+    cmd.env("XDG_CACHE_HOME", self.cache_path());
     cmd.env("APPDATA", self.data_path()); // For Windows
+    cmd.env("LOCALAPPDATA", self.cache_path()); // For Windows cache
     cmd.env("TEST_OUTPUT_DIR", self.output_path());
     cmd
   }

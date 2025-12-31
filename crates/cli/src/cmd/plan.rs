@@ -12,13 +12,13 @@ use owo_colors::OwoColorize;
 
 use syslua_lib::eval::evaluate_config;
 
-use crate::output::{format_duration, print_json, print_stat, symbols, truncate_hash};
+use crate::output::{OutputFormat, format_duration, print_json, print_stat, symbols, truncate_hash};
 use syslua_lib::execute::{ExecuteConfig, check_unchanged_binds};
 use syslua_lib::platform::paths::{plans_dir, store_dir};
 use syslua_lib::snapshot::{SnapshotStore, compute_diff};
 use syslua_lib::util::hash::Hashable;
 
-pub fn cmd_plan(file: &str, json: bool) -> Result<()> {
+pub fn cmd_plan(file: &str, output: OutputFormat) -> Result<()> {
   let start = Instant::now();
   let path = Path::new(file);
 
@@ -43,7 +43,7 @@ pub fn cmd_plan(file: &str, json: bool) -> Result<()> {
   let store_path = store_dir();
   let diff = compute_diff(&manifest, current_manifest, &store_path);
 
-  if json {
+  if output.is_json() {
     // For JSON output, we need to check for drift first
     let drift_results = if !diff.binds_unchanged.is_empty() {
       let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;

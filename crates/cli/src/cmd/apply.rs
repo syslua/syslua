@@ -13,8 +13,8 @@ use tracing::info;
 use syslua_lib::execute::{ApplyOptions, ExecuteConfig, apply};
 
 use crate::output::{
-  format_duration, print_error, print_info, print_json, print_stat, print_success, print_warning, symbols,
-  truncate_hash,
+  OutputFormat, format_duration, print_error, print_info, print_json, print_stat, print_success, print_warning,
+  symbols, truncate_hash,
 };
 use syslua_lib::platform::paths;
 
@@ -29,7 +29,7 @@ use syslua_lib::platform::paths;
 /// - Saves new snapshot
 ///
 /// Prints a summary including counts of builds realized, binds applied/destroyed, and the snapshot ID.
-pub fn cmd_apply(file: &str, repair: bool, json: bool) -> Result<()> {
+pub fn cmd_apply(file: &str, repair: bool, output: OutputFormat) -> Result<()> {
   let start = Instant::now();
   let path = Path::new(file);
 
@@ -43,7 +43,7 @@ pub fn cmd_apply(file: &str, repair: bool, json: bool) -> Result<()> {
   let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
   let result = rt.block_on(apply(path, &options)).context("Apply failed")?;
 
-  if json {
+  if output.is_json() {
     print_json(&result)?;
   } else {
     println!();

@@ -32,6 +32,7 @@ use crate::execute::execute_manifest;
 use crate::manifest::Manifest;
 use crate::platform::paths::store_dir;
 use crate::snapshot::{Snapshot, SnapshotError, SnapshotStore, StateDiff, compute_diff, generate_snapshot_id};
+use crate::store_lock::{LockMode, StoreLock, StoreLockError};
 use crate::util::hash::ObjectHash;
 
 use super::dag::{DagNode, ExecutionDag};
@@ -85,6 +86,10 @@ pub enum ApplyError {
   /// Config file not found.
   #[error("config file not found: {0}")]
   ConfigNotFound(PathBuf),
+
+  /// Store lock acquisition failed.
+  #[error("failed to acquire store lock: {0}")]
+  Lock(#[from] StoreLockError),
 
   /// Destroy phase failed.
   #[error("failed to destroy bind {hash}: {source}")]
@@ -187,6 +192,9 @@ pub async fn apply(config_path: &Path, options: &ApplyOptions) -> Result<ApplyRe
   if !config_path.exists() {
     return Err(ApplyError::ConfigNotFound(config_path.to_path_buf()));
   }
+
+  // Acquire exclusive lock on the store
+  let _lock = StoreLock::acquire(LockMode::Exclusive, "apply")?;
 
   // 1. Load current state
   let snapshot_store = SnapshotStore::default_store();
@@ -560,6 +568,9 @@ async fn repair_drifted_binds(
 /// A [`DestroyResult`] containing counts of destroyed binds and orphaned builds.
 pub async fn destroy(options: &DestroyOptions) -> Result<DestroyResult, ApplyError> {
   info!(dry_run = options.dry_run, "starting destroy");
+
+  // Acquire exclusive lock on the store
+  let _lock = StoreLock::acquire(LockMode::Exclusive, "destroy")?;
 
   // 1. Load current state
   let snapshot_store = SnapshotStore::default_store();

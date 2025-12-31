@@ -12,7 +12,7 @@ use tracing::info;
 use syslua_lib::execute::{DestroyOptions, ExecuteConfig, destroy};
 use syslua_lib::platform::paths::{data_dir, store_dir};
 
-use crate::output::{format_duration, print_json, print_stat, symbols};
+use crate::output::{OutputFormat, format_duration, print_json, print_stat, symbols};
 
 /// Execute the destroy command.
 ///
@@ -23,7 +23,7 @@ use crate::output::{format_duration, print_json, print_stat, symbols};
 /// - Clears the current snapshot pointer
 ///
 /// Prints a summary including counts of binds destroyed and builds orphaned.
-pub fn cmd_destroy(dry_run: bool, json: bool) -> Result<()> {
+pub fn cmd_destroy(dry_run: bool, output: OutputFormat) -> Result<()> {
   let start = Instant::now();
 
   // Log environment info for debugging
@@ -60,7 +60,7 @@ pub fn cmd_destroy(dry_run: bool, json: bool) -> Result<()> {
     "destroy command completed"
   );
 
-  if json {
+  if output.is_json() {
     print_json(&result)?;
   } else {
     println!();

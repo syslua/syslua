@@ -13,9 +13,14 @@ use syslua_lib::platform::paths::{snapshots_dir, store_dir};
 use syslua_lib::snapshot::{Snapshot, SnapshotStore, StateDiff, compute_diff};
 use syslua_lib::util::hash::ObjectHash;
 
-use crate::output::{print_json, symbols, truncate_hash};
+use crate::output::{OutputFormat, print_json, symbols, truncate_hash};
 
-pub fn cmd_diff(snapshot_a: Option<String>, snapshot_b: Option<String>, verbose: bool, json: bool) -> Result<()> {
+pub fn cmd_diff(
+  snapshot_a: Option<String>,
+  snapshot_b: Option<String>,
+  verbose: bool,
+  output: OutputFormat,
+) -> Result<()> {
   let store = SnapshotStore::new(snapshots_dir());
 
   let (snap_a, snap_b) = load_snapshots_to_compare(&store, snapshot_a, snapshot_b)?;
@@ -23,7 +28,7 @@ pub fn cmd_diff(snapshot_a: Option<String>, snapshot_b: Option<String>, verbose:
   let store_path = store_dir();
   let diff = compute_diff(&snap_b.manifest, Some(&snap_a.manifest), &store_path);
 
-  if json {
+  if output.is_json() {
     let diff_output = serde_json::json!({
       "snapshot_a": snap_a,
       "snapshot_b": snap_b,

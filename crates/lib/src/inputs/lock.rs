@@ -240,7 +240,7 @@ impl LockFileV1 {
   ///
   /// Performs a depth-first traversal of the dependency graph starting from
   /// the root node. Returns a set of all reachable node labels.
-  fn collect_reachable_nodes(&self) -> std::collections::HashSet<String> {
+  pub fn collect_reachable_nodes(&self) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
 
     let mut reachable = HashSet::new();

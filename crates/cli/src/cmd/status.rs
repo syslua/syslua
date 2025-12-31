@@ -11,10 +11,10 @@ use syslua_lib::platform::paths::snapshots_dir;
 use syslua_lib::snapshot::SnapshotStore;
 
 use crate::output::{
-  self, format_bytes, print_error, print_info, print_json, print_stat, print_success, truncate_hash,
+  self, OutputFormat, format_bytes, print_error, print_info, print_json, print_stat, print_success, truncate_hash,
 };
 
-pub fn cmd_status(verbose: bool, json: bool) -> Result<()> {
+pub fn cmd_status(verbose: bool, output: OutputFormat) -> Result<()> {
   let store = SnapshotStore::new(snapshots_dir());
 
   let snapshot = match store.load_current() {
@@ -31,7 +31,7 @@ pub fn cmd_status(verbose: bool, json: bool) -> Result<()> {
 
   let usage = calculate_store_usage(&snapshot.manifest);
 
-  if json {
+  if output.is_json() {
     let build_list: Vec<_> = snapshot
       .manifest
       .builds

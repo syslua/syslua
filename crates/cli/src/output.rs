@@ -6,7 +6,21 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use clap::ValueEnum;
 use owo_colors::{OwoColorize, Stream};
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum OutputFormat {
+  #[default]
+  Text,
+  Json,
+}
+
+impl OutputFormat {
+  pub fn is_json(self) -> bool {
+    matches!(self, OutputFormat::Json)
+  }
+}
 
 pub mod symbols {
   pub const SUCCESS: &str = "✓";

@@ -46,7 +46,9 @@ impl TestEnv {
     let mut cmd: Command = cargo_bin_cmd!("sys");
     cmd.env("SYSLUA_ROOT", self.temp.path().join("syslua"));
     cmd.env("XDG_DATA_HOME", self.temp.path().join("data"));
+    cmd.env("XDG_CACHE_HOME", self.temp.path().join("cache"));
     cmd.env("APPDATA", self.temp.path().join("data"));
+    cmd.env("LOCALAPPDATA", self.temp.path().join("cache"));
     cmd
   }
 
