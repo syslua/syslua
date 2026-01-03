@@ -59,6 +59,7 @@ impl Snapshot {
       id: self.id.clone(),
       created_at: self.created_at,
       config_path: self.config_path.clone(),
+      tags: vec![],
       build_count: self.build_count(),
       bind_count: self.bind_count(),
     }
@@ -79,6 +80,10 @@ pub struct SnapshotMetadata {
 
   /// Path to the configuration file that produced this state.
   pub config_path: Option<PathBuf>,
+
+  /// Human-readable tags for this snapshot.
+  #[serde(default)]
+  pub tags: Vec<String>,
 
   /// Number of builds in this snapshot.
   pub build_count: usize,
@@ -194,6 +199,16 @@ impl SnapshotIndex {
   pub fn is_empty(&self) -> bool {
     self.snapshots.is_empty()
   }
+
+  pub fn update_tags(&mut self, id: &str, tags: Vec<String>) -> Result<(), SnapshotError> {
+    let metadata = self
+      .snapshots
+      .iter_mut()
+      .find(|s| s.id == id)
+      .ok_or_else(|| SnapshotError::NotFound(id.to_string()))?;
+    metadata.tags = tags;
+    Ok(())
+  }
 }
 
 /// Errors that can occur when working with snapshots.
@@ -284,6 +299,7 @@ mod tests {
       id: "second".to_string(),
       created_at: 2000,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });
@@ -291,6 +307,7 @@ mod tests {
       id: "first".to_string(),
       created_at: 1000,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });
@@ -298,6 +315,7 @@ mod tests {
       id: "third".to_string(),
       created_at: 3000,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });
@@ -315,6 +333,7 @@ mod tests {
       id: "test".to_string(),
       created_at: 1000,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });
@@ -333,6 +352,7 @@ mod tests {
       id: "test".to_string(),
       created_at: 1000,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });
@@ -353,6 +373,7 @@ mod tests {
       id: "test".to_string(),
       created_at: 1000,
       config_path: None,
+      tags: vec![],
       build_count: 5,
       bind_count: 3,
     });

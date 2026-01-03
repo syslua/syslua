@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 dunce = { workspace = true }
-gix = { version = "0.76", default-features = false, features = [
+gix = { version = "0.77", default-features = false, features = [
   "blocking-network-client",
   "blocking-http-transport-reqwest-rust-tls",
   "worktree-mutation",

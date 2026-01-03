@@ -18,6 +18,7 @@ mod gc;
 mod info;
 mod init;
 mod plan;
+pub mod snapshot;
 mod status;
 mod update;
 
@@ -28,5 +29,6 @@ pub use gc::cmd_gc;
 pub use info::cmd_info;
 pub use init::cmd_init;
 pub use plan::cmd_plan;
+pub use snapshot::cmd_snapshot;
 pub use status::cmd_status;
 pub use update::cmd_update;

@@ -243,6 +243,13 @@ impl SnapshotStore {
   pub fn generate_id() -> String {
     generate_snapshot_id()
   }
+
+  pub fn set_snapshot_tags(&self, id: &str, tags: Vec<String>) -> Result<(), SnapshotError> {
+    let mut index = self.load_index()?;
+    index.update_tags(id, tags)?;
+    self.save_index(&index)?;
+    Ok(())
+  }
 }
 
 #[cfg(test)]
@@ -495,6 +502,7 @@ mod tests {
       id: "nonexistent123".to_string(),
       created_at: 12345,
       config_path: None,
+      tags: vec![],
       build_count: 0,
       bind_count: 0,
     });

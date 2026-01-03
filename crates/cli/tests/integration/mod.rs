@@ -5,5 +5,6 @@ pub mod gc_tests;
 pub mod inputs_tests;
 pub mod plan_tests;
 pub mod rollback_tests;
+pub mod snapshot_tests;
 pub mod update_tests;
 pub mod windows_tests;

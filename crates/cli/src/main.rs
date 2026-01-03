@@ -1,10 +1,13 @@
 mod cmd;
 mod output;
+mod prompts;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use cmd::{cmd_apply, cmd_destroy, cmd_diff, cmd_gc, cmd_info, cmd_init, cmd_plan, cmd_status, cmd_update};
+use cmd::{
+  cmd_apply, cmd_destroy, cmd_diff, cmd_gc, cmd_info, cmd_init, cmd_plan, cmd_snapshot, cmd_status, cmd_update,
+};
 use output::OutputFormat;
 use tracing::Level;
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -158,6 +161,11 @@ enum Commands {
     #[arg(short, long, value_enum, default_value = "text")]
     output: OutputFormat,
   },
+  /// Manage snapshots
+  Snapshot {
+    #[command(subcommand)]
+    command: cmd::snapshot::SnapshotCommand,
+  },
 }
 
 fn main() -> ExitCode {
@@ -229,6 +237,7 @@ fn main() -> ExitCode {
     }
     Commands::Status { verbose, output } => cmd_status(verbose, output),
     Commands::Gc { dry_run, output } => cmd_gc(dry_run, output),
+    Commands::Snapshot { command } => cmd_snapshot(command),
   };
 
   match result {
