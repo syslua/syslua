@@ -1,22 +1,105 @@
 # Agent Guidelines for syslua
 
-- Build: `cargo build` (workspace), `cargo build -p syslua-cli` for CLI.
-- Test: `cargo test` (all), `cargo test -p <crate> <filter>` for a single test or module; append `-- --nocapture` when debugging.
-- Lint/format: run `cargo fmt` and `cargo clippy --all-targets --all-features` before proposing non-trivial changes.
-- Use Rust 2024 idioms; `snake_case` for functions/locals, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for consts; avoid one-letter names except for short loops.
-- Imports: group `std`, then external crates, then internal modules; prefer explicit imports over glob (`*`) where reasonable.
-- Error handling: use `Result` and existing error enums; propagate with `?`; prefer descriptive variants/messages over `.unwrap()`/`.expect()` except in clearly unreachable cases.
-- Types: be explicit at public boundaries; prefer references (`&str`, slices) over owned types when clones are not required; keep manifests/DAG types consistent with [the architecture docs](./docs/architecture).
-- Prefer extending existing module/option systems to adding ad-hoc flags or environment variables.
-- For cross-platform behavior, rely on `syslua_lib::platform` abstractions instead of OS-specific APIs where possible.
-- Logging: use `tracing` macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`). Level guidelines:
-  - `error!`: Unrecoverable failures that stop execution
-  - `warn!`: Recoverable issues, degraded behavior, unexpected but handled conditions
-  - `info!`: User-facing milestones (command start/end, major phase transitions)
-  - `debug!`: Internal operations, per-item progress (builds, binds), state changes
-  - `trace!`: High-volume internals (DAG traversal, hash computations, loop iterations)
-  - Keep messages actionable; include relevant context via structured fields (e.g., `debug!(hash = %hash.0, "applying bind")`)
-- Tests: favor fast, deterministic unit tests per crate; for integration flows, mimic `sys apply/plan` behavior with targeted cases rather than broad end-to-end scripts.
-- There are currently no Cursor rules (`.cursor/rules/` or `.cursorrules`) or Copilot rules (`.github/copilot-instructions.md`); if they are added later, update this file to reference them.
-- Reference [Architecture Docs](./docs/architecture) for high-level design principles and module interactions.
-- Windows is never an afterthought; ensure features work cross-platform unless explicitly documented otherwise.
+**Generated:** 2026-01-04 | **Commit:** bc66463 | **Branch:** main
+
+## OVERVIEW
+
+Declarative cross-platform system manager. Rust workspace with Lua config evaluation (mlua), content-addressed store, DAG-based parallel execution.
+
+## STRUCTURE
+
+```
+syslua/
+├── crates/
+│   ├── cli/           # Binary 'sys' - commands layer
+│   └── lib/           # Core library - see lib/AGENTS.md
+├── docs/architecture/ # Design docs (00-09)
+└── tests/             # Integration tests + fixtures
+```
+
+## WHERE TO LOOK
+
+| Task | Location | Notes |
+|------|----------|-------|
+| Add CLI command | `crates/cli/src/cmd/` | One file per command, register in `mod.rs` |
+| Modify apply flow | `crates/lib/src/execute/` | `apply.rs` orchestrates, `dag.rs` schedules |
+| Change Lua API | `crates/lib/src/lua/` | `globals.rs` for sys.*, `helpers/` for types |
+| Add input source | `crates/lib/src/inputs/` | `source.rs` for types, `fetch.rs` for retrieval |
+| Platform behavior | `crates/lib/src/platform/` | `os.rs`, `arch.rs`, `paths.rs`, `immutable.rs` |
+| Build/bind types | `crates/lib/src/build/` or `bind/` | `types.rs` for structs, `lua.rs` for conversion |
+
+## CODE MAP
+
+| Symbol | Type | Location | Role |
+|--------|------|----------|------|
+| `ObjectHash` | struct | `util/hash.rs` | 20-char truncated SHA256 for store addressing |
+| `Hashable` | trait | `util/hash.rs` | Content hashing for builds/binds |
+| `Resolver` | trait | `placeholder.rs` | Placeholder substitution ($${...}) |
+| `BuildSpec`/`BuildDef` | struct | `build/types.rs` | Spec has Lua closures, Def is serializable |
+| `BindSpec`/`BindDef` | struct | `bind/types.rs` | Same pattern as build |
+| `ActionCtx` | struct | `action/types.rs` | Base context for build/bind execution |
+| `ApplyError` | enum | `execute/types.rs` | Top-level execution errors |
+
+## CONVENTIONS
+
+- **Spec/Def duality**: `*Spec` contains `LuaFunction` closures (runtime), `*Def` is serializable (storage)
+- **Three-stage pipeline**: Input Resolution → Lua Config Eval → DAG Construction → Parallel Execution
+- **Placeholders**: `$${action:N}`, `$${build:HASH:output}`, `$${bind:HASH:output}`, `$${out}`
+- **BTreeMap everywhere**: Deterministic serialization for reproducible hashes
+- **Platform module**: Use `syslua_lib::platform` for OS-specific code, not direct APIs
+
+## ANTI-PATTERNS
+
+| Forbidden | Reason |
+|-----------|--------|
+| `.unwrap()` / `.expect()` in library code | Use `?` with proper error types |
+| `as any` / type suppression | Explicit types at public boundaries |
+| Direct OS APIs | Use `platform/` abstractions |
+| Glob imports `use foo::*` | Explicit imports preferred |
+| One-letter variable names | Except short loop indices |
+
+## COMMANDS
+
+```bash
+# Build
+cargo build                          # Workspace
+cargo build -p syslua-cli            # CLI only
+
+# Test
+cargo test                           # All tests
+cargo test -p syslua-lib <filter>    # Specific test
+cargo test -- --nocapture            # With output
+
+# Lint (run before commits)
+cargo fmt && cargo clippy --all-targets --all-features
+```
+
+## LOGGING
+
+Use `tracing` macros with structured fields:
+
+| Level | Use For |
+|-------|---------|
+| `error!` | Unrecoverable failures |
+| `warn!` | Recoverable issues, degraded behavior |
+| `info!` | User-facing milestones (command start/end) |
+| `debug!` | Internal ops, per-item progress, state changes |
+| `trace!` | High-volume internals (DAG traversal, hashing) |
+
+```rust
+debug!(hash = %hash.0, "applying bind");
+```
+
+## NOTES
+
+- **Windows first-class**: All features must work cross-platform
+- **Edition 2024**: Use Rust 2024 idioms
+- **Tests**: Unit tests inline `#[cfg(test)]`, integration in `tests/integration/`
+- **Fixtures**: `tests/fixtures/*.lua` for test Lua configs
+- **Unsafe blocks**: 3 exist (macOS chflags, Windows token/OVERLAPPED) - all documented
+- **TODOs**: Windows registry/service tests blocked on test infrastructure
+
+## SEE ALSO
+
+- [Architecture Docs](./docs/architecture/) - Design principles (builds, binds, store, Lua API, snapshots)
+- [crates/lib/AGENTS.md](./crates/lib/AGENTS.md) - Library internals
