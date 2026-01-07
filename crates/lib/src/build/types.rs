@@ -59,6 +59,9 @@ pub struct BuildSpec {
   pub id: Option<String>,
   pub inputs: Option<BuildInputsSpec>,
   pub create: LuaFunction,
+  /// If true, allows replacing an existing build with the same ID.
+  /// Defaults to false, which means duplicate IDs will error.
+  pub replace: bool,
 }
 
 impl FromLua for BuildSpec {
@@ -79,8 +82,14 @@ impl FromLua for BuildSpec {
     let create: LuaFunction = table
       .get("create")
       .map_err(|_| LuaError::external("build spec requires 'create' function"))?;
+    let replace: bool = table.get("replace").unwrap_or(false);
 
-    Ok(BuildSpec { id, inputs, create })
+    Ok(BuildSpec {
+      id,
+      inputs,
+      create,
+      replace,
+    })
   }
 }
 

@@ -213,36 +213,43 @@ pub fn bind_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> Lu
 pub fn register_sys_bind(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<Manifest>>) -> LuaResult<()> {
   let bind_fn = lua.create_function(move |lua, spec_table: LuaTable| {
     let bind_spec: BindSpec = lua.unpack(LuaValue::Table(spec_table))?;
+    let replace = bind_spec.replace;
     let bind_def = BindDef::from_spec(lua, &manifest, bind_spec)?;
     let bind_ref = BindRef::from_def(&bind_def)?;
 
-    // Check for duplicate bind IDs (only for binds with IDs)
-    if let Some(ref id) = bind_def.id {
-      let manifest_ref = manifest.borrow();
-      for (existing_hash, existing_def) in manifest_ref.bindings.iter() {
-        if let Some(ref existing_id) = existing_def.id
-          && existing_id == id
-          && *existing_hash != bind_ref.hash
-        {
-          return Err(LuaError::external(format!(
-            "duplicate bind id '{}': a bind with this id already exists (hash: {})",
-            id, existing_hash.0
-          )));
-        }
-      }
-    }
-
-    // Add to manifest (deduplicate by hash)
     {
       let mut manifest = manifest.borrow_mut();
+
+      // Hash dedup: identical content = same hash
       if manifest.bindings.contains_key(&bind_ref.hash) {
         tracing::warn!(
           hash = %bind_ref.hash.0,
           "duplicate bind detected, skipping insertion"
         );
-      } else {
-        manifest.bindings.insert(bind_ref.hash.clone(), bind_def.clone());
+        return lua.pack(bind_ref);
       }
+
+      // ID dedup with explicit replace flag
+      if let Some(ref id) = bind_def.id {
+        let existing = manifest
+          .bindings
+          .iter()
+          .find(|(_, def)| def.id.as_ref() == Some(id))
+          .map(|(h, _)| h.clone());
+
+        if let Some(old_hash) = existing {
+          if !replace {
+            return Err(LuaError::external(format!(
+              "bind with id '{}' already exists (hash: {}). Use `replace = true` to override, \
+               or use a different id. This error prevents accidental collisions.",
+              id, old_hash.0
+            )));
+          }
+          manifest.bindings.remove(&old_hash);
+        }
+      }
+
+      manifest.bindings.insert(bind_ref.hash.clone(), bind_def.clone());
     }
 
     lua.pack(bind_ref)
@@ -823,7 +830,6 @@ mod tests {
       let result = lua
         .load(
           r#"
-                -- First bind with id "my-bind"
                 sys.bind({
                     id = "my-bind",
                     create = function(inputs, ctx)
@@ -833,7 +839,6 @@ mod tests {
                         ctx:exec("echo destroy first")
                     end,
                 })
-                -- Second bind with same id but different content
                 sys.bind({
                     id = "my-bind",
                     create = function(inputs, ctx)
@@ -850,11 +855,121 @@ mod tests {
       assert!(result.is_err());
       let err = result.unwrap_err().to_string();
       assert!(
-        err.contains("duplicate bind id"),
-        "error should mention 'duplicate bind id': {}",
+        err.contains("already exists"),
+        "error should mention 'already exists': {}",
         err
       );
-      assert!(err.contains("my-bind"), "error should mention the id: {}", err);
+      assert!(
+        err.contains("replace = true"),
+        "error should suggest replace flag: {}",
+        err
+      );
+
+      Ok(())
+    }
+
+    #[test]
+    fn duplicate_bind_id_with_replace_succeeds() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.bind({
+                    id = "my-bind",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo first")
+                    end,
+                    destroy = function(outputs, ctx)
+                        ctx:exec("echo destroy first")
+                    end,
+                })
+                sys.bind({
+                    id = "my-bind",
+                    replace = true,
+                    create = function(inputs, ctx)
+                        ctx:exec("echo second")
+                    end,
+                    destroy = function(outputs, ctx)
+                        ctx:exec("echo destroy second")
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.bindings.len(), 1);
+
+      let (_, bind_def) = manifest.bindings.iter().next().unwrap();
+      match &bind_def.create_actions[0] {
+        Action::Exec(opts) => {
+          assert_eq!(opts.bin, "echo second", "second bind should replace first");
+        }
+        _ => panic!("expected Exec action"),
+      }
+
+      Ok(())
+    }
+
+    #[test]
+    fn replace_true_on_first_bind_succeeds() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.bind({
+                    id = "my-bind",
+                    replace = true,
+                    create = function(inputs, ctx)
+                        ctx:exec("echo only")
+                    end,
+                    destroy = function(outputs, ctx)
+                        ctx:exec("echo destroy only")
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.bindings.len(), 1);
+
+      Ok(())
+    }
+
+    #[test]
+    fn different_bind_ids_both_kept() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.bind({
+                    id = "bind-a",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo a")
+                    end,
+                    destroy = function(outputs, ctx)
+                        ctx:exec("echo destroy a")
+                    end,
+                })
+                sys.bind({
+                    id = "bind-b",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo b")
+                    end,
+                    destroy = function(outputs, ctx)
+                        ctx:exec("echo destroy b")
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.bindings.len(), 2);
 
       Ok(())
     }

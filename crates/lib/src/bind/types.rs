@@ -58,6 +58,7 @@ pub struct BindSpec {
   pub update: Option<LuaFunction>,
   pub destroy: LuaFunction,
   pub check: Option<LuaFunction>,
+  pub replace: bool,
 }
 
 impl FromLua for BindSpec {
@@ -92,6 +93,8 @@ impl FromLua for BindSpec {
       });
     }
 
+    let replace: bool = table.get("replace").unwrap_or(false);
+
     Ok(BindSpec {
       id,
       inputs,
@@ -99,6 +102,7 @@ impl FromLua for BindSpec {
       update,
       destroy,
       check,
+      replace,
     })
   }
 }
