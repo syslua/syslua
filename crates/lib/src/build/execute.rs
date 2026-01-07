@@ -16,7 +16,7 @@ use crate::manifest::Manifest;
 use crate::placeholder;
 
 use crate::action::execute_action;
-use crate::execute::resolver::{BuildResolver, ExecutionResolver};
+use crate::execute::resolver::BuildCtxResolver;
 use crate::execute::types::{ActionResult, BindResult, BuildResult, ExecuteConfig, ExecuteError};
 use crate::util::hash::{ObjectHash, hash_directory};
 
@@ -182,7 +182,7 @@ pub async fn realize_build(
   fs::create_dir_all(&store_path).await?;
 
   // Create resolver for this build
-  let mut resolver = BuildResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
+  let mut resolver = BuildCtxResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
 
   // Execute actions in order
   let mut action_results = Vec::new();
@@ -223,18 +223,18 @@ pub async fn realize_build(
   })
 }
 
-/// Realize a single build with unified resolver support.
+/// Realize a single build (DAG execution variant).
 ///
-/// This is similar to `realize_build()` but uses `ExecutionResolver` which supports
-/// both build and bind placeholder resolution. Use this function when executing
-/// via `execute_manifest()` where builds may depend on binds.
+/// This is similar to `realize_build()` but accepts `completed_binds` for
+/// API compatibility with DAG execution. Since builds cannot reference binds,
+/// the binds parameter is unused.
 ///
 /// # Arguments
 ///
 /// * `hash` - The build hash
 /// * `build_def` - The build definition
 /// * `completed_builds` - Results of already-completed builds (for dependency resolution)
-/// * `completed_binds` - Results of already-completed binds (for dependency resolution)
+/// * `completed_binds` - Unused (builds cannot reference binds)
 /// * `manifest` - The full manifest (for looking up definitions)
 /// * `config` - Execution configuration
 ///
@@ -299,13 +299,9 @@ pub async fn realize_build_with_resolver(
   // Create the output directory
   fs::create_dir_all(&store_path).await?;
 
-  // Create unified resolver for this build
-  let mut resolver = ExecutionResolver::new(
-    completed_builds,
-    completed_binds,
-    manifest,
-    store_path.to_string_lossy().to_string(),
-  );
+  // Create resolver for this build (builds can only reference other builds, not binds)
+  let mut resolver = BuildCtxResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
+  let _ = completed_binds; // Unused - builds cannot reference binds
 
   // Execute actions in order
   let mut action_results = Vec::new();
@@ -366,7 +362,7 @@ fn resolve_outputs(
   // Resolve user-defined outputs
   if let Some(def_outputs) = &build_def.outputs {
     // Create a resolver with the action results
-    let mut resolver = BuildResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
+    let mut resolver = BuildCtxResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
     for result in action_results {
       resolver.push_action_result(result.output.clone());
     }
@@ -380,10 +376,11 @@ fn resolve_outputs(
   Ok(outputs)
 }
 
-/// Resolve the outputs from a build definition using the unified resolver.
+/// Resolve the outputs from a build definition (DAG execution variant).
 ///
-/// This is similar to `resolve_outputs()` but uses `ExecutionResolver` which
-/// supports both build and bind placeholder resolution.
+/// This is similar to `resolve_outputs()` but accepts `completed_binds` for
+/// API compatibility with DAG execution. Since builds cannot reference binds,
+/// the binds parameter is unused.
 fn resolve_outputs_with_resolver(
   build_def: &BuildDef,
   store_path: &Path,
@@ -393,6 +390,8 @@ fn resolve_outputs_with_resolver(
   manifest: &Manifest,
   _config: &ExecuteConfig,
 ) -> Result<HashMap<String, String>, ExecuteError> {
+  let _ = completed_binds; // Unused - builds cannot reference binds
+
   let mut outputs = HashMap::new();
 
   // Always include "out" pointing to the store path
@@ -400,13 +399,8 @@ fn resolve_outputs_with_resolver(
 
   // Resolve user-defined outputs
   if let Some(def_outputs) = &build_def.outputs {
-    // Create a unified resolver with the action results
-    let mut resolver = ExecutionResolver::new(
-      completed_builds,
-      completed_binds,
-      manifest,
-      store_path.to_string_lossy().to_string(),
-    );
+    // Create a resolver with the action results
+    let mut resolver = BuildCtxResolver::new(completed_builds, manifest, store_path.to_string_lossy().to_string());
     for result in action_results {
       resolver.push_action_result(result.output.clone());
     }

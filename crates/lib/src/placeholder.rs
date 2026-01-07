@@ -9,6 +9,7 @@
 //! - `$${action:N}` - stdout of action at index N within the same spec
 //! - `$${build:<hash>:<output>}` - output from a realized build
 //! - `$${bind:<hash>:<output>}` - output from an applied bind
+//! - `$${env:<name>}` - environment variable resolved at execution time
 //!
 //! # Shell Variables
 //!
@@ -48,6 +49,9 @@ pub enum Placeholder {
 
   /// `$${out}` - the current build/bind's output directory
   Out,
+
+  /// `$${env:<name>}` - environment variable resolved at execution time
+  Env(String),
 }
 
 /// A segment of parsed text.
@@ -83,6 +87,9 @@ pub enum PlaceholderError {
 
   #[error("unresolved bind: {hash} output '{output}'")]
   UnresolvedBind { hash: String, output: String },
+
+  #[error("unresolved env variable: {0}")]
+  UnresolvedEnv(String),
 }
 
 /// Trait for resolving placeholder values during execution.
@@ -98,6 +105,9 @@ pub trait Resolver {
 
   /// Resolve the output directory for the current build/bind.
   fn resolve_out(&self) -> Result<&str, PlaceholderError>;
+
+  /// Resolve an environment variable by name.
+  fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError>;
 }
 
 /// Parse a string containing placeholders into segments.
@@ -108,6 +118,7 @@ pub trait Resolver {
 /// - `$${build:HASH:OUTPUT}` - reference build output
 /// - `$${bind:HASH:OUTPUT}` - reference bind output
 /// - `$${out}` - reference the current build/bind's output directory
+/// - `$${env:NAME}` - reference environment variable at execution time
 ///
 /// # Escaping
 ///
@@ -239,6 +250,7 @@ fn parse_placeholder_content(content: &str) -> Result<Placeholder, PlaceholderEr
         output: output.to_string(),
       })
     }
+    "env" => Ok(Placeholder::Env(rest.to_string())),
     _ => Err(PlaceholderError::UnknownType(kind.to_string())),
   }
 }
@@ -266,13 +278,13 @@ pub fn substitute_segments(segments: &[Segment], resolver: &impl Resolver) -> Re
     match segment {
       Segment::Literal(s) => result.push_str(s),
       Segment::Placeholder(p) => {
-        let value = match p {
-          Placeholder::Action(index) => resolver.resolve_action(*index)?,
-          Placeholder::Build { hash, output } => resolver.resolve_build(hash, output)?,
-          Placeholder::Bind { hash, output } => resolver.resolve_bind(hash, output)?,
-          Placeholder::Out => resolver.resolve_out()?,
+        match p {
+          Placeholder::Action(index) => result.push_str(resolver.resolve_action(*index)?),
+          Placeholder::Build { hash, output } => result.push_str(resolver.resolve_build(hash, output)?),
+          Placeholder::Bind { hash, output } => result.push_str(resolver.resolve_bind(hash, output)?),
+          Placeholder::Out => result.push_str(resolver.resolve_out()?),
+          Placeholder::Env(name) => result.push_str(&resolver.resolve_env(name)?),
         };
-        result.push_str(value);
       }
     }
   }
@@ -294,6 +306,7 @@ mod tests {
     builds: HashMap<(String, String), String>,
     binds: HashMap<(String, String), String>,
     out_dir: Option<String>,
+    env_vars: HashMap<String, String>,
   }
 
   impl TestResolver {
@@ -303,6 +316,7 @@ mod tests {
         builds: HashMap::new(),
         binds: HashMap::new(),
         out_dir: None,
+        env_vars: HashMap::new(),
       }
     }
 
@@ -327,6 +341,11 @@ mod tests {
 
     fn with_out(mut self, out_dir: &str) -> Self {
       self.out_dir = Some(out_dir.to_string());
+      self
+    }
+
+    fn with_env(mut self, name: &str, value: &str) -> Self {
+      self.env_vars.insert(name.to_string(), value.to_string());
       self
     }
   }
@@ -367,6 +386,14 @@ mod tests {
         .out_dir
         .as_deref()
         .ok_or(PlaceholderError::Malformed("out directory not set".to_string()))
+    }
+
+    fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
+      self
+        .env_vars
+        .get(name)
+        .cloned()
+        .ok_or_else(|| PlaceholderError::UnresolvedEnv(name.to_string()))
     }
   }
 
@@ -685,5 +712,65 @@ export PATH=/store/obj/go-1.21.0-go123/bin:/store/obj/rust-1.75.0-rust456/bin:$P
     let resolver = TestResolver::new(); // no out_dir set
     let result = substitute("$${out}/bin", &resolver);
     assert!(matches!(result, Err(PlaceholderError::Malformed(_))));
+  }
+
+  // ==========================================================================
+  // $${env:NAME} Placeholder Tests
+  // ==========================================================================
+
+  #[test]
+  fn parse_env_placeholder() {
+    let segments = parse("$${env:HOME}").unwrap();
+    assert_eq!(
+      segments,
+      vec![Segment::Placeholder(Placeholder::Env("HOME".to_string()))]
+    );
+  }
+
+  #[test]
+  fn parse_env_placeholder_in_path() {
+    let segments = parse("$${env:HOME}/.config").unwrap();
+    assert_eq!(
+      segments,
+      vec![
+        Segment::Placeholder(Placeholder::Env("HOME".to_string())),
+        Segment::Literal("/.config".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn substitute_env_placeholder() {
+    let resolver = TestResolver::new().with_env("HOME", "/home/user");
+    let result = substitute("$${env:HOME}/.config", &resolver).unwrap();
+    assert_eq!(result, "/home/user/.config");
+  }
+
+  #[test]
+  fn substitute_env_with_other_placeholders() {
+    let resolver = TestResolver::new()
+      .with_env("HOME", "/home/user")
+      .with_out("/store/obj/myapp");
+
+    let cmd = "ln -sf $${out}/config $${env:HOME}/.config/app";
+    let result = substitute(cmd, &resolver).unwrap();
+    assert_eq!(result, "ln -sf /store/obj/myapp/config /home/user/.config/app");
+  }
+
+  #[test]
+  fn error_unresolved_env() {
+    let resolver = TestResolver::new(); // no env vars set
+    let result = substitute("$${env:NONEXISTENT_VAR}", &resolver);
+    assert!(matches!(result, Err(PlaceholderError::UnresolvedEnv(ref name)) if name == "NONEXISTENT_VAR"));
+  }
+
+  #[test]
+  fn env_placeholder_with_shell_variables() {
+    // Shell variables like $HOME pass through unchanged
+    // But $${env:HOME} is a placeholder that gets resolved
+    let resolver = TestResolver::new().with_env("HOME", "/resolved/home");
+    let cmd = "echo $HOME vs $${env:HOME}";
+    let result = substitute(cmd, &resolver).unwrap();
+    assert_eq!(result, "echo $HOME vs /resolved/home");
   }
 }

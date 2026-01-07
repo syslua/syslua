@@ -36,7 +36,7 @@ use crate::store_lock::{LockMode, StoreLock, StoreLockError};
 use crate::util::hash::ObjectHash;
 
 use super::dag::{DagNode, ExecutionDag};
-use super::resolver::ExecutionResolver;
+use super::resolver::BindCtxResolver;
 use super::types::{BindResult, BuildResult, DagResult, DriftResult, ExecuteConfig, ExecuteError};
 
 /// Type alias for restore resolver data to reduce type complexity.
@@ -451,7 +451,7 @@ pub async fn check_unchanged_binds(
       action_results: vec![],
     };
 
-    let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, String::new());
+    let resolver = BindCtxResolver::new(&empty_builds, &empty_binds, manifest, String::new());
 
     match check_bind(hash, bind_def, &bind_result, &resolver).await {
       Ok(Some(result)) => {
@@ -512,7 +512,7 @@ async fn repair_drifted_binds(
       let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
       let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
 
-      let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &manifest, String::new());
+      let resolver = BindCtxResolver::new(&empty_builds, &empty_binds, &manifest, String::new());
 
       let result = apply_bind(&hash, &bind_def, &resolver)
         .await
@@ -725,7 +725,7 @@ async fn destroy_removed_binds(
   let empty_builds: HashMap<ObjectHash, BuildResult> = HashMap::new();
   let empty_binds: HashMap<ObjectHash, BindResult> = HashMap::new();
   let empty_manifest = Manifest::default();
-  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, &empty_manifest, "/tmp".to_string());
+  let resolver = BindCtxResolver::new(&empty_builds, &empty_binds, &empty_manifest, "/tmp".to_string());
 
   // Log the bind state directory for debugging
   let bind_store_path = store_dir().join("bind");
@@ -894,7 +894,7 @@ async fn update_modified_binds(
     };
 
     // Create resolver for update
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, desired, "/tmp".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, desired, "/tmp".to_string());
 
     // Create old bind result from saved state
     let old_bind_result = BindResult {
@@ -1054,7 +1054,7 @@ async fn restore_destroyed_binds(
       join_set.spawn(async move {
         let _permit = semaphore.acquire().await.unwrap();
 
-        let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/tmp".to_string());
+        let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/tmp".to_string());
 
         let result = apply_bind(&hash, &bind_def, &resolver)
           .await

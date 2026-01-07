@@ -1,7 +1,8 @@
 //! Placeholder resolver for build and bind execution.
 //!
-//! This module provides resolver implementations that can resolve placeholders
-//! during execution, including action outputs, build outputs, and bind outputs.
+//! This module provides two resolver implementations:
+//! - `BuildCtxResolver` for build execution (builds can only reference other builds)
+//! - `BindCtxResolver` for bind execution (binds can reference builds and other binds)
 
 use std::collections::HashMap;
 
@@ -14,29 +15,22 @@ use super::types::{BindResult, BuildResult};
 
 /// Resolver for placeholders during build execution.
 ///
-/// This resolver knows about:
-/// - Action results from the current build (indexed by action number)
-/// - Completed builds from earlier in the execution
-/// - The output directory for the current build
+/// Builds can only reference other builds, not binds. This resolver supports:
+/// - `${action:N}` - stdout of action at index N
+/// - `${build:HASH:OUTPUT}` - output from a completed build
+/// - `${out}` - the current build's output directory
+/// - `${env:NAME}` - environment variable
 ///
-/// Note: This resolver does NOT support bind resolution. Use `ExecutionResolver`
-/// for unified build+bind execution.
-pub struct BuildResolver<'a> {
-  /// Results of actions executed so far in this build.
+/// Note: `${bind:...}` placeholders will always error since builds cannot
+/// depend on binds.
+pub struct BuildCtxResolver<'a> {
   action_results: Vec<String>,
-
-  /// Results of previously completed builds.
   completed_builds: &'a HashMap<ObjectHash, BuildResult>,
-
-  /// The manifest (for looking up build definitions).
   manifest: &'a Manifest,
-
-  /// Output directory for the current build.
   out_dir: String,
 }
 
-impl<'a> BuildResolver<'a> {
-  /// Create a new resolver for a build.
+impl<'a> BuildCtxResolver<'a> {
   pub fn new(completed_builds: &'a HashMap<ObjectHash, BuildResult>, manifest: &'a Manifest, out_dir: String) -> Self {
     Self {
       action_results: Vec::new(),
@@ -46,18 +40,16 @@ impl<'a> BuildResolver<'a> {
     }
   }
 
-  /// Record an action result.
   pub fn push_action_result(&mut self, result: String) {
     self.action_results.push(result);
   }
 
-  /// Get the number of recorded action results.
   pub fn action_count(&self) -> usize {
     self.action_results.len()
   }
 }
 
-impl Resolver for BuildResolver<'_> {
+impl Resolver for BuildCtxResolver<'_> {
   fn resolve_action(&self, index: usize) -> Result<&str, PlaceholderError> {
     self
       .action_results
@@ -71,7 +63,7 @@ impl Resolver for BuildResolver<'_> {
   }
 
   fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
-    // BuildResolver does not support bind resolution
+    // Builds cannot reference binds
     Err(PlaceholderError::UnresolvedBind {
       hash: hash.to_string(),
       output: output.to_string(),
@@ -81,37 +73,32 @@ impl Resolver for BuildResolver<'_> {
   fn resolve_out(&self) -> Result<&str, PlaceholderError> {
     Ok(&self.out_dir)
   }
+
+  fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
+    resolve_env_var(name)
+  }
 }
 
-/// Resolver for placeholders during unified build+bind execution.
+/// Resolver for placeholders during bind execution.
 ///
-/// This resolver knows about:
-/// - Action results from the current node (indexed by action number)
-/// - Completed builds from earlier in the execution
-/// - Completed binds from earlier in the execution
-/// - The output directory for the current node
+/// Binds can reference both builds and other binds. This resolver supports:
+/// - `${action:N}` - stdout of action at index N
+/// - `${build:HASH:OUTPUT}` - output from a completed build
+/// - `${bind:HASH:OUTPUT}` - output from a completed bind
+/// - `${out}` - the current bind's output directory
+/// - `${env:NAME}` - environment variable
 ///
-/// Use this resolver when executing in `execute_manifest()` where both
-/// builds and binds are interleaved based on the DAG.
-pub struct ExecutionResolver<'a> {
-  /// Results of actions executed so far in this node.
+/// Use `with_out_dir()` to create child resolvers for bind actions that need
+/// a different output directory (e.g., a temporary working directory).
+pub struct BindCtxResolver<'a> {
   action_results: Vec<String>,
-
-  /// Results of previously completed builds.
   completed_builds: &'a HashMap<ObjectHash, BuildResult>,
-
-  /// Results of previously completed binds.
   completed_binds: &'a HashMap<ObjectHash, BindResult>,
-
-  /// The manifest (for looking up definitions).
   manifest: &'a Manifest,
-
-  /// Output directory for the current node.
   out_dir: String,
 }
 
-impl<'a> ExecutionResolver<'a> {
-  /// Create a new resolver for unified execution.
+impl<'a> BindCtxResolver<'a> {
   pub fn new(
     completed_builds: &'a HashMap<ObjectHash, BuildResult>,
     completed_binds: &'a HashMap<ObjectHash, BindResult>,
@@ -127,19 +114,32 @@ impl<'a> ExecutionResolver<'a> {
     }
   }
 
-  /// Record an action result.
   pub fn push_action_result(&mut self, result: String) {
     self.action_results.push(result);
   }
 
-  /// Get the number of recorded action results.
   #[allow(dead_code)]
   pub fn action_count(&self) -> usize {
     self.action_results.len()
   }
+
+  /// Create a child resolver with a new output directory.
+  ///
+  /// This is used for bind actions (apply, destroy, update, check) that need
+  /// their own temporary working directory. The child resolver shares access
+  /// to completed builds/binds but has fresh action results.
+  pub fn with_out_dir(&self, out_dir: String) -> BindCtxResolver<'a> {
+    BindCtxResolver {
+      action_results: Vec::new(),
+      completed_builds: self.completed_builds,
+      completed_binds: self.completed_binds,
+      manifest: self.manifest,
+      out_dir,
+    }
+  }
 }
 
-impl Resolver for ExecutionResolver<'_> {
+impl Resolver for BindCtxResolver<'_> {
   fn resolve_action(&self, index: usize) -> Result<&str, PlaceholderError> {
     self
       .action_results
@@ -174,6 +174,15 @@ impl Resolver for ExecutionResolver<'_> {
   fn resolve_out(&self) -> Result<&str, PlaceholderError> {
     Ok(&self.out_dir)
   }
+
+  fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
+    resolve_env_var(name)
+  }
+}
+
+/// Shared logic for resolving environment variables.
+fn resolve_env_var(name: &str) -> Result<String, PlaceholderError> {
+  std::env::var(name).map_err(|_| PlaceholderError::UnresolvedEnv(name.to_string()))
 }
 
 /// Shared logic for resolving build outputs.
@@ -238,11 +247,13 @@ mod tests {
     Manifest::default()
   }
 
+  // Tests for BuildCtxResolver
+
   #[test]
-  fn resolve_action_success() {
+  fn build_ctx_resolve_action_success() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let mut resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     resolver.push_action_result("/tmp/downloaded.tar.gz".to_string());
     resolver.push_action_result("/build/output".to_string());
@@ -252,26 +263,26 @@ mod tests {
   }
 
   #[test]
-  fn resolve_action_out_of_bounds() {
+  fn build_ctx_resolve_action_out_of_bounds() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_action(0);
     assert!(matches!(result, Err(PlaceholderError::UnresolvedAction(0))));
   }
 
   #[test]
-  fn resolve_out_success() {
+  fn build_ctx_resolve_out_success() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/store/build/myapp-1.0-abc123".to_string());
+    let resolver = BuildCtxResolver::new(&completed, &manifest, "/store/build/myapp-1.0-abc123".to_string());
 
     assert_eq!(resolver.resolve_out().unwrap(), "/store/build/myapp-1.0-abc123");
   }
 
   #[test]
-  fn resolve_build_from_completed() {
+  fn build_ctx_resolve_build_from_completed() {
     let hash = ObjectHash("abc123def456".to_string());
     let mut outputs = HashMap::new();
     outputs.insert("bin".to_string(), "/store/obj/test/bin".to_string());
@@ -286,7 +297,7 @@ mod tests {
     completed.insert(hash.clone(), result);
 
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     // Resolve by full hash
     assert_eq!(
@@ -302,30 +313,30 @@ mod tests {
   }
 
   #[test]
-  fn resolve_build_not_found() {
+  fn build_ctx_resolve_build_not_found() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_build("nonexistent", "out");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBuild { .. })));
   }
 
   #[test]
-  fn resolve_bind_not_supported() {
+  fn build_ctx_resolve_bind_not_supported() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     let result = resolver.resolve_bind("somebind", "path");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBind { .. })));
   }
 
   #[test]
-  fn action_count_tracks_results() {
+  fn build_ctx_action_count_tracks_results() {
     let completed = HashMap::new();
     let manifest = empty_manifest();
-    let mut resolver = BuildResolver::new(&completed, &manifest, "/out".to_string());
+    let mut resolver = BuildCtxResolver::new(&completed, &manifest, "/out".to_string());
 
     assert_eq!(resolver.action_count(), 0);
 
@@ -336,10 +347,10 @@ mod tests {
     assert_eq!(resolver.action_count(), 2);
   }
 
-  // Tests for ExecutionResolver
+  // Tests for BindCtxResolver
 
   #[test]
-  fn execution_resolver_resolve_build() {
+  fn bind_ctx_resolve_build() {
     let build_hash = ObjectHash("build123".to_string());
     let mut build_outputs = HashMap::new();
     build_outputs.insert("bin".to_string(), "/store/obj/app/bin".to_string());
@@ -356,14 +367,14 @@ mod tests {
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(resolver.resolve_build("build123", "bin").unwrap(), "/store/obj/app/bin");
     assert_eq!(resolver.resolve_build("build123", "out").unwrap(), "/store/obj/app");
   }
 
   #[test]
-  fn execution_resolver_resolve_bind() {
+  fn bind_ctx_resolve_bind() {
     let bind_hash = ObjectHash("bind456".to_string());
     let mut bind_outputs = HashMap::new();
     bind_outputs.insert("link".to_string(), "/home/user/.config/app".to_string());
@@ -379,7 +390,7 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(
       resolver.resolve_bind("bind456", "link").unwrap(),
@@ -388,7 +399,7 @@ mod tests {
   }
 
   #[test]
-  fn execution_resolver_resolve_bind_by_prefix() {
+  fn bind_ctx_resolve_bind_by_prefix() {
     let bind_hash = ObjectHash("bind456def789".to_string());
     let mut bind_outputs = HashMap::new();
     bind_outputs.insert("path".to_string(), "/some/path".to_string());
@@ -404,26 +415,26 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     // Should resolve by prefix
     assert_eq!(resolver.resolve_bind("bind456", "path").unwrap(), "/some/path");
   }
 
   #[test]
-  fn execution_resolver_resolve_bind_not_found() {
+  fn bind_ctx_resolve_bind_not_found() {
     let completed_builds = HashMap::new();
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     let result = resolver.resolve_bind("nonexistent", "output");
     assert!(matches!(result, Err(PlaceholderError::UnresolvedBind { .. })));
   }
 
   #[test]
-  fn execution_resolver_resolve_bind_output_not_found() {
+  fn bind_ctx_resolve_bind_output_not_found() {
     let bind_hash = ObjectHash("bind456".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(), // No outputs
@@ -436,7 +447,7 @@ mod tests {
 
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     // Bind exists but output doesn't
     let result = resolver.resolve_bind("bind456", "nonexistent_output");
@@ -444,12 +455,12 @@ mod tests {
   }
 
   #[test]
-  fn execution_resolver_action_tracking() {
+  fn bind_ctx_action_tracking() {
     let completed_builds = HashMap::new();
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let mut resolver = ExecutionResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
+    let mut resolver = BindCtxResolver::new(&completed_builds, &completed_binds, &manifest, "/out".to_string());
 
     assert_eq!(resolver.action_count(), 0);
 
@@ -463,12 +474,12 @@ mod tests {
   }
 
   #[test]
-  fn execution_resolver_out_dir() {
+  fn bind_ctx_out_dir() {
     let completed_builds = HashMap::new();
     let completed_binds = HashMap::new();
     let manifest = empty_manifest();
 
-    let resolver = ExecutionResolver::new(
+    let resolver = BindCtxResolver::new(
       &completed_builds,
       &completed_binds,
       &manifest,
@@ -476,5 +487,30 @@ mod tests {
     );
 
     assert_eq!(resolver.resolve_out().unwrap(), "/my/output/dir");
+  }
+
+  #[test]
+  fn bind_ctx_with_out_dir() {
+    let completed_builds = HashMap::new();
+    let completed_binds = HashMap::new();
+    let manifest = empty_manifest();
+
+    let parent = BindCtxResolver::new(
+      &completed_builds,
+      &completed_binds,
+      &manifest,
+      "/parent/out".to_string(),
+    );
+
+    // Create child with different out_dir
+    let mut child = parent.with_out_dir("/child/out".to_string());
+
+    // Child should have different out_dir
+    assert_eq!(child.resolve_out().unwrap(), "/child/out");
+
+    // Child should have fresh action results
+    assert_eq!(child.action_count(), 0);
+    child.push_action_result("child_action".to_string());
+    assert_eq!(child.action_count(), 1);
   }
 }

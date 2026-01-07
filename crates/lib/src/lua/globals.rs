@@ -22,7 +22,7 @@ use crate::action::{
 use crate::bind::lua::register_sys_bind;
 use crate::build::lua::register_sys_build;
 use crate::manifest::Manifest;
-use crate::platform::Platform;
+use crate::platform::{self, Platform};
 
 /// Register the `sys` global table in the Lua runtime.
 ///
@@ -37,10 +37,15 @@ pub fn register_globals(lua: &Lua, manifest: Rc<RefCell<Manifest>>) -> LuaResult
   sys.set("platform", platform.triple())?;
   sys.set("os", platform.os.as_str())?;
   sys.set("arch", platform.arch.as_str())?;
+  sys.set("is_elevated", platform::is_elevated())?;
 
   // Path utilities
   let path = helpers::path::create_path_helpers(lua)?;
   sys.set("path", path)?;
+
+  // Environment variable placeholder (resolves at execution time)
+  let getenv = lua.create_function(|_, name: String| Ok(format!("$${{env:{}}}", name)))?;
+  sys.set("getenv", getenv)?;
 
   // Register sys.build{}
   register_sys_build(lua, &sys, manifest.clone())?;
@@ -343,6 +348,34 @@ mod tests {
       assert!(result.is_err());
       let err = result.unwrap_err().to_string();
       assert!(err.contains("failed to canonicalize path"));
+      Ok(())
+    }
+  }
+
+  mod getenv {
+    use super::*;
+
+    #[test]
+    fn getenv_returns_placeholder() -> LuaResult<()> {
+      let lua = create_test_lua()?;
+      let result: String = lua.load(r#"return sys.getenv("HOME")"#).eval()?;
+      assert_eq!(result, "$${env:HOME}");
+      Ok(())
+    }
+
+    #[test]
+    fn getenv_with_various_names() -> LuaResult<()> {
+      let lua = create_test_lua()?;
+
+      let path: String = lua.load(r#"return sys.getenv("PATH")"#).eval()?;
+      assert_eq!(path, "$${env:PATH}");
+
+      let user: String = lua.load(r#"return sys.getenv("USER")"#).eval()?;
+      assert_eq!(user, "$${env:USER}");
+
+      let custom: String = lua.load(r#"return sys.getenv("MY_CUSTOM_VAR")"#).eval()?;
+      assert_eq!(custom, "$${env:MY_CUSTOM_VAR}");
+
       Ok(())
     }
   }

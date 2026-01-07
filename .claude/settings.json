@@ -1,6 +1,32 @@
 {
-  "enabledPlugins": {
-    "rust-analyzer-lsp@claude-plugins-official": true,
-    "lua-lsp@claude-plugins-official": true
-  }
+	"$schema": "https://json.schemastore.org/claude-code-settings.json",
+	"hooks": {
+		"PostToolUse": [
+			{
+				"matcher": "Write|Edit|MultiEdit",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "jq -r '.tool_input.file_path | select(endswith(\".rs\"))' | xargs -r rustfmt"
+					},
+					{
+						"type": "command",
+						"command": "jq -r '.tool_input.file_path | select(endswith(\".md\"))' | xargs -r markdownlint-cli2 --fix"
+					},
+					{
+						"type": "command",
+						"command": "jq -r '.tool_input.file_path | select(endswith(\".toml\"))' | xargs -r taplo fmt"
+					},
+					{
+						"type": "command",
+						"command": "jq -r '.tool_input.file_path | select(endswith(\".lua\"))' | xargs -r stylua"
+					}
+				]
+			}
+		]
+	},
+	"enabledPlugins": {
+		"rust-analyzer-lsp@claude-plugins-official": true,
+		"lua-lsp@claude-plugins-official": true
+	}
 }

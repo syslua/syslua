@@ -24,7 +24,7 @@ end
 local function test_plain_values()
   assert(not priority.is_priority(42), 'plain number should not be priority')
   assert(priority.unwrap(42) == 42, 'unwrap plain should passthrough')
-  assert(priority.get_priority(42) == 1000, 'plain should have default priority')
+  assert(priority.get_priority(42) == 900, 'plain should have plain priority (900)')
 end
 
 local function test_mergeable()

@@ -24,7 +24,7 @@ use crate::{
 };
 
 use dag::DagNode;
-use resolver::ExecutionResolver;
+use resolver::BindCtxResolver;
 
 pub use apply::{
   ApplyError, ApplyOptions, ApplyResult, DestroyOptions, DestroyResult, apply, check_unchanged_binds, destroy,
@@ -373,7 +373,7 @@ async fn execute_build_wave(
         .get(&hash)
         .ok_or_else(|| ExecuteError::BuildNotFound(hash.clone()))?;
 
-      // Use ExecutionResolver which supports both build and bind resolution
+      // Build execution (builds can only reference other builds, not binds)
       let result = crate::build::execute::realize_build_with_resolver(
         &hash,
         build_def,
@@ -421,7 +421,7 @@ async fn execute_bind_wave(
         .ok_or_else(|| ExecuteError::BindNotFound(hash.clone()))?;
 
       // Create resolver with completed builds and binds
-      let resolver = ExecutionResolver::new(
+      let resolver = BindCtxResolver::new(
         &completed_builds,
         &completed_binds,
         &manifest,
@@ -499,7 +499,7 @@ async fn rollback_binds(
   // (destroy actions typically don't need to reference other completed nodes)
   let empty_builds = HashMap::new();
   let empty_binds = HashMap::new();
-  let resolver = ExecutionResolver::new(&empty_builds, &empty_binds, manifest, "/tmp".to_string());
+  let resolver = BindCtxResolver::new(&empty_builds, &empty_binds, manifest, "/tmp".to_string());
 
   // Rollback in reverse order
   for hash in applied_order.iter().rev() {

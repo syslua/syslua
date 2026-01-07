@@ -51,7 +51,7 @@ fn plain_values_have_default_priority() -> LuaResult<()> {
         local priority = require('syslua.priority')
         assert(not priority.is_priority(42), 'plain number should not be priority')
         assert(priority.unwrap(42) == 42, 'unwrap plain should passthrough')
-        assert(priority.get_priority(42) == 1000, 'plain should have default priority')
+        assert(priority.get_priority(42) == 900, 'plain should have plain priority (900)')
       "#,
     )
     .exec()?;
@@ -281,7 +281,8 @@ fn deep_merge_preserves_nested_keys() -> LuaResult<()> {
       r#"
         local priority = require('syslua.priority')
         local base = { server = { port = 8080, host = 'localhost' } }
-        local override = { server = { port = 9090 } }
+        -- Use force() to explicitly override the port value
+        local override = { server = { port = priority.force(9090) } }
         local result = priority.merge(base, override)
         assert(result.server.port == 9090, 'port should be overridden')
         assert(result.server.host == 'localhost', 'host should be preserved')
@@ -365,7 +366,8 @@ fn deep_merge_arrays_are_atomic() -> LuaResult<()> {
       r#"
         local priority = require('syslua.priority')
         local base = { packages = { 'vim', 'emacs' } }
-        local override = { packages = { 'nano' } }
+        -- Use force() to explicitly override the array
+        local override = { packages = priority.force({ 'nano' }) }
         local result = priority.merge(base, override)
         assert(#result.packages == 1, 'array should be replaced, not merged')
         assert(result.packages[1] == 'nano', 'should have nano')

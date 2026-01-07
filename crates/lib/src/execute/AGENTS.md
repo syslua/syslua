@@ -21,7 +21,7 @@
 
 ## PLACEHOLDER RESOLUTION
 
-- **Resolver**: `ExecutionResolver` maps `ObjectHash` to its realized/applied outputs.
+- **Resolvers**: `BuildCtxResolver` (for builds, cannot reference binds) and `BindCtxResolver` (for binds, can reference builds and binds) map `ObjectHash` to its realized/applied outputs.
 - **Substitution**: Placeholders like `$${build:HASH:output}` or `$${bind:HASH:output}` are resolved immediately before node execution.
 - **Context**: Resolution uses the actual results from previously completed waves.
 

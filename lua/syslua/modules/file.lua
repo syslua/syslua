@@ -1,3 +1,5 @@
+local prio = require('syslua.priority')
+
 ---@class syslua.modules.file
 local M = {}
 
@@ -7,30 +9,37 @@ local M = {}
 ---@field content? string Content to write to the target file (if source is not provided)
 ---@field mutable? boolean Whether the target should be mutable (default: false)
 
-local default_options = {
-  mutable = false,
+local default_opts = {
+  mutable = prio.default(false),
 }
 
+---@type FileOptions
+M.opts = default_opts
+
 --- Set up a file or directory according to the provided options
----@param opts FileOptions
-M.setup = function(opts)
-  if not opts.target then
+---@param provided_opts FileOptions
+M.setup = function(provided_opts)
+  local new_opts = prio.merge(M.opts, provided_opts)
+  if not new_opts then
+    error('Failed to merge file options')
+  end
+
+  M.opts = new_opts
+  if not M.opts.target then
     error("File setup requires a 'target' option")
   end
 
-  if not opts.source and not opts.content then
+  if not M.opts.source and not M.opts.content then
     error("File setup requires either a 'source' or 'content' option")
   end
 
-  local mutable = opts.mutable or default_options.mutable
-
-  if mutable then
+  if M.opts.mutable then
     sys.bind({
       inputs = {
-        target = opts.target,
-        source = opts.source,
-        content = opts.content,
-        mutable = mutable,
+        target = M.opts.target,
+        source = M.opts.source,
+        content = M.opts.content,
+        mutable = M.opts.mutable,
       },
       create = function(inputs, ctx)
         if inputs.source then
@@ -87,13 +96,13 @@ M.setup = function(opts)
       end,
     })
   else
-    local basename = sys.path.basename(opts.target)
+    local basename = sys.path.basename(M.opts.target)
     local build = sys.build({
       id = basename .. '-file',
       inputs = {
-        source = opts.source,
-        content = opts.content,
-        mutable = mutable,
+        source = M.opts.source,
+        content = M.opts.content,
+        mutable = M.opts.mutable,
       },
       create = function(inputs, ctx)
         local out_path = ctx.out .. '/' .. basename
@@ -134,7 +143,7 @@ M.setup = function(opts)
     sys.bind({
       inputs = {
         build = build,
-        target = opts.target,
+        target = M.opts.target,
       },
       create = function(inputs, ctx)
         if sys.os == 'windows' then

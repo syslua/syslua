@@ -11,8 +11,9 @@ use tracing::debug;
 
 use crate::action::{Action, execute_action};
 use crate::bind::BindDef;
+use crate::execute::resolver::BindCtxResolver;
 use crate::execute::types::{ActionResult, BindResult, ExecuteError};
-use crate::placeholder::{self, Resolver};
+use crate::placeholder;
 use crate::util::hash::ObjectHash;
 
 /// Apply a single bind.
@@ -25,15 +26,14 @@ use crate::util::hash::ObjectHash;
 /// * `hash` - The bind hash
 /// * `bind_def` - The bind definition
 /// * `resolver` - A resolver that can resolve placeholders (including completed builds/binds)
-/// * `config` - Execution configuration
 ///
 /// # Returns
 ///
 /// The result of applying the bind.
-pub async fn apply_bind<R: Resolver>(
+pub async fn apply_bind(
   hash: &ObjectHash,
   bind_def: &BindDef,
-  resolver: &R,
+  resolver: &BindCtxResolver<'_>,
 ) -> Result<BindResult, ExecuteError> {
   debug!(hash = %hash.0, "applying bind");
 
@@ -41,16 +41,12 @@ pub async fn apply_bind<R: Resolver>(
   let temp_dir = TempDir::new()?;
   let out_dir = temp_dir.path();
 
-  // Create a resolver that wraps the provided one but overrides $${out}
-  let bind_resolver = BindApplyResolver {
-    inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
-    action_results: Vec::new(),
-  };
+  // Create a child resolver with its own out_dir and action_results
+  let mut bind_resolver = resolver.with_out_dir(out_dir.to_string_lossy().to_string());
 
   // Execute actions in order
   let (action_results, outputs) =
-    execute_bind_actions(&bind_def.create_actions, bind_resolver, bind_def, out_dir).await?;
+    execute_bind_actions(&bind_def.create_actions, &mut bind_resolver, bind_def, out_dir).await?;
 
   debug!(hash = %hash.0, "bind applied");
 
@@ -74,18 +70,18 @@ pub async fn apply_bind<R: Resolver>(
 /// * `bind_def` - The bind definition
 /// * `bind_result` - The result from when the bind was applied (provides outputs)
 /// * `resolver` - A resolver for placeholder resolution
-/// * `config` - Execution configuration
 ///
 /// # Returns
 ///
 /// Ok(()) on success, or an error if destruction failed.
-pub async fn destroy_bind<R: Resolver>(
+pub async fn destroy_bind(
   hash: &ObjectHash,
   bind_def: &BindDef,
   bind_result: &BindResult,
-  resolver: &R,
+  resolver: &BindCtxResolver<'_>,
 ) -> Result<(), ExecuteError> {
   let destroy_actions = &bind_def.destroy_actions;
+  let _ = bind_result; // TODO: May be used in future for referencing applied outputs
 
   debug!(hash = %hash.0, "destroying bind");
 
@@ -93,17 +89,11 @@ pub async fn destroy_bind<R: Resolver>(
   let temp_dir = TempDir::new()?;
   let out_dir = temp_dir.path();
 
-  // For destroy, we use the outputs from when the bind was applied
-  // so that destroy commands can reference them
-  let bind_resolver = BindDestroyResolver {
-    inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
-    applied_outputs: &bind_result.outputs,
-    action_results: Vec::new(),
-  };
+  // Create a child resolver with its own out_dir and action_results
+  let mut bind_resolver = resolver.with_out_dir(out_dir.to_string_lossy().to_string());
 
   // Execute destroy actions
-  let _ = execute_bind_actions_raw(destroy_actions, bind_resolver, out_dir).await?;
+  let _ = execute_bind_actions_raw(destroy_actions, &mut bind_resolver, out_dir).await?;
 
   debug!(hash = %hash.0, "bind destroyed");
 
@@ -126,13 +116,14 @@ pub async fn destroy_bind<R: Resolver>(
 /// # Returns
 ///
 /// A new `BindResult` with updated outputs.
-pub async fn update_bind<R: Resolver>(
+pub async fn update_bind(
   old_hash: &ObjectHash,
   new_hash: &ObjectHash,
   new_bind_def: &BindDef,
   old_bind_result: &BindResult,
-  resolver: &R,
+  resolver: &BindCtxResolver<'_>,
 ) -> Result<BindResult, ExecuteError> {
+  let _ = old_bind_result; // TODO: May be used in future for referencing old outputs
   debug!(old_hash = %old_hash.0, new_hash = %new_hash.0, "updating bind");
 
   // Create a temporary working directory for the bind's $${out}
@@ -148,17 +139,12 @@ pub async fn update_bind<R: Resolver>(
       code: None,
     })?;
 
-  // Create a resolver that has access to old outputs for placeholder resolution
-  let bind_resolver = BindUpdateResolver {
-    inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
-    old_outputs: &old_bind_result.outputs,
-    action_results: Vec::new(),
-  };
+  // Create a child resolver with its own out_dir and action_results
+  let mut bind_resolver = resolver.with_out_dir(out_dir.to_string_lossy().to_string());
 
   // Execute update actions
   let (action_results, outputs) =
-    execute_bind_update_actions(update_actions, bind_resolver, new_bind_def, out_dir).await?;
+    execute_bind_actions(&update_actions, &mut bind_resolver, new_bind_def, out_dir).await?;
 
   debug!(old_hash = %old_hash.0, new_hash = %new_hash.0, "bind updated");
 
@@ -175,12 +161,13 @@ pub async fn update_bind<R: Resolver>(
 ///
 /// Executes the bind's check_actions and interprets the result.
 /// Returns `None` if the bind has no check callback defined.
-pub async fn check_bind<R: Resolver>(
+pub async fn check_bind(
   hash: &ObjectHash,
   bind_def: &BindDef,
   bind_result: &BindResult,
-  resolver: &R,
+  resolver: &BindCtxResolver<'_>,
 ) -> Result<Option<crate::bind::BindCheckResult>, ExecuteError> {
+  let _ = bind_result; // TODO: May be used in future for referencing applied outputs
   let Some(ref check_actions) = bind_def.check_actions else {
     return Ok(None);
   };
@@ -193,27 +180,18 @@ pub async fn check_bind<R: Resolver>(
   let temp_dir = TempDir::new()?;
   let out_dir = temp_dir.path();
 
-  let check_resolver = BindCheckResolver {
-    inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
-    applied_outputs: &bind_result.outputs,
-    action_results: Vec::new(),
-  };
+  // Create a child resolver with its own out_dir and action_results
+  let mut check_resolver = resolver.with_out_dir(out_dir.to_string_lossy().to_string());
 
-  let action_results = execute_bind_check_actions(check_actions, check_resolver, out_dir).await?;
+  // Execute check actions (this populates action_results in check_resolver)
+  execute_bind_check_actions(check_actions, &mut check_resolver, out_dir).await?;
 
-  let final_resolver = BindCheckResolver {
-    inner: resolver,
-    out_dir: out_dir.to_string_lossy().to_string(),
-    applied_outputs: &bind_result.outputs,
-    action_results: action_results.iter().map(|r| r.output.clone()).collect(),
-  };
-
-  let drifted_str = placeholder::substitute(&check_outputs.drifted, &final_resolver)?;
+  // Resolve check outputs using the resolver (now has action results)
+  let drifted_str = placeholder::substitute(&check_outputs.drifted, &check_resolver)?;
   let drifted = drifted_str == "true";
 
   let message = match &check_outputs.message {
-    Some(msg_pattern) => Some(placeholder::substitute(msg_pattern, &final_resolver)?),
+    Some(msg_pattern) => Some(placeholder::substitute(msg_pattern, &check_resolver)?),
     None => None,
   };
 
@@ -222,9 +200,9 @@ pub async fn check_bind<R: Resolver>(
   Ok(Some(crate::bind::BindCheckResult { drifted, message }))
 }
 
-async fn execute_bind_check_actions<R: Resolver>(
+async fn execute_bind_check_actions(
   actions: &[Action],
-  mut resolver: BindCheckResolver<'_, R>,
+  resolver: &mut BindCtxResolver<'_>,
   out_dir: &Path,
 ) -> Result<Vec<ActionResult>, ExecuteError> {
   let mut action_results = Vec::new();
@@ -232,9 +210,9 @@ async fn execute_bind_check_actions<R: Resolver>(
   for (idx, action) in actions.iter().enumerate() {
     debug!(action_idx = idx, "executing check action");
 
-    let result = execute_action(action, &resolver, out_dir).await?;
+    let result = execute_action(action, resolver, out_dir).await?;
 
-    resolver.action_results.push(result.output.clone());
+    resolver.push_action_result(result.output.clone());
     action_results.push(result);
   }
 
@@ -242,9 +220,9 @@ async fn execute_bind_check_actions<R: Resolver>(
 }
 
 /// Execute bind actions and resolve outputs.
-async fn execute_bind_actions<R: Resolver>(
+async fn execute_bind_actions(
   actions: &[Action],
-  mut resolver: BindApplyResolver<'_, R>,
+  resolver: &mut BindCtxResolver<'_>,
   bind_def: &BindDef,
   out_dir: &Path,
 ) -> Result<(Vec<ActionResult>, HashMap<String, String>), ExecuteError> {
@@ -253,23 +231,23 @@ async fn execute_bind_actions<R: Resolver>(
   for (idx, action) in actions.iter().enumerate() {
     debug!(action_idx = idx, "executing bind action");
 
-    let result = execute_action(action, &resolver, out_dir).await?;
+    let result = execute_action(action, resolver, out_dir).await?;
 
     // Record the result for subsequent actions
-    resolver.action_results.push(result.output.clone());
+    resolver.push_action_result(result.output.clone());
     action_results.push(result);
   }
 
   // Resolve outputs
-  let outputs = resolve_bind_outputs(bind_def, &resolver)?;
+  let outputs = resolve_bind_outputs(bind_def, resolver)?;
 
   Ok((action_results, outputs))
 }
 
 /// Execute bind actions without output resolution (used for destroy).
-async fn execute_bind_actions_raw<R: Resolver>(
+async fn execute_bind_actions_raw(
   actions: &[Action],
-  mut resolver: BindDestroyResolver<'_, R>,
+  resolver: &mut BindCtxResolver<'_>,
   out_dir: &Path,
 ) -> Result<Vec<ActionResult>, ExecuteError> {
   let mut action_results = Vec::new();
@@ -277,44 +255,19 @@ async fn execute_bind_actions_raw<R: Resolver>(
   for (idx, action) in actions.iter().enumerate() {
     debug!(action_idx = idx, "executing destroy action");
 
-    let result = execute_action(action, &resolver, out_dir).await?;
+    let result = execute_action(action, resolver, out_dir).await?;
 
-    resolver.action_results.push(result.output.clone());
+    resolver.push_action_result(result.output.clone());
     action_results.push(result);
   }
 
   Ok(action_results)
 }
 
-/// Execute bind update actions and resolve outputs.
-async fn execute_bind_update_actions<R: Resolver>(
-  actions: &[Action],
-  mut resolver: BindUpdateResolver<'_, R>,
+/// Resolve the outputs from a bind definition.
+fn resolve_bind_outputs(
   bind_def: &BindDef,
-  out_dir: &Path,
-) -> Result<(Vec<ActionResult>, HashMap<String, String>), ExecuteError> {
-  let mut action_results = Vec::new();
-
-  for (idx, action) in actions.iter().enumerate() {
-    debug!(action_idx = idx, "executing update action");
-
-    let result = execute_action(action, &resolver, out_dir).await?;
-
-    // Record the result for subsequent actions
-    resolver.action_results.push(result.output.clone());
-    action_results.push(result);
-  }
-
-  // Resolve outputs using the update resolver
-  let outputs = resolve_bind_update_outputs(bind_def, &resolver)?;
-
-  Ok((action_results, outputs))
-}
-
-/// Resolve the outputs from a bind definition (for apply).
-fn resolve_bind_outputs<R: Resolver>(
-  bind_def: &BindDef,
-  resolver: &BindApplyResolver<'_, R>,
+  resolver: &BindCtxResolver<'_>,
 ) -> Result<HashMap<String, String>, ExecuteError> {
   let mut outputs = HashMap::new();
 
@@ -326,155 +279,6 @@ fn resolve_bind_outputs<R: Resolver>(
   }
 
   Ok(outputs)
-}
-
-/// Resolve the outputs from a bind definition (for update).
-fn resolve_bind_update_outputs<R: Resolver>(
-  bind_def: &BindDef,
-  resolver: &BindUpdateResolver<'_, R>,
-) -> Result<HashMap<String, String>, ExecuteError> {
-  let mut outputs = HashMap::new();
-
-  if let Some(def_outputs) = &bind_def.outputs {
-    for (name, value) in def_outputs {
-      let resolved = placeholder::substitute(value, resolver)?;
-      outputs.insert(name.clone(), resolved);
-    }
-  }
-
-  Ok(outputs)
-}
-
-/// Resolver for bind apply actions.
-///
-/// Wraps an inner resolver but overrides $${out} to point to the bind's
-/// working directory.
-struct BindApplyResolver<'a, R: Resolver> {
-  inner: &'a R,
-  out_dir: String,
-  action_results: Vec<String>,
-}
-
-impl<R: Resolver> Resolver for BindApplyResolver<'_, R> {
-  fn resolve_action(&self, index: usize) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self
-      .action_results
-      .get(index)
-      .map(|s| s.as_str())
-      .ok_or(crate::placeholder::PlaceholderError::UnresolvedAction(index))
-  }
-
-  fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_build(hash, output)
-  }
-
-  fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_bind(hash, output)
-  }
-
-  fn resolve_out(&self) -> Result<&str, crate::placeholder::PlaceholderError> {
-    Ok(&self.out_dir)
-  }
-}
-
-/// Resolver for bind destroy actions.
-///
-/// Similar to BindApplyResolver but also has access to the outputs
-/// from when the bind was originally applied.
-struct BindDestroyResolver<'a, R: Resolver> {
-  inner: &'a R,
-  out_dir: String,
-  #[allow(dead_code)]
-  applied_outputs: &'a HashMap<String, String>,
-  action_results: Vec<String>,
-}
-
-impl<R: Resolver> Resolver for BindDestroyResolver<'_, R> {
-  fn resolve_action(&self, index: usize) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self
-      .action_results
-      .get(index)
-      .map(|s| s.as_str())
-      .ok_or(crate::placeholder::PlaceholderError::UnresolvedAction(index))
-  }
-
-  fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_build(hash, output)
-  }
-
-  fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_bind(hash, output)
-  }
-
-  fn resolve_out(&self) -> Result<&str, crate::placeholder::PlaceholderError> {
-    Ok(&self.out_dir)
-  }
-}
-
-/// Resolver for bind update actions.
-///
-/// Similar to BindApplyResolver but also has access to the outputs
-/// from when the bind was originally applied (for use in update logic).
-struct BindUpdateResolver<'a, R: Resolver> {
-  inner: &'a R,
-  out_dir: String,
-  /// Outputs from the previous create/update - can be used to resolve
-  /// placeholders that reference the old state.
-  #[allow(dead_code)]
-  old_outputs: &'a HashMap<String, String>,
-  action_results: Vec<String>,
-}
-
-impl<R: Resolver> Resolver for BindUpdateResolver<'_, R> {
-  fn resolve_action(&self, index: usize) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self
-      .action_results
-      .get(index)
-      .map(|s| s.as_str())
-      .ok_or(crate::placeholder::PlaceholderError::UnresolvedAction(index))
-  }
-
-  fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_build(hash, output)
-  }
-
-  fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_bind(hash, output)
-  }
-
-  fn resolve_out(&self) -> Result<&str, crate::placeholder::PlaceholderError> {
-    Ok(&self.out_dir)
-  }
-}
-
-struct BindCheckResolver<'a, R: Resolver> {
-  inner: &'a R,
-  out_dir: String,
-  #[allow(dead_code)]
-  applied_outputs: &'a HashMap<String, String>,
-  action_results: Vec<String>,
-}
-
-impl<R: Resolver> Resolver for BindCheckResolver<'_, R> {
-  fn resolve_action(&self, index: usize) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self
-      .action_results
-      .get(index)
-      .map(|s| s.as_str())
-      .ok_or(crate::placeholder::PlaceholderError::UnresolvedAction(index))
-  }
-
-  fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_build(hash, output)
-  }
-
-  fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, crate::placeholder::PlaceholderError> {
-    self.inner.resolve_bind(hash, output)
-  }
-
-  fn resolve_out(&self) -> Result<&str, crate::placeholder::PlaceholderError> {
-    Ok(&self.out_dir)
-  }
 }
 
 #[cfg(test)]
@@ -482,70 +286,18 @@ mod tests {
   use std::vec;
 
   use super::*;
+  use crate::execute::types::BuildResult;
+  use crate::manifest::Manifest;
   use crate::util::testutil::{echo_msg, shell_cmd};
-  use crate::{action::actions::exec::ExecOpts, placeholder::PlaceholderError, util::hash::Hashable};
+  use crate::{action::actions::exec::ExecOpts, util::hash::Hashable};
 
-  /// Simple test resolver that returns fixed values.
-  struct TestResolver {
-    builds: HashMap<String, HashMap<String, String>>,
-    binds: HashMap<String, HashMap<String, String>>,
-  }
-
-  impl TestResolver {
-    fn new() -> Self {
-      Self {
-        builds: HashMap::new(),
-        binds: HashMap::new(),
-      }
-    }
-
-    fn with_build(mut self, hash: &str, outputs: HashMap<String, String>) -> Self {
-      self.builds.insert(hash.to_string(), outputs);
-      self
-    }
-
-    #[allow(dead_code)]
-    fn with_bind(mut self, hash: &str, outputs: HashMap<String, String>) -> Self {
-      self.binds.insert(hash.to_string(), outputs);
-      self
-    }
-  }
-
-  impl Resolver for TestResolver {
-    fn resolve_action(&self, index: usize) -> Result<&str, PlaceholderError> {
-      Err(PlaceholderError::UnresolvedAction(index))
-    }
-
-    fn resolve_build(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
-      self
-        .builds
-        .iter()
-        .find(|(h, _)| h.starts_with(hash))
-        .and_then(|(_, outputs)| outputs.get(output))
-        .map(|s| s.as_str())
-        .ok_or_else(|| PlaceholderError::UnresolvedBuild {
-          hash: hash.to_string(),
-          output: output.to_string(),
-        })
-    }
-
-    fn resolve_bind(&self, hash: &str, output: &str) -> Result<&str, PlaceholderError> {
-      self
-        .binds
-        .iter()
-        .find(|(h, _)| h.starts_with(hash))
-        .and_then(|(_, outputs)| outputs.get(output))
-        .map(|s| s.as_str())
-        .ok_or_else(|| PlaceholderError::UnresolvedBind {
-          hash: hash.to_string(),
-          output: output.to_string(),
-        })
-    }
-
-    fn resolve_out(&self) -> Result<&str, PlaceholderError> {
-      // Test resolver doesn't have a default out - the bind execution provides its own
-      Err(PlaceholderError::Malformed("no out in test resolver".to_string()))
-    }
+  /// Create a test resolver with empty collections.
+  fn test_resolver() -> (
+    HashMap<ObjectHash, BuildResult>,
+    HashMap<ObjectHash, BindResult>,
+    Manifest,
+  ) {
+    (HashMap::new(), HashMap::new(), Manifest::default())
   }
 
   fn make_simple_bind() -> BindDef {
@@ -571,7 +323,8 @@ mod tests {
   async fn apply_simple_bind() {
     let bind_def = make_simple_bind();
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
 
@@ -598,7 +351,8 @@ mod tests {
       check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
 
@@ -624,7 +378,8 @@ mod tests {
       check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
 
@@ -641,6 +396,8 @@ mod tests {
 
   #[tokio::test]
   async fn apply_bind_with_build_dependency() {
+    use std::path::PathBuf;
+
     let (cmd, args) = echo_msg("$${build:abc123:bin}");
     let bind_def = BindDef {
       id: None,
@@ -661,7 +418,16 @@ mod tests {
 
     let mut build_outputs = HashMap::new();
     build_outputs.insert("bin".to_string(), "/store/obj/myapp/bin".to_string());
-    let resolver = TestResolver::new().with_build("abc123def456", build_outputs);
+    let build_result = BuildResult {
+      store_path: PathBuf::from("/store/obj/myapp"),
+      outputs: build_outputs,
+      action_results: vec![],
+    };
+    let mut builds = HashMap::new();
+    builds.insert(ObjectHash("abc123def456".to_string()), build_result);
+    let binds = HashMap::new();
+    let manifest = Manifest::default();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
 
@@ -697,7 +463,8 @@ mod tests {
       check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     // First apply
     let bind_result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
@@ -712,7 +479,8 @@ mod tests {
   async fn destroy_bind_without_actions() {
     let bind_def = make_simple_bind();
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let bind_result = BindResult {
       outputs: HashMap::new(),
@@ -743,7 +511,8 @@ mod tests {
       check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await;
 
@@ -789,7 +558,8 @@ mod tests {
       check_outputs: None,
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let result = apply_bind(&hash, &bind_def, &resolver).await.unwrap();
 
@@ -830,7 +600,8 @@ mod tests {
     };
     let old_hash = ObjectHash("old_hash".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     // Simulate previous apply result
     let old_bind_result = BindResult {
@@ -874,7 +645,8 @@ mod tests {
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let old_bind_result = BindResult {
       outputs: [("path".to_string(), "/old/path".to_string())].into_iter().collect(),
@@ -909,7 +681,8 @@ mod tests {
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let old_bind_result = BindResult {
       outputs: HashMap::new(),
@@ -966,7 +739,8 @@ mod tests {
     };
     let old_hash = ObjectHash("old".to_string());
     let new_hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
 
     let old_bind_result = BindResult {
       outputs: [("result".to_string(), "old-result".to_string())].into_iter().collect(),
@@ -988,7 +762,8 @@ mod tests {
     // A bind with no check_actions should return None
     let bind_def = make_simple_bind();
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(),
       action_results: vec![],
@@ -1024,7 +799,8 @@ mod tests {
       }),
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(),
       action_results: vec![],
@@ -1063,7 +839,8 @@ mod tests {
       }),
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(),
       action_results: vec![],
@@ -1111,7 +888,8 @@ mod tests {
       }),
     };
     let hash = bind_def.compute_hash().unwrap();
-    let resolver = TestResolver::new();
+    let (builds, binds, manifest) = test_resolver();
+    let resolver = BindCtxResolver::new(&builds, &binds, &manifest, "/tmp".to_string());
     let bind_result = BindResult {
       outputs: HashMap::new(),
       action_results: vec![],

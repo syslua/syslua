@@ -175,6 +175,10 @@ mod tests {
     fn resolve_out(&self) -> Result<&str, PlaceholderError> {
       Ok(&self.out_dir)
     }
+
+    fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
+      std::env::var(name).map_err(|_| PlaceholderError::UnresolvedEnv(name.to_string()))
+    }
   }
 
   #[tokio::test]
