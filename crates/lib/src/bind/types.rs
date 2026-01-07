@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::{
-  action::{Action, ActionCtx, actions::exec::ExecOpts},
+  action::{actions::exec::ExecOpts, Action, ActionCtx},
   bind::lua::{bind_inputs_ref_to_lua, lua_value_to_bind_inputs_def},
   manifest::Manifest,
   outputs::lua::{outputs_to_lua_table, parse_outputs},
@@ -58,6 +58,7 @@ pub struct BindSpec {
   pub update: Option<LuaFunction>,
   pub destroy: LuaFunction,
   pub check: Option<LuaFunction>,
+  pub replace: bool,
 }
 
 impl FromLua for BindSpec {
@@ -92,6 +93,8 @@ impl FromLua for BindSpec {
       });
     }
 
+    let replace: bool = table.get("replace").unwrap_or(false);
+
     Ok(BindSpec {
       id,
       inputs,
@@ -99,6 +102,7 @@ impl FromLua for BindSpec {
       update,
       destroy,
       check,
+      replace,
     })
   }
 }
@@ -308,7 +312,11 @@ impl BindDef {
     let outputs: Option<BTreeMap<String, String>> = match create_result {
       LuaValue::Table(t) => {
         let parsed = parse_outputs(t)?;
-        if parsed.is_empty() { None } else { Some(parsed) }
+        if parsed.is_empty() {
+          None
+        } else {
+          Some(parsed)
+        }
       }
       LuaValue::Nil => None,
       _ => {

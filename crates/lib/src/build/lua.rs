@@ -201,6 +201,7 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
   let build_fn = lua.create_function(move |lua, spec_table: LuaTable| {
     let build_spec: BuildSpec = lua.unpack(LuaValue::Table(spec_table))?;
     let id = build_spec.id.clone();
+    let replace = build_spec.replace;
 
     let build_def = BuildDef::from_spec(
       lua,
@@ -215,15 +216,38 @@ pub fn register_sys_build(lua: &Lua, sys_table: &LuaTable, manifest: Rc<RefCell<
 
     {
       let mut manifest = manifest.borrow_mut();
+
+      // Hash dedup (existing behavior): identical content = same hash
       if manifest.builds.contains_key(&build_ref.hash) {
         tracing::warn!(
           hash = %build_ref.hash.0,
           id = ?id,
           "duplicate build detected, skipping insertion"
         );
-      } else {
-        manifest.builds.insert(build_ref.hash.clone(), build_def);
+        return lua.pack(build_ref);
       }
+
+      // ID dedup with explicit replace flag
+      if let Some(ref build_id) = id {
+        let existing = manifest
+          .builds
+          .iter()
+          .find(|(_, def)| def.id.as_ref() == Some(build_id))
+          .map(|(h, _)| h.clone());
+
+        if let Some(old_hash) = existing {
+          if !replace {
+            return Err(LuaError::external(format!(
+              "build with id '{}' already exists (hash: {}). Use `replace = true` to override, \
+               or use a different id. This error prevents accidental collisions.",
+              build_id, old_hash.0
+            )));
+          }
+          manifest.builds.remove(&old_hash);
+        }
+      }
+
+      manifest.builds.insert(build_ref.hash.clone(), build_def);
     }
 
     lua.pack(build_ref)
@@ -560,7 +584,6 @@ mod tests {
     fn duplicate_build_is_deduplicated() -> LuaResult<()> {
       let (lua, manifest) = create_test_lua_with_manifest()?;
 
-      // Create the same build twice
       lua
         .load(
           r#"
@@ -583,8 +606,136 @@ mod tests {
         .exec()?;
 
       let manifest = manifest.borrow();
-      // Should only have 1 build, not 2
       assert_eq!(manifest.builds.len(), 1);
+
+      Ok(())
+    }
+
+    #[test]
+    fn duplicate_build_id_without_replace_fails() -> LuaResult<()> {
+      let (lua, _) = create_test_lua_with_manifest()?;
+
+      let result = lua
+        .load(
+          r#"
+                sys.build({
+                    id = "my-build",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo first")
+                        return { out = "/first" }
+                    end,
+                })
+                sys.build({
+                    id = "my-build",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo second")
+                        return { out = "/second" }
+                    end,
+                })
+            "#,
+        )
+        .exec();
+
+      assert!(result.is_err());
+      let err = result.unwrap_err().to_string();
+      assert!(err.contains("already exists"), "error should mention 'already exists': {}", err);
+      assert!(err.contains("replace = true"), "error should suggest replace flag: {}", err);
+
+      Ok(())
+    }
+
+    #[test]
+    fn duplicate_build_id_with_replace_succeeds() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.build({
+                    id = "my-build",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo first")
+                        return { out = "/first" }
+                    end,
+                })
+                sys.build({
+                    id = "my-build",
+                    replace = true,
+                    create = function(inputs, ctx)
+                        ctx:exec("echo second")
+                        return { out = "/second" }
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.builds.len(), 1);
+
+      let (_, build_def) = manifest.builds.iter().next().unwrap();
+      match &build_def.create_actions[0] {
+        Action::Exec(opts) => {
+          assert_eq!(opts.bin, "echo second", "second build should replace first");
+        }
+        _ => panic!("expected Exec action"),
+      }
+
+      Ok(())
+    }
+
+    #[test]
+    fn replace_true_on_first_build_succeeds() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.build({
+                    id = "my-build",
+                    replace = true,
+                    create = function(inputs, ctx)
+                        ctx:exec("echo only")
+                        return { out = "/only" }
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.builds.len(), 1);
+
+      Ok(())
+    }
+
+    #[test]
+    fn different_build_ids_both_kept() -> LuaResult<()> {
+      let (lua, manifest) = create_test_lua_with_manifest()?;
+
+      lua
+        .load(
+          r#"
+                sys.build({
+                    id = "build-a",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo a")
+                        return { out = "/a" }
+                    end,
+                })
+                sys.build({
+                    id = "build-b",
+                    create = function(inputs, ctx)
+                        ctx:exec("echo b")
+                        return { out = "/b" }
+                    end,
+                })
+            "#,
+        )
+        .exec()?;
+
+      let manifest = manifest.borrow();
+      assert_eq!(manifest.builds.len(), 2);
 
       Ok(())
     }
