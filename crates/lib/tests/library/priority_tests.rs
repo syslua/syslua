@@ -197,9 +197,8 @@ fn mergeable_string_combines_with_separator() -> LuaResult<()> {
         local merged = priority.merge(base, { paths = priority.before('/opt/bin') })
         merged = priority.merge(merged, { paths = priority.default('/usr/bin') })
         merged = priority.merge(merged, { paths = priority.after('/usr/local/bin') })
-        local resolved = priority.resolve(merged)
-        assert(resolved.paths == '/opt/bin:/usr/bin:/usr/local/bin', 
-          'paths should merge: ' .. tostring(resolved.paths))
+        assert(merged.paths == '/opt/bin:/usr/bin:/usr/local/bin', 
+          'paths should merge: ' .. tostring(merged.paths))
       "#,
     )
     .exec()?;
@@ -218,9 +217,8 @@ fn mergeable_array_concatenates() -> LuaResult<()> {
         local base = { packages = priority.mergeable() }
         local merged = priority.merge(base, { packages = priority.before({'vim'}) })
         merged = priority.merge(merged, { packages = priority.after({'emacs'}) })
-        local resolved = priority.resolve(merged)
-        assert(resolved.packages[1] == 'vim', 'first should be vim')
-        assert(resolved.packages[2] == 'emacs', 'second should be emacs')
+        assert(merged.packages[1] == 'vim', 'first should be vim')
+        assert(merged.packages[2] == 'emacs', 'second should be emacs')
       "#,
     )
     .exec()?;

@@ -16,7 +16,6 @@
 ---@field order fun(priority: number, value: any): PriorityValue
 ---@field mergeable fun(opts?: {separator?: string}): MergeableConfig
 ---@field merge fun(base: table, override: table): table
----@field resolve fun(merged: table): table
 ---@field wrap fun(value: any, priority: number, source?: {file: string, line: number}): PriorityValue
 ---@field unwrap fun(value: any): any
 ---@field is_priority fun(value: any): boolean
@@ -40,6 +39,32 @@ local MergeableMT = {
 
 local AccumulatedMT = {
   __type = 'Accumulated',
+}
+
+local MergedTableMT
+MergedTableMT = {
+  __type = 'MergedTable',
+  __index = function(self, key)
+    local raw = rawget(self, '__raw')
+    local val = raw[key]
+    if val ~= nil and type(val) == 'table' and getmetatable(val) == AccumulatedMT then
+      return M._merge_values(val.__entries, val.__config)
+    end
+    return val
+  end,
+  __newindex = function(self, key, value)
+    rawget(self, '__raw')[key] = value
+  end,
+  __pairs = function(self)
+    local raw = rawget(self, '__raw')
+    return function(t, k)
+      local nk, nv = next(raw, k)
+      if nv ~= nil and type(nv) == 'table' and getmetatable(nv) == AccumulatedMT then
+        return nk, M._merge_values(nv.__entries, nv.__config)
+      end
+      return nk, nv
+    end, raw, nil
+  end,
 }
 
 M.PRIORITIES = {
@@ -137,6 +162,17 @@ function M._make_accumulated(entries, config)
     __entries = entries,
     __config = config,
   }, AccumulatedMT)
+end
+
+function M._make_merged_table(raw)
+  return setmetatable({ __raw = raw }, MergedTableMT)
+end
+
+function M._unwrap_merged_table(t)
+  if type(t) == 'table' and getmetatable(t) == MergedTableMT then
+    return rawget(t, '__raw')
+  end
+  return t
 end
 
 function M._values_equal(a, b)
@@ -279,6 +315,9 @@ function M.merge(base, override)
     return base
   end
 
+  base = M._unwrap_merged_table(base)
+  override = M._unwrap_merged_table(override)
+
   local result = {}
   local merge_configs = {}
   local accumulated = {}
@@ -341,19 +380,7 @@ function M.merge(base, override)
     result[k] = M._make_accumulated(entries, merge_configs[k])
   end
 
-  return result
-end
-
-function M.resolve(merged)
-  local result = {}
-  for k, v in pairs(merged) do
-    if M._is_accumulated(v) then
-      result[k] = M._merge_values(v.__entries, v.__config)
-    else
-      result[k] = v
-    end
-  end
-  return result
+  return M._make_merged_table(result)
 end
 
 return M

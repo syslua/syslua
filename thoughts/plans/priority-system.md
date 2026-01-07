@@ -644,12 +644,12 @@ end
 **Reason**: Follows Nix pattern (`nixpkgs.lib`), keeps priority system as pure Lua without Rust registration
 **Impact**: Users must explicitly import the module, but this is cleaner and more flexible
 
-### Added `resolve()` function
+### Lazy resolution for mergeable keys
 
 **Original plan**: `merge()` returns final values immediately
-**Actual implementation**: `merge()` accumulates entries for mergeable keys, `resolve()` finalizes them
-**Reason**: Enables multiple sequential `merge()` calls to properly accumulate mergeable values
-**Impact**: Users call `priority.resolve(merged)` when ready to get final values for mergeable keys
+**Actual implementation**: `merge()` returns a table with lazy resolution - mergeable keys auto-resolve when accessed via `__index` metamethod
+**Reason**: Enables multiple sequential `merge()` calls to properly accumulate mergeable values while maintaining the expected API (no separate resolve step)
+**Impact**: None - API matches original plan. Mergeable values resolve transparently on access.
 
 ---
 
