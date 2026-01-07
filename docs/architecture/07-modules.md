@@ -492,6 +492,76 @@ end
 return M
 ```
 
+## Built-in Modules
+
+SysLua ships with built-in modules for common tasks.
+
+### `syslua.modules.env`
+
+Manages environment variables across shell configurations. Creates a single build containing env files and binds to inject them into shell RC files.
+
+```lua
+local syslua = require('syslua')
+local prio = require('syslua.priority')
+
+syslua.modules.env.setup({
+    -- Simple assignment
+    EDITOR = 'nvim',
+    PAGER = 'less',
+    
+    -- PATH modifications with priority
+    PATH = prio.before('/opt/bin'),      -- prepend to PATH
+    PATH = prio.after('/custom/bin'),    -- append to PATH
+    
+    -- Force override (wins over other declarations)
+    SHELL = prio.force('/bin/zsh'),
+})
+```
+
+**Supported shells:**
+
+- POSIX shells (bash, zsh) — sources from `~/.bashrc`, `~/.zshrc`
+- Fish — sources from `~/.config/fish/config.fish`
+- PowerShell (Windows) — modifies `$PROFILE`
+
+**Multiple setup calls merge:**
+
+```lua
+-- In one module
+syslua.modules.env.setup({ EDITOR = 'vim' })
+
+-- In another module  
+syslua.modules.env.setup({ PAGER = 'less' })
+
+-- Result: both EDITOR and PAGER are set
+```
+
+**Conflict resolution:**
+
+```lua
+-- This will ERROR (same key, no priority):
+syslua.modules.env.setup({ EDITOR = 'vim' })
+syslua.modules.env.setup({ EDITOR = 'nano' })  -- conflict!
+
+-- Use prio.force() to override:
+syslua.modules.env.setup({ EDITOR = prio.force('nvim') })  -- wins
+```
+
+### `syslua.modules.file`
+
+Manages individual files. See examples throughout this document.
+
+```lua
+syslua.modules.file.setup({
+    target = '~/.gitconfig',
+    content = [[
+[user]
+    name = Alice
+]],
+    mutable = false,  -- default: immutable (content-addressed)
+})
+```
+
 ## See Also
 
 - [Overview](./00-overview.md) — Core values and principles
