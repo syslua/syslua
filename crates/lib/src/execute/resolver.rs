@@ -75,7 +75,7 @@ impl Resolver for BuildCtxResolver<'_> {
   }
 
   fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
-    std::env::var(name).map_err(|_| PlaceholderError::UnresolvedEnv(name.to_string()))
+    resolve_env_var(name)
   }
 }
 
@@ -176,8 +176,13 @@ impl Resolver for BindCtxResolver<'_> {
   }
 
   fn resolve_env(&self, name: &str) -> Result<String, PlaceholderError> {
-    std::env::var(name).map_err(|_| PlaceholderError::UnresolvedEnv(name.to_string()))
+    resolve_env_var(name)
   }
+}
+
+/// Shared logic for resolving environment variables.
+fn resolve_env_var(name: &str) -> Result<String, PlaceholderError> {
+  std::env::var(name).map_err(|_| PlaceholderError::UnresolvedEnv(name.to_string()))
 }
 
 /// Shared logic for resolving build outputs.
