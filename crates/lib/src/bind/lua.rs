@@ -854,8 +854,16 @@ mod tests {
 
       assert!(result.is_err());
       let err = result.unwrap_err().to_string();
-      assert!(err.contains("already exists"), "error should mention 'already exists': {}", err);
-      assert!(err.contains("replace = true"), "error should suggest replace flag: {}", err);
+      assert!(
+        err.contains("already exists"),
+        "error should mention 'already exists': {}",
+        err
+      );
+      assert!(
+        err.contains("replace = true"),
+        "error should suggest replace flag: {}",
+        err
+      );
 
       Ok(())
     }

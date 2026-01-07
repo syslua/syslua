@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::{
-  action::{actions::exec::ExecOpts, Action, ActionCtx},
+  action::{Action, ActionCtx, actions::exec::ExecOpts},
   bind::lua::{bind_inputs_ref_to_lua, lua_value_to_bind_inputs_def},
   manifest::Manifest,
   outputs::lua::{outputs_to_lua_table, parse_outputs},
@@ -312,11 +312,7 @@ impl BindDef {
     let outputs: Option<BTreeMap<String, String>> = match create_result {
       LuaValue::Table(t) => {
         let parsed = parse_outputs(t)?;
-        if parsed.is_empty() {
-          None
-        } else {
-          Some(parsed)
-        }
+        if parsed.is_empty() { None } else { Some(parsed) }
       }
       LuaValue::Nil => None,
       _ => {

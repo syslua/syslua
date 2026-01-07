@@ -15,7 +15,7 @@ use mlua::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-  action::{actions::exec::ExecOpts, Action, ActionCtx},
+  action::{Action, ActionCtx, actions::exec::ExecOpts},
   manifest::Manifest,
   util::hash::{Hashable, ObjectHash},
 };
