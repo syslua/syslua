@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::Direction;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::Direction;
 use tracing::trace;
 
 use crate::bind::{BindDef, BindInputsDef};
@@ -529,8 +529,8 @@ mod tests {
   use std::collections::BTreeMap;
 
   use super::*;
-  use crate::action::actions::exec::ExecOpts;
   use crate::action::Action;
+  use crate::action::actions::exec::ExecOpts;
   use crate::bind::BindDef;
   use crate::build::BuildDef;
   use crate::util::hash::Hashable;

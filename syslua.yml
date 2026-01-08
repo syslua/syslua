@@ -1,0 +1,6 @@
+---
+base: lua53
+
+globals:
+  sys:
+    any: true

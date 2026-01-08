@@ -17,7 +17,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  fmt:
+  cargo-fmt-check:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
@@ -27,8 +27,23 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  lint-and-test:
-    name: Lint & Test (${{ matrix.os }})
+  stylua-check-and-selene-lint:
+    name: Lua Format & Lint Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check .
+      - name: Install selene
+        run: cargo install selene
+      - name: Run selene
+        run: selene ./lua/syslua/
+
+  rust-lint-and-test:
+    name: Rust Lint & Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:

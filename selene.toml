@@ -1,0 +1,13 @@
+std = "syslua"
+
+[rules]
+empty_if = "warn"
+empty_loop = "warn"
+global_usage = "warn"
+if_same_then_else = "warn"
+multiple_statements = "allow"
+parenthese_conditions = "warn"
+shadowing = "allow"
+unbalanced_assignments = "warn"
+undefined_variable = "deny"
+unused_variable = "warn"
