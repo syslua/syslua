@@ -109,9 +109,13 @@ function M.setup(provided_opts)
     )
   end
 
-  local extracted = lib.extract({
+  local archive = lib.fetch_url({
     url = platform_release.url,
     sha256 = platform_release.sha256,
+  })
+
+  local extracted = lib.extract({
+    archive = archive.outputs.out,
     format = platform_release.format,
     strip_components = 1,
   })

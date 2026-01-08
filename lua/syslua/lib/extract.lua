@@ -16,19 +16,15 @@ local PATHS = {
 ---@alias ArchiveFormat "zip" | "tar.gz" | "tar.xz"
 
 ---@class ExtractOptions
----@field url string URL to download
----@field sha256 string SHA256 checksum
+---@field archive string Path to archive file (typically from lib.fetch_url)
 ---@field format ArchiveFormat Archive format
 ---@field strip_components? number Number of leading path components to strip
 
 ---@param opts ExtractOptions
 ---@return BuildRef
 local function extract(opts)
-  if not opts.url then
-    error("extract requires a 'url' option")
-  end
-  if not opts.sha256 then
-    error("extract requires a 'sha256' option")
+  if not opts.archive then
+    error("extract requires an 'archive' option")
   end
   if not opts.format then
     error("extract requires a 'format' option")
@@ -36,14 +32,13 @@ local function extract(opts)
 
   return sys.build({
     inputs = {
-      url = opts.url,
-      sha256 = opts.sha256,
+      archive = opts.archive,
       format = opts.format,
       strip_components = opts.strip_components or 0,
     },
     create = function(inputs, ctx)
       local paths = PATHS[sys.os]
-      local archive = ctx:fetch_url(inputs.url, inputs.sha256)
+      local archive = inputs.archive
       local format = inputs.format
       local strip = inputs.strip_components
 
