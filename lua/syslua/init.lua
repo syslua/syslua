@@ -1,6 +1,7 @@
 ---@class syslua
 ---@field pkgs syslua.pkgs
----@field modules syslua.modules
+---@field environment syslua.environment
+---@field programs syslua.programs
 ---@field lib syslua.lib
 local M = {}
 

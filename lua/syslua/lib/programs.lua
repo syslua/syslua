@@ -1,15 +1,10 @@
+local lib = require('syslua.lib')
+
 ---@class syslua.lib.programs
 local M = {}
 
----@return string
-local function get_home()
-  return sys.getenv('HOME')
-end
-
 ---@return table<string, string>
 function M.get_completion_paths()
-  local home = get_home()
-
   if sys.is_elevated then
     return {
       bash = sys.os == 'linux' and '/usr/share/bash-completion/completions/'
@@ -19,6 +14,7 @@ function M.get_completion_paths()
         or '/usr/local/share/fish/vendor_completions.d/',
     }
   else
+    local home = lib.get_home()
     return {
       bash = home .. '/.local/share/bash-completion/completions/',
       zsh = home .. '/.zsh/completions/',
@@ -29,13 +25,12 @@ end
 
 ---@return table<string, string>
 function M.get_man_paths()
-  local home = get_home()
-
   if sys.is_elevated then
     return {
       man1 = sys.os == 'linux' and '/usr/share/man/man1/' or '/usr/local/share/man/man1/',
     }
   else
+    local home = lib.get_home()
     return {
       man1 = home .. '/.local/share/man/man1/',
     }
@@ -44,10 +39,10 @@ end
 
 ---@return string
 function M.get_powershell_profile()
-  local home = get_home()
   if sys.is_elevated then
     return 'C:\\Program Files\\PowerShell\\7\\profile.ps1'
   else
+    local home = lib.get_home()
     return home .. '/Documents/PowerShell/profile.ps1'
   end
 end

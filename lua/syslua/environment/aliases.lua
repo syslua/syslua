@@ -1,25 +1,20 @@
 local prio = require('syslua.priority')
+local lib = require('syslua.lib')
 
----@class syslua.modules.alias
+---@class syslua.environment.aliases
 local M = {}
 
----@class syslua.modules.alias.Options
+---@class syslua.environment.aliases.Options
 ---@field [string] string | syslua.priority.PriorityValue<string>
 
 local default_opts = {}
 
----@type syslua.modules.alias.Options
+---@type syslua.environment.aliases.Options
 M.opts = default_opts
 
 -- ============================================================================
 -- Helper Functions
 -- ============================================================================
-
---- Get the user's home directory
----@return string
-local function get_home()
-  return sys.getenv('HOME')
-end
 
 --- Escape a string for POSIX shell (bash/zsh) alias value
 ---@param str string
@@ -47,7 +42,7 @@ end
 --- Get shell config file paths based on privilege level
 ---@return table<string, string>
 local function get_shell_configs()
-  local home = get_home()
+  local home = lib.get_home()
 
   if sys.is_elevated then
     -- Global config paths
@@ -70,7 +65,7 @@ local function get_shell_configs()
 end
 
 --- Extract aliases from merged opts
----@param opts syslua.modules.alias.Options
+---@param opts syslua.environment.aliases.Options
 ---@return table<string, string>
 local function extract_aliases(opts)
   local aliases = {}
@@ -145,7 +140,7 @@ end
 -- ============================================================================
 
 --- Create the build step that generates alias files
----@param opts syslua.modules.alias.Options
+---@param opts syslua.environment.aliases.Options
 ---@return table
 local function create_alias_build(opts)
   local aliases = extract_aliases(opts)
@@ -406,7 +401,7 @@ end
 --- Set up shell aliases according to the provided options
 --- Aliases are specified as top-level keys (e.g., ll = 'ls -la')
 --- Multiple calls accumulate aliases; use prio.force() to override
----@param provided_opts syslua.modules.alias.Options
+---@param provided_opts syslua.environment.aliases.Options
 M.setup = function(provided_opts)
   local new_opts, err = prio.merge(M.opts, provided_opts)
   if not new_opts then

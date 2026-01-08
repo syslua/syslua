@@ -8,7 +8,7 @@ local M = {}
 
 ---@class syslua.programs.jq.Options
 ---@field version? string | syslua.priority.PriorityValue<string>
----@field config? syslua.modules.file.Options
+---@field config? syslua.environment.files.Options
 
 local default_opts = {
   version = prio.default('stable'),

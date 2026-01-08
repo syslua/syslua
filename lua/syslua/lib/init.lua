@@ -19,6 +19,14 @@ setmetatable(M, {
   end,
 })
 
+M.get_home = function()
+  if sys.os == 'windows' then
+    return sys.getenv('USERPROFILE')
+  else
+    return sys.getenv('HOME')
+  end
+end
+
 ---@class syslua.lib.fetch_url.Options
 ---@field url string
 ---@field sha256 string

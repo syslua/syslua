@@ -13,7 +13,7 @@ local M = {}
 ---@field zsh_integration? boolean | syslua.priority.PriorityValue<boolean>
 ---@field fish_integration? boolean | syslua.priority.PriorityValue<boolean>
 ---@field powershell_integration? boolean | syslua.priority.PriorityValue<boolean>
----@field config? syslua.modules.file.Options
+---@field config? syslua.environment.files.Options
 
 local default_opts = {
   version = prio.default('stable'),
