@@ -374,7 +374,7 @@ mod env_module {
     let m = manifest.borrow();
     assert_eq!(m.builds.len(), 1, "env should create a build");
     // On non-Windows, creates binds for zsh, bash, and fish (3 binds)
-    assert!(m.bindings.len() >= 1, "env should create at least one bind");
+    assert!(!m.bindings.is_empty(), "env should create at least one bind");
     Ok(())
   }
 
@@ -552,7 +552,7 @@ mod env_module {
 
     let m = manifest.borrow();
     assert_eq!(m.builds.len(), 1);
-    assert!(m.bindings.len() >= 1);
+    assert!(!m.bindings.is_empty());
 
     // Get the build hash
     let build_hash = m.builds.keys().next().unwrap();
@@ -589,7 +589,7 @@ mod env_module {
 
     let m = manifest.borrow();
     assert_eq!(m.builds.len(), 1, "empty setup should still create build");
-    assert!(m.bindings.len() >= 1, "empty setup should create binds");
+    assert!(!m.bindings.is_empty(), "empty setup should create binds");
     Ok(())
   }
 

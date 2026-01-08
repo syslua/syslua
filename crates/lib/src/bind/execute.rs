@@ -142,9 +142,8 @@ pub async fn update_bind(
   // Create a child resolver with its own out_dir and action_results
   let mut bind_resolver = resolver.with_out_dir(out_dir.to_string_lossy().to_string());
 
-  // Execute update actions
   let (action_results, outputs) =
-    execute_bind_actions(&update_actions, &mut bind_resolver, new_bind_def, out_dir).await?;
+    execute_bind_actions(update_actions, &mut bind_resolver, new_bind_def, out_dir).await?;
 
   debug!(old_hash = %old_hash.0, new_hash = %new_hash.0, "bind updated");
 
