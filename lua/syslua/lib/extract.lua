@@ -13,14 +13,14 @@ local PATHS = {
   },
 }
 
----@alias ArchiveFormat "zip" | "tar.gz" | "tar.xz"
+---@alias syslua.lib.extract.ArchiveFormat "zip" | "tar.gz" | "tar.xz"
 
----@class ExtractOptions
+---@class syslua.lib.extract.Options
 ---@field archive string Path to archive file (typically from lib.fetch_url)
----@field format ArchiveFormat Archive format
+---@field format syslua.lib.extract.ArchiveFormat Archive format
 ---@field strip_components? number Number of leading path components to strip
 
----@param opts ExtractOptions
+---@param opts syslua.lib.extract.Options
 ---@return BuildRef
 local function extract(opts)
   if not opts.archive then

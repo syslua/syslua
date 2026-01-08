@@ -1,5 +1,7 @@
 ---@class syslua.modules
 ---@field file syslua.modules.file
+---@field env syslua.modules.env
+---@field alias syslua.modules.alias
 local M = {}
 
 setmetatable(M, {

@@ -3,7 +3,7 @@ local prio = require('syslua.priority')
 ---@class syslua.modules.file
 local M = {}
 
----@class FileOptions
+---@class syslua.modules.file.Options
 ---@field target string Path to the target file or directory
 ---@field source? string Path to the source file or directory
 ---@field content? string Content to write to the target file (if source is not provided)
@@ -13,11 +13,11 @@ local default_opts = {
   mutable = prio.default(false),
 }
 
----@type FileOptions
+---@type syslua.modules.file.Options
 M.opts = default_opts
 
 --- Set up a file or directory according to the provided options
----@param provided_opts FileOptions
+---@param provided_opts syslua.modules.file.Options
 M.setup = function(provided_opts)
   local new_opts = prio.merge(M.opts, provided_opts)
   if not new_opts then
