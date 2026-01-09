@@ -1,16 +1,19 @@
---- Tests for ctx:script() method.
---- Exercises shell and bash formats for script execution.
-
 return {
-  inputs = {},
+  inputs = {
+    syslua = 'path:./lua',
+  },
   setup = function(_inputs)
-    -- Test 1: Basic shell script
+    require('syslua').setup()
+
     sys.build({
       id = 'test-script-shell',
       create = function(_inputs, ctx)
-        local result = ctx:script('shell', [[
+        local result = ctx:script(
+          'shell',
+          [[
 echo "hello from shell"
-]])
+]]
+        )
         return {
           out = ctx.out,
           stdout = result.stdout,
@@ -19,13 +22,16 @@ echo "hello from shell"
       end,
     })
 
-    -- Test 2: Named script
     sys.build({
       id = 'test-script-named',
       create = function(_inputs, ctx)
-        local result = ctx:script('shell', [[
+        local result = ctx:script(
+          'shell',
+          [[
 echo "named script"
-]], { name = 'my-script' })
+]],
+          { name = 'my-script' }
+        )
         return {
           out = ctx.out,
           stdout = result.stdout,
@@ -34,7 +40,6 @@ echo "named script"
       end,
     })
 
-    -- Test 3: Multiple scripts (counter test)
     sys.build({
       id = 'test-script-counter',
       create = function(_inputs, ctx)
@@ -48,14 +53,16 @@ echo "named script"
       end,
     })
 
-    -- Test 4: Bash format
     sys.build({
       id = 'test-script-bash',
       create = function(_inputs, ctx)
-        local result = ctx:script('bash', [[
+        local result = ctx:script(
+          'bash',
+          [[
 declare -a arr=("hello" "world")
 echo "${arr[@]}"
-]])
+]]
+        )
         return {
           out = ctx.out,
           stdout = result.stdout,
@@ -63,14 +70,16 @@ echo "${arr[@]}"
       end,
     })
 
-    -- Test 5: PowerShell format (Windows)
     if sys.os == 'windows' then
       sys.build({
         id = 'test-script-powershell',
         create = function(_inputs, ctx)
-          local result = ctx:script('powershell', [[
+          local result = ctx:script(
+            'powershell',
+            [[
 Write-Output "hello from powershell"
-]])
+]]
+          )
           return {
             out = ctx.out,
             stdout = result.stdout,
@@ -79,14 +88,16 @@ Write-Output "hello from powershell"
         end,
       })
 
-      -- Test 6: Cmd format (Windows)
       sys.build({
         id = 'test-script-cmd',
         create = function(_inputs, ctx)
-          local result = ctx:script('cmd', [[
+          local result = ctx:script(
+            'cmd',
+            [[
 @echo off
 echo hello from cmd
-]])
+]]
+          )
           return {
             out = ctx.out,
             stdout = result.stdout,

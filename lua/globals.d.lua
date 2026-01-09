@@ -8,11 +8,13 @@
 
 ---@class BuildCtx
 ---@field out string returns the store path placeholder
+---@field action_count number returns the number of actions performed so far
 ---@field fetch_url fun(self: BuildCtx, url: string, sha256: string): string Fetches a URL and returns the store path
 ---@field exec fun(self: BuildCtx, opts: string | ExecOpts, args?: string[]): string Performs a command during application, returns stdout
 
 ---@class BindCtx
 ---@field out string returns the store path placeholder
+---@field action_count number returns the number of actions performed so far
 ---@field exec fun(self: BindCtx, opts: string | ExecOpts, args?: string[]): string Performs a command during application, returns stdout
 
 ---@class BuildRef
