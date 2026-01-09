@@ -340,6 +340,123 @@ end
 -- Public API
 -- ============================================================================
 
+---Create a bind for a single user
+---@param name string
+---@param opts syslua.user.Options
+local function create_user_bind(name, opts)
+  local bind_id = BIND_ID_PREFIX .. name
+
+  sys.bind({
+    id = bind_id,
+    replace = true,
+    inputs = {
+      username = name,
+      description = opts.description or '',
+      home_dir = opts.homeDir,
+      config_path = opts.config,
+      shell = opts.shell,
+      initial_password = opts.initialPassword,
+      groups = opts.groups or {},
+      preserve_home = opts.preserveHomeOnRemove or false,
+      os = sys.os,
+    },
+    create = function(inputs, ctx)
+      -- Step 1: Create the user account
+      if inputs.os == 'linux' then
+        local bin, args = linux_create_user_cmd(inputs.username, {
+          description = inputs.description,
+          homeDir = inputs.home_dir,
+          shell = inputs.shell,
+          groups = inputs.groups,
+        })
+        ctx:exec({ bin = bin, args = args })
+
+        -- Set password separately on Linux
+        if inputs.initial_password and inputs.initial_password ~= '' then
+          ctx:exec({
+            bin = '/bin/sh',
+            args = {
+              '-c',
+              string.format('echo "%s:%s" | chpasswd', inputs.username, inputs.initial_password),
+            },
+          })
+        end
+      elseif inputs.os == 'darwin' then
+        local bin, args = darwin_create_user_cmd(inputs.username, {
+          description = inputs.description,
+          homeDir = inputs.home_dir,
+          shell = inputs.shell,
+          initialPassword = inputs.initial_password,
+        })
+        ctx:exec({ bin = bin, args = args })
+
+        -- Add to groups separately on macOS
+        for _, group in ipairs(inputs.groups) do
+          local grp_bin, grp_args = darwin_add_to_group_cmd(inputs.username, group)
+          ctx:exec({ bin = grp_bin, args = grp_args })
+        end
+      elseif inputs.os == 'windows' then
+        local script = windows_create_user_script(inputs.username, {
+          description = inputs.description,
+          homeDir = inputs.home_dir,
+          initialPassword = inputs.initial_password,
+          groups = inputs.groups,
+        })
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = { '-NoProfile', '-Command', script },
+        })
+      end
+
+      -- Step 2: Apply user's syslua config
+      if inputs.os == 'windows' then
+        local script = windows_run_as_user_script(inputs.username, inputs.home_dir, inputs.config_path)
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = { '-NoProfile', '-Command', script },
+        })
+      else
+        local bin, args = unix_run_as_user_cmd(inputs.username, inputs.home_dir, inputs.config_path)
+        ctx:exec({ bin = bin, args = args })
+      end
+
+      return {
+        username = inputs.username,
+        home_dir = inputs.home_dir,
+        preserve_home = inputs.preserve_home,
+      }
+    end,
+    destroy = function(outputs, ctx)
+      -- Step 1: Destroy user's syslua config
+      if sys.os == 'windows' then
+        local script = windows_destroy_as_user_script(outputs.username, outputs.home_dir)
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = { '-NoProfile', '-Command', script },
+        })
+      else
+        local bin, args = unix_destroy_as_user_cmd(outputs.username, outputs.home_dir)
+        ctx:exec({ bin = bin, args = args })
+      end
+
+      -- Step 2: Remove user account
+      if sys.os == 'linux' then
+        local bin, args = linux_delete_user_cmd(outputs.username, outputs.preserve_home)
+        ctx:exec({ bin = bin, args = args })
+      elseif sys.os == 'darwin' then
+        local bin, args = darwin_delete_user_cmd(outputs.username, outputs.preserve_home)
+        ctx:exec({ bin = bin, args = args })
+      elseif sys.os == 'windows' then
+        local script = windows_delete_user_script(outputs.username, outputs.home_dir, outputs.preserve_home)
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = { '-NoProfile', '-Command', script },
+        })
+      end
+    end,
+  })
+end
+
 ---Set up users according to the provided definitions
 ---@param users syslua.user.UserMap
 function M.setup(users)
@@ -349,7 +466,7 @@ function M.setup(users)
 
   for name, opts in pairs(users) do
     validate_user_options(name, opts)
-    -- TODO: Create bind for user
+    create_user_bind(name, opts)
   end
 end
 
