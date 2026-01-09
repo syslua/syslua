@@ -4,12 +4,10 @@ local lib = require('syslua.lib')
 ---@class syslua.environment.aliases
 local M = {}
 
----@class syslua.environment.aliases.Options: table<string, string | syslua.priority.PriorityValue<string>>
-
-local default_opts = {}
+---@alias syslua.environment.aliases.Options table<string, syslua.MergeableOption<string>>
 
 ---@type syslua.environment.aliases.Options
-M.opts = default_opts
+M.opts = {}
 
 -- ============================================================================
 -- Helper Functions
@@ -402,9 +400,9 @@ end
 --- Multiple calls accumulate aliases; use prio.force() to override
 ---@param provided_opts syslua.environment.aliases.Options
 M.setup = function(provided_opts)
-  local new_opts, err = prio.merge(M.opts, provided_opts)
+  local new_opts = prio.merge(M.opts, provided_opts)
   if not new_opts then
-    error(string.format('Failed to merge alias options: %s', err or 'unknown error'))
+    error('Failed to merge alias options')
   end
 
   M.opts = new_opts

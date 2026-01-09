@@ -1,12 +1,13 @@
 local prio = require('syslua.priority')
+local f = require('syslua.interpolation')
 
 ---@class syslua.environment.files
 local M = {}
 
 ---@class syslua.environment.files.FileOptions
----@field source? string | syslua.priority.PriorityValue<string> Path to the source file or directory
----@field content? string | syslua.priority.PriorityValue<string> | syslua.priority.Mergeable<string> Content to write to the target file (if source is not provided)
----@field mutable? boolean | syslua.priority.PriorityValue<boolean> Whether the target should be mutable (default: false)
+---@field source? syslua.Option<string> Path to the source file or directory
+---@field content? syslua.MergeableOption<string> Content to write to the target file (if source is not provided)
+---@field mutable? syslua.Option<boolean> Whether the target should be mutable (default: false)
 
 ---@class syslua.environment.files.Options: table<string, syslua.environment.files.FileOptions>
 
@@ -51,13 +52,13 @@ M.setup = function(provided_opts)
                 args = {
                   '-NoProfile',
                   '-Command',
-                  string.format('Copy-Item -Recurse -Path "%s" -Destination "%s"', inputs.source, inputs.target),
+                  f('Copy-Item -Recurse -Path "{{source}}" -Destination "{{target}}"', inputs),
                 },
               })
             else
               ctx:exec({
                 bin = '/bin/sh',
-                args = { '-c', string.format('cp -r "%s" "%s"', inputs.source, inputs.target) },
+                args = { '-c', f('cp -r "{{source}}" "{{target}}"', inputs) },
               })
             end
           else
@@ -67,13 +68,13 @@ M.setup = function(provided_opts)
                 args = {
                   '-NoProfile',
                   '-Command',
-                  string.format('Set-Content -Path "%s" -Value "%s"', inputs.target, inputs.content),
+                  f('Set-Content -Path "{{target}}" -Value "{{content}}"', inputs),
                 },
               })
             else
               ctx:exec({
                 bin = '/bin/sh',
-                args = { '-c', string.format('echo "%s" > "%s"', inputs.content, inputs.target) },
+                args = { '-c', f('echo "{{content}}" > "{{target}}"', inputs) },
               })
             end
           end
@@ -89,11 +90,11 @@ M.setup = function(provided_opts)
               args = {
                 '-NoProfile',
                 '-Command',
-                string.format('Remove-Item -Path "%s" -Recurse -Force -ErrorAction SilentlyContinue', outputs.target),
+                f('Remove-Item -Path "{{target}}" -Recurse -Force -ErrorAction SilentlyContinue', outputs),
               },
             })
           else
-            ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('rm -rf "%s"', outputs.target) } })
+            ctx:exec({ bin = '/bin/sh', args = { '-c', f('rm -rf "{{target}}"', outputs) } })
           end
         end,
       })
@@ -107,7 +108,7 @@ M.setup = function(provided_opts)
           mutable = file_opts.mutable,
         },
         create = function(inputs, ctx)
-          local out_path = ctx.out .. '/' .. basename
+          local out_path = f('{{out}}/{{basename}}', { out = ctx.out, basename = basename })
           if inputs.source then
             if sys.os == 'windows' then
               ctx:exec({
@@ -115,11 +116,17 @@ M.setup = function(provided_opts)
                 args = {
                   '-NoProfile',
                   '-Command',
-                  string.format('Copy-Item -Recurse -Path "%s" -Destination "%s"', inputs.source, out_path),
+                  f('Copy-Item -Recurse -Path "{{source}}" -Destination "{{out_path}}"', {
+                    source = inputs.source,
+                    out_path = out_path,
+                  }),
                 },
               })
             else
-              ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('cp -r "%s" "%s"', inputs.source, out_path) } })
+              ctx:exec({
+                bin = '/bin/sh',
+                args = { '-c', f('cp -r "{{source}}" "{{out_path}}"', { source = inputs.source, out_path = out_path }) },
+              })
             end
           else
             if sys.os == 'windows' then
@@ -128,11 +135,20 @@ M.setup = function(provided_opts)
                 args = {
                   '-NoProfile',
                   '-Command',
-                  string.format('Set-Content -Path "%s" -Value "%s"', out_path, inputs.content),
+                  f('Set-Content -Path "{{out_path}}" -Value "{{content}}"', {
+                    out_path = out_path,
+                    content = inputs.content,
+                  }),
                 },
               })
             else
-              ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('echo "%s" > "%s"', inputs.content, out_path) } })
+              ctx:exec({
+                bin = '/bin/sh',
+                args = {
+                  '-c',
+                  f('echo "{{content}}" > "{{out_path}}"', { content = inputs.content, out_path = out_path }),
+                },
+              })
             end
           end
 
@@ -148,23 +164,26 @@ M.setup = function(provided_opts)
           target = target,
         },
         create = function(inputs, ctx)
+          local build_path = inputs.build.outputs.path
           if sys.os == 'windows' then
             ctx:exec({
               bin = 'powershell.exe',
               args = {
                 '-NoProfile',
                 '-Command',
-                string.format(
-                  'New-Item -ItemType SymbolicLink -Path "%s" -Target "%s"',
-                  inputs.target,
-                  inputs.build.outputs.path
-                ),
+                f('New-Item -ItemType SymbolicLink -Path "{{target}}" -Target "{{build_path}}"', {
+                  target = inputs.target,
+                  build_path = build_path,
+                }),
               },
             })
           else
             ctx:exec({
               bin = '/bin/sh',
-              args = { '-c', string.format('ln -s "%s" "%s"', inputs.build.outputs.path, inputs.target) },
+              args = {
+                '-c',
+                f('ln -s "{{build_path}}" "{{target}}"', { build_path = build_path, target = inputs.target }),
+              },
             })
           end
 
@@ -179,11 +198,11 @@ M.setup = function(provided_opts)
               args = {
                 '-NoProfile',
                 '-Command',
-                string.format('Remove-Item -Path "%s" -Recurse -Force', outputs.link),
+                f('Remove-Item -Path "{{link}}" -Recurse -Force', outputs),
               },
             })
           else
-            ctx:exec({ bin = '/bin/sh', args = { '-c', string.format('rm -rf "%s"', outputs.link) } })
+            ctx:exec({ bin = '/bin/sh', args = { '-c', f('rm -rf "{{link}}"', outputs) } })
           end
         end,
       })

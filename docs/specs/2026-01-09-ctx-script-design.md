@@ -104,6 +104,7 @@ The `script` method is registered via `sys.register_build_ctx_method()` and `sys
 ### Script File Location
 
 Scripts are written to `$out/tmp/<name>.<ext>`:
+
 - Default name: `script_N` where N is a counter maintained per-context
 - Custom name: provided via `opts.name`
 - Always kept after execution (success or failure)
@@ -301,11 +302,13 @@ sys.bind({
 ### Why Lua-level, not Rust Action?
 
 A new Rust `Action::Script` variant would require:
+
 - Changes to `action/types.rs` and serialization
 - New execution logic in `action/actions/`
 - Placeholder resolver updates
 
 Instead, `ctx:script()` composes existing primitives:
+
 - Uses `ctx:exec()` for file writing and script execution
 - Follows the pattern established by `wrap_binary`, `patch_rpath`, `patch_shebang` in `init.lua`
 - Can be iterated on in Lua without Rust rebuilds
@@ -313,6 +316,7 @@ Instead, `ctx:script()` composes existing primitives:
 ### Why explicit format parameter?
 
 Auto-detection based on `sys.os` was considered but rejected:
+
 - **Ambiguity**: Windows supports both PowerShell and cmd.exe
 - **Clarity**: Reader immediately knows what interpreter runs
 - **Portability**: Cross-platform scripts are intentionally verbose about their requirements
@@ -320,11 +324,13 @@ Auto-detection based on `sys.os` was considered but rejected:
 ### Why always keep script files?
 
 Options considered:
+
 1. Always keep
 2. Keep on failure, delete on success
 3. Always delete
 
 Decision: **Always keep** because:
+
 - Script files are small (bytes to kilobytes)
 - Debugging successful builds sometimes requires inspecting what ran
 - Consistent behavior is easier to reason about
@@ -333,11 +339,13 @@ Decision: **Always keep** because:
 ### Why sequential default naming?
 
 Options considered:
+
 1. Sequential index (`script_0.sh`)
 2. Random/UUID suffix (`script_a7f3b2.sh`)
 3. User-provided with sequential fallback
 
 Decision: **User-provided with sequential fallback** because:
+
 - Sequential is predictable and correlates with code order
 - Optional names improve readability for complex builds
 - No collision risk since counter is per-context
@@ -345,6 +353,7 @@ Decision: **User-provided with sequential fallback** because:
 ### Why return table instead of string?
 
 `ctx:exec()` returns a single stdout placeholder string. `ctx:script()` returns `{ stdout, path }` because:
+
 - Script path is useful for re-execution or referencing in subsequent commands
 - Path is computable but awkward (`ctx.out .. '/tmp/' .. name .. ext`)
 - Table is extensible for future additions (e.g., `stderr` if needed)

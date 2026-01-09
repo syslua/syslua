@@ -183,9 +183,9 @@ impl BuildInputs {
 /// # Placeholders
 ///
 /// String fields may contain placeholders that resolve at execution time:
-/// - `$${action:N}`: Output of action at index N
-/// - `$${build:hash:output}`: Output from another build
-/// - `$${bind:hash:output}`: Output from a binding
+/// - `$${{action:N}}`: Output of action at index N
+/// - `$${{build:hash:output}}`: Output from another build
+/// - `$${{bind:hash:output}}`: Output from a binding
 ///
 /// Shell variables like `$HOME` pass through unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -194,7 +194,7 @@ pub struct BuildDef {
   pub id: Option<String>,
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
   pub inputs: Option<BuildInputs>,
-  /// Named outputs from the build (e.g., `{"out": "$${action:2}", "bin": "..."}`).
+  /// Named outputs from the build (e.g., `{"out": "$${{action:2}}", "bin": "..."}`).
   pub outputs: Option<BTreeMap<String, String>>,
   /// The sequence of actions to execute during `create`.
   pub create_actions: Vec<Action>,
@@ -341,7 +341,7 @@ impl IntoLua for BuildRef {
   /// Creates a table with:
   /// - `id`: The build's human-readable identifier (optional)
   /// - `hash`: The build's content-addressed hash
-  /// - `outputs`: Table of output keys mapped to `$${build:hash:key}` placeholders
+  /// - `outputs`: Table of output keys mapped to `$${{build:hash:key}}` placeholders
   /// - Metatable with `__type = "BuildRef"`
   fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
     let ref_table = lua.create_table()?;
@@ -351,7 +351,7 @@ impl IntoLua for BuildRef {
     // Convert outputs to Lua table with placeholders for runtime resolution
     let outputs_table = lua.create_table()?;
     for k in self.outputs.keys() {
-      let placeholder = format!("$${{build:{}:{}}}", self.hash.0, k);
+      let placeholder = format!("$${{{{build:{}:{}}}}}", self.hash.0, k);
       outputs_table.set(k.as_str(), placeholder.as_str())?;
     }
     ref_table.set("outputs", outputs_table)?;
@@ -495,7 +495,7 @@ mod tests {
             cwd: Some("/build".to_string()),
           }),
         ],
-        outputs: Some(BTreeMap::from([("out".to_string(), "$${action:1}".to_string())])),
+        outputs: Some(BTreeMap::from([("out".to_string(), "$${{action:1}}".to_string())])),
       };
 
       let json = serde_json::to_string(&def).unwrap();

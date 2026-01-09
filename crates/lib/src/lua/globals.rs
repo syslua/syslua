@@ -44,7 +44,7 @@ pub fn register_globals(lua: &Lua, manifest: Rc<RefCell<Manifest>>) -> LuaResult
   sys.set("path", path)?;
 
   // Environment variable placeholder (resolves at execution time)
-  let getenv = lua.create_function(|_, name: String| Ok(format!("$${{env:{}}}", name)))?;
+  let getenv = lua.create_function(|_, name: String| Ok(format!("$${{{{env:{}}}}}", name)))?;
   sys.set("getenv", getenv)?;
 
   // Register sys.build{}
@@ -359,7 +359,7 @@ mod tests {
     fn getenv_returns_placeholder() -> LuaResult<()> {
       let lua = create_test_lua()?;
       let result: String = lua.load(r#"return sys.getenv("HOME")"#).eval()?;
-      assert_eq!(result, "$${env:HOME}");
+      assert_eq!(result, "$${{env:HOME}}");
       Ok(())
     }
 
@@ -368,13 +368,13 @@ mod tests {
       let lua = create_test_lua()?;
 
       let path: String = lua.load(r#"return sys.getenv("PATH")"#).eval()?;
-      assert_eq!(path, "$${env:PATH}");
+      assert_eq!(path, "$${{env:PATH}}");
 
       let user: String = lua.load(r#"return sys.getenv("USER")"#).eval()?;
-      assert_eq!(user, "$${env:USER}");
+      assert_eq!(user, "$${{env:USER}}");
 
       let custom: String = lua.load(r#"return sys.getenv("MY_CUSTOM_VAR")"#).eval()?;
-      assert_eq!(custom, "$${env:MY_CUSTOM_VAR}");
+      assert_eq!(custom, "$${{env:MY_CUSTOM_VAR}}");
 
       Ok(())
     }

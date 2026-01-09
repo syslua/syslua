@@ -231,6 +231,7 @@ return {
 ```
 
 When you use `my-lib` in your config, syslua:
+
 1. Fetches `my-lib` and parses its `inputs` declaration
 2. Fetches `utils` (the transitive dep)
 3. Builds `package.path` from all `lua/` directories
@@ -243,6 +244,7 @@ When you use `my-lib` in your config, syslua:
 Use `follows` to override how an input's transitive dependencies are resolved:
 
 **Use cases:**
+
 - Use a newer version of a shared dependency
 - Deduplicate the same library used by multiple inputs
 - Use your own fork of a dependency
@@ -267,6 +269,7 @@ M.inputs = {
 When multiple inputs depend on the same library:
 
 **Same version (automatic deduplication):**
+
 ```lua
 M.inputs = {
     lib_a = "git:.../lib-a.git",  -- depends on utils@abc123
@@ -277,6 +280,7 @@ M.inputs = {
 Both get the same cached copy. No conflict, no user action required.
 
 **Different versions (requires follows):**
+
 ```lua
 M.inputs = {
     lib_a = "git:.../lib-a.git",  -- depends on utils@v1.0.0
@@ -285,6 +289,7 @@ M.inputs = {
 ```
 
 This produces a conflict error:
+
 ```
 Namespace conflict: 'utils' provided by:
   - 'lib_a/utils' (git:.../utils.git@v1.0.0)
@@ -293,6 +298,7 @@ Add a follows override to resolve.
 ```
 
 Resolve by adding `follows`:
+
 ```lua
 M.inputs = {
     utils = "git:.../utils.git#v2.0.0",  -- pick v2
@@ -377,6 +383,7 @@ my-library/
 ```
 
 **Lock file precedence (highest to lowest):**
+
 1. `follows` directive - explicit override from parent
 2. Input's own `syslua.lock` - input controls its transitive deps
 3. Input's `init.lua` declaration - floating (resolves to latest)
@@ -446,6 +453,7 @@ M.inputs = {
 ```
 
 **Why SSH-first?**
+
 - No token management - uses existing SSH keys
 - Works with any Git host
 - No secrets to encrypt or rotate

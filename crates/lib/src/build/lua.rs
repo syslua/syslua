@@ -175,7 +175,7 @@ pub fn build_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> L
   let hash = &hash.0;
   if let Some(def_outputs) = &build_def.outputs {
     for key in def_outputs.keys() {
-      let placeholder = format!("$${{build:{}:{}}}", hash, key);
+      let placeholder = format!("$${{{{build:{}:{}}}}}", hash, key);
       outputs.set(key.as_str(), placeholder.as_str())?;
     }
   }
@@ -307,7 +307,7 @@ mod tests {
       let out: String = outputs.get("out")?;
       // Output should be a placeholder with the hash
       let hash: String = result.get("hash")?;
-      assert_eq!(out, format!("$${{build:{}:out}}", hash));
+      assert_eq!(out, format!("$${{{{build:{}:out}}}}", hash));
 
       // Check metatable
       let mt = result.metatable().expect("should have metatable");
@@ -773,10 +773,10 @@ mod tests {
       let out: String = outputs.get("out")?;
 
       // The output value should contain the build placeholder (resolved from ctx.out)
-      // Since ctx.out returns "$${out}" and that's returned as the output value,
-      // the final placeholder wraps it as $${build:HASH:out}
+      // Since ctx.out returns "$${{out}}" and that's returned as the output value,
+      // the final placeholder wraps it as $${{build:HASH:out}}
       let hash: String = result.get("hash")?;
-      assert_eq!(out, format!("$${{build:{}:out}}", hash));
+      assert_eq!(out, format!("$${{{{build:{}:out}}}}", hash));
 
       Ok(())
     }
@@ -803,17 +803,17 @@ mod tests {
       let manifest = manifest.borrow();
       let (_, build_def) = manifest.builds.iter().next().unwrap();
 
-      // Check that the commands contain the $${out} placeholder
+      // Check that the commands contain the $${{out}} placeholder
       assert_eq!(build_def.create_actions.len(), 2);
 
       match &build_def.create_actions[0] {
         Action::Exec(opts) => {
           assert!(
-            opts.bin.contains("$${out}"),
-            "cmd should contain ${{out}} placeholder: {}",
+            opts.bin.contains("$${{out}}"),
+            "cmd should contain $${{{{out}}}} placeholder: {}",
             opts.bin
           );
-          assert_eq!(opts.bin, "mkdir -p $${out}/bin");
+          assert_eq!(opts.bin, "mkdir -p $${{out}}/bin");
         }
         _ => panic!("expected Cmd action"),
       }
@@ -821,11 +821,11 @@ mod tests {
       match &build_def.create_actions[1] {
         Action::Exec(opts) => {
           assert!(
-            opts.bin.contains("$${out}"),
-            "cmd should contain ${{out}} placeholder: {}",
+            opts.bin.contains("$${{out}}"),
+            "cmd should contain $${{{{out}}}} placeholder: {}",
             opts.bin
           );
-          assert_eq!(opts.bin, "cp binary $${out}/bin/");
+          assert_eq!(opts.bin, "cp binary $${{out}}/bin/");
         }
         _ => panic!("expected Cmd action"),
       }

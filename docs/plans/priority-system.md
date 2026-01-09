@@ -167,7 +167,7 @@ manifest.builds.insert(new_hash.clone(), new_def);
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
 - [x] `cargo test -p syslua-lib` - all existing tests pass
 - [x] New unit test: two `sys.build{}` calls with same `id`, no replace flag - **error**
@@ -178,7 +178,7 @@ manifest.builds.insert(new_hash.clone(), new_def);
 - [x] Same tests for `sys.bind{}`
 - [x] Error message includes suggestion to use `replace = true`
 
-#### Manual:
+#### Manual
 
 - [ ] Create test Lua config calling setup() twice with different opts and `replace = true`
 - [ ] Verify only final build/bind definition appears in manifest
@@ -254,15 +254,15 @@ return M
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
-- [x] Unit test: `M.wrap(42, 500)` creates table with **value=42, **priority=500
+- [x] Unit test: `M.wrap(42, 500)` creates table with **value=42,**priority=500
 - [x] Unit test: `M.is_priority()` returns true for wrapped, false for plain
 - [x] Unit test: `M.unwrap()` returns raw value from wrapped, passthrough for plain
 - [x] Unit test: `M.get_priority()` returns priority from wrapped, 1000 for plain
 - [x] Unit test: `M.get_source()` captures file and line
 
-#### Manual:
+#### Manual
 
 - [x] In Lua REPL: create wrapped value, verify metatable and fields (verified via tests)
 
@@ -310,7 +310,7 @@ end
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
 - [x] Unit test: `force(x)` creates priority 50
 - [x] Unit test: `before(x)` creates priority 500
@@ -319,7 +319,7 @@ end
 - [x] Unit test: `order(750, x)` creates priority 750
 - [x] Unit test: `order("bad", x)` throws error
 
-#### Manual:
+#### Manual
 
 - [x] In Lua REPL: verify all helpers work and source locations captured (verified via tests)
 
@@ -492,7 +492,7 @@ end
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
 - [x] Unit test: `mergeable({ separator = ':' })` creates config
 - [x] Unit test: merge two tables, lower priority wins
@@ -502,7 +502,7 @@ end
 - [x] Unit test: same priority + same value = no conflict
 - [x] Unit test: same priority + different value = conflict (tested in Phase 5)
 
-#### Manual:
+#### Manual
 
 - [x] Test module pattern: setup() twice, verify merged opts (verified via tests)
 
@@ -589,14 +589,14 @@ end
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
 - [x] Unit test: same priority + different value throws error
 - [x] Unit test: error message contains both source locations
 - [x] Unit test: error message shows priority level name
 - [x] Unit test: error message includes resolution suggestions
 
-#### Manual:
+#### Manual
 
 - [x] Create config with intentional conflict (verified via tests)
 - [x] Verify error message is clear and actionable (verified via tests)
@@ -622,14 +622,14 @@ end
 
 ### Success Criteria
 
-#### Automated:
+#### Automated
 
 - [x] `cargo test -p syslua-lib` - all tests pass (476 tests)
 - [x] `cargo clippy --all-targets` - no warnings
 - [x] Integration test: full module pattern with priority merge
 - [x] Integration test: conflict detection produces expected error
 
-#### Manual:
+#### Manual
 
 - [x] Run example config with real-world pattern (verified via tests)
 - [x] Verify error messages include file:line locations (verified via tests)

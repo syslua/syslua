@@ -8,7 +8,7 @@
 
 - `apply.rs`: Top-level orchestration (evaluate -> diff -> exec -> snapshot).
 - `dag.rs`: Dependency graph construction and wave calculation using `petgraph`.
-- `resolver.rs`: Just-in-time placeholder resolution ($${build:...}, $${bind:...}).
+- `resolver.rs`: Just-in-time placeholder resolution ($${{build:...}}, $${{bind:...}}).
 - `types.rs`: Core error types (`ApplyError`, `ExecuteError`) and result structures.
 - `mod.rs`: Public API entry point for manifest execution.
 
@@ -22,7 +22,7 @@
 ## PLACEHOLDER RESOLUTION
 
 - **Resolvers**: `BuildCtxResolver` (for builds, cannot reference binds) and `BindCtxResolver` (for binds, can reference builds and binds) map `ObjectHash` to its realized/applied outputs.
-- **Substitution**: Placeholders like `$${build:HASH:output}` or `$${bind:HASH:output}` are resolved immediately before node execution.
+- **Substitution**: Placeholders like `$${{build:HASH:output}}` or `$${{bind:HASH:output}}` are resolved immediately before node execution.
 - **Context**: Resolution uses the actual results from previously completed waves.
 
 ## ERROR HANDLING

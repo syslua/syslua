@@ -35,6 +35,7 @@
 ## Task 1: Add Script Method Implementation
 
 **Files:**
+
 - Modify: `init.lua:152` (before final `end` of `setup` function)
 
 **Step 1: Write the script implementation**
@@ -145,6 +146,7 @@ git commit -m "feat: add ctx:script() method for builds and binds"
 ## Task 2: Add Unit Tests for Shell Format
 
 **Files:**
+
 - Create: `tests/integration/script_method_test.lua` (or add to existing test file if one exists for init.lua)
 
 First, check if there's an existing test pattern:
@@ -243,6 +245,7 @@ git commit -m "test: add fixtures for ctx:script() method"
 ## Task 3: Add Integration Test for Windows Formats
 
 **Files:**
+
 - Modify: `tests/fixtures/script_method.lua`
 
 **Step 1: Add Windows format tests**
@@ -300,6 +303,7 @@ git commit -m "test: add Windows format tests for ctx:script()"
 ## Task 4: Add Error Handling Test
 
 **Files:**
+
 - Modify: `tests/fixtures/script_method.lua`
 
 **Step 1: Add invalid format test**
@@ -359,6 +363,7 @@ git commit -m "test: add error handling tests for ctx:script()"
 ## Task 5: Update Documentation
 
 **Files:**
+
 - Modify: `docs/architecture/04-lua-api.md`
 
 **Step 1: Add script method to BuildCtx Methods table**
@@ -391,12 +396,14 @@ ctx:script(format, content, opts?) -> { stdout: string, path: string }
 ```
 
 **Formats:**
+
 - `'shell'` - POSIX shell (`/bin/sh`)
 - `'bash'` - Bash (`/bin/bash`)
 - `'powershell'` - PowerShell (`powershell.exe`)
 - `'cmd'` - Windows cmd.exe (`cmd.exe`)
 
 **Options:**
+
 - `opts.name` - Custom script filename (default: `script_N`)
 
 **Example:**
@@ -417,6 +424,7 @@ sys.build({
 ```
 
 Script files are written to `$out/tmp/` and persist after execution for debugging.
+
 ```
 
 **Step 4: Commit**
@@ -431,6 +439,7 @@ git commit -m "docs: add ctx:script() to Lua API documentation"
 ## Task 6: Update init.lua Module Documentation
 
 **Files:**
+
 - Modify: `init.lua`
 
 **Step 1: Add comment block for script method**

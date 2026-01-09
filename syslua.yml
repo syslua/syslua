@@ -4,3 +4,14 @@ base: lua53
 globals:
   sys:
     any: true
+  load:
+    args:
+      - type: any
+      - type: string
+        required: false
+      - type: string
+        required: false
+      - type: table
+        required: false
+  _G:
+    any: true

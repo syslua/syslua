@@ -414,11 +414,11 @@ impl ExecutionDag {
 /// Extract build dependencies from BuildInputs.
 ///
 /// Scans both explicit Build references and placeholder strings like
-/// `$${build:HASH:output}` within String values.
+/// `${{build:HASH:output}}` within String values.
 ///
 /// # Errors
 ///
-/// Returns an error if any String value contains a `$${bind:...}` placeholder,
+/// Returns an error if any String value contains a `${{bind:...}}` placeholder,
 /// since builds cannot depend on binds.
 fn extract_build_dependencies(inputs: &BuildInputs) -> Result<Vec<ObjectHash>, ExecuteError> {
   let mut deps = Vec::new();
@@ -463,7 +463,7 @@ fn extract_placeholder_deps_for_build(s: &str, deps: &mut Vec<ObjectHash>) -> Re
         }
         Placeholder::Bind { hash, .. } => {
           return Err(ExecuteError::InvalidManifest(format!(
-            "build input contains bind placeholder '${{bind:{hash}:...}}' - builds cannot depend on binds"
+            "build input contains bind placeholder '${{{{bind:{hash}:...}}}}' - builds cannot depend on binds"
           )));
         }
         Placeholder::Action(_) | Placeholder::Out | Placeholder::Env(_) => {}
@@ -1122,7 +1122,7 @@ mod tests {
     let build_a = make_build("a", None);
     let hash_a = build_a.compute_hash().unwrap();
 
-    let placeholder_str = format!("$${{build:{}:out}}", hash_a.0);
+    let placeholder_str = format!("$${{{{build:{}:out}}}}", hash_a.0);
     let build_b = make_build("b", Some(BuildInputs::String(placeholder_str)));
     let hash_b = build_b.compute_hash().unwrap();
 
@@ -1144,7 +1144,7 @@ mod tests {
     let bind = make_bind(None);
     let bind_hash = bind.compute_hash().unwrap();
 
-    let placeholder_str = format!("$${{bind:{}:out}}", bind_hash.0);
+    let placeholder_str = format!("$${{{{bind:{}:out}}}}", bind_hash.0);
     let build = make_build("b", Some(BuildInputs::String(placeholder_str)));
     let build_hash = build.compute_hash().unwrap();
 
@@ -1171,7 +1171,7 @@ mod tests {
     let bind_hash_b = bind_b.compute_hash().unwrap();
 
     let placeholder_str = format!(
-      "$${{build:{}:out}} and $${{bind:{}:out}}",
+      "$${{{{build:{}:out}}}} and $${{{{bind:{}:out}}}}",
       build_hash_a.0, bind_hash_b.0
     );
     let bind_c = make_bind(Some(BindInputsDef::String(placeholder_str)));

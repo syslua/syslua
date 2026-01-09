@@ -508,8 +508,8 @@ mod tests {
         })],
         outputs: Some(
           [
-            ("bin".to_string(), "$${action:0}".to_string()),
-            ("lib".to_string(), "$${out}/lib".to_string()),
+            ("bin".to_string(), "$${{action:0}}".to_string()),
+            ("lib".to_string(), "$${{out}}/lib".to_string()),
           ]
           .into_iter()
           .collect(),
@@ -540,7 +540,7 @@ mod tests {
     with_temp_store(|| async {
       let (cmd1, args1) = echo_msg("step1");
       let (cmd2, args2) = echo_msg("step2");
-      let (cmd3, args3) = echo_msg("$${action:0} $${action:1}");
+      let (cmd3, args3) = echo_msg("$${{action:0}} $${{action:1}}");
       let build_def = BuildDef {
         id: None,
         inputs: None,
@@ -566,7 +566,7 @@ mod tests {
           }),
         ],
         outputs: Some(
-          [("combined".to_string(), "$${action:2}".to_string())]
+          [("combined".to_string(), "$${{action:2}}".to_string())]
             .into_iter()
             .collect(),
         ),

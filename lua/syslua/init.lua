@@ -3,7 +3,14 @@
 ---@field environment syslua.environment
 ---@field programs syslua.programs
 ---@field lib syslua.lib
+---@field f fun(str: string, values?: table): string String interpolation (f-string style)
+---@field interpolate fun(str: string, values?: table): string String interpolation
 local M = {}
+
+-- String interpolation for user configs (uses {{}} delimiters to avoid shell confusion)
+-- Usage: syslua.f("Hello {{name}}!") or syslua.f("{{x + y}}", {x=1, y=2})
+M.f = require('syslua.interpolation')
+M.interpolate = M.f
 
 setmetatable(M, {
   __index = function(t, k)
@@ -21,7 +28,8 @@ setmetatable(M, {
   end,
 })
 
----@alias syslua.OptionValue<T> T | syslua.priority.PriorityValue<T> | syslua.priority.Mergeable<T>
+---@alias syslua.Option<T> T | syslua.priority.PriorityValue<T>
+---@alias syslua.MergeableOption<T> T | syslua.priority.PriorityValue<T> | syslua.priority.Mergeable<T>
 
 ---@class BuildCtx
 ---@field script fun(self: BuildCtx, format: "shell"|"bash"|"cmd"|"powershell", content: string, opts?: {name?: string}): {stdout: string, path: string}

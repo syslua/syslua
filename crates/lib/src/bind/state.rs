@@ -2,7 +2,7 @@
 //!
 //! When a bind is applied, its resolved outputs are persisted to disk.
 //! This allows destroy_actions to reference the actual resolved paths
-//! via placeholders like `${out:link}`.
+//! via placeholders like `${{out:link}}`.
 //!
 //! # Storage Layout
 //!

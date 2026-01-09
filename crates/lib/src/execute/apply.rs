@@ -937,7 +937,7 @@ async fn update_modified_binds(
 ///
 /// Loads bind state for all binds in the manifest (destroyed + unchanged)
 /// and computes build store paths from the manifest. This allows placeholder
-/// resolution during restore (e.g., `$${build:hash:out}`, `$${bind:hash:output}`).
+/// resolution during restore (e.g., `${{build:hash:out}}`, `${{bind:hash:output}}`).
 fn build_restore_resolver_data(manifest: &Manifest) -> Result<RestoreResolverData, ApplyError> {
   let mut builds = HashMap::new();
   let mut binds = HashMap::new();
@@ -951,8 +951,8 @@ fn build_restore_resolver_data(manifest: &Manifest) -> Result<RestoreResolverDat
     let mut outputs = HashMap::new();
     if let Some(def_outputs) = &build_def.outputs {
       for (name, pattern) in def_outputs {
-        // Simple substitution of $${out} with store_path
-        let resolved = pattern.replace("$${out}", store_path.to_string_lossy().as_ref());
+        // Simple substitution of $${{out}} with store_path
+        let resolved = pattern.replace("$${{out}}", store_path.to_string_lossy().as_ref());
         outputs.insert(name.clone(), resolved);
       }
     }

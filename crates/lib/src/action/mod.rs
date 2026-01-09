@@ -13,10 +13,10 @@
 //! # Placeholder Resolution
 //!
 //! Actions support placeholder syntax for dynamic values:
-//! - `$${out}` - The build/bind output directory
-//! - `$${action:N}` - Output from action at index N
-//! - `$${build:HASH:output}` - Output from a dependency build
-//! - `$${bind:HASH:output}` - Output from a dependency bind
+//! - `${{out}}` - The build/bind output directory
+//! - `${{action:N}}` - Output from action at index N
+//! - `${{build:HASH:output}}` - Output from a dependency build
+//! - `${{bind:HASH:output}}` - Output from a dependency bind
 //!
 //! See [`crate::placeholder`] for the full placeholder system.
 
@@ -206,7 +206,7 @@ mod tests {
     let out_dir = temp_dir.path();
     let resolver = TestResolver::new(out_dir.to_str().unwrap());
 
-    let (cmd, args) = echo_msg("$${out}");
+    let (cmd, args) = echo_msg("$${{out}}");
     let action = Action::Exec(ExecOpts {
       bin: cmd.to_string(),
       args: Some(args),
@@ -225,7 +225,7 @@ mod tests {
     let out_dir = temp_dir.path();
     let resolver = TestResolver::new(out_dir.to_str().unwrap()).with_action("/path/to/file.tar.gz");
 
-    let (cmd, args) = echo_msg("$${action:0}");
+    let (cmd, args) = echo_msg("$${{action:0}}");
     let action = Action::Exec(ExecOpts {
       bin: cmd.to_string(),
       args: Some(args),
@@ -245,7 +245,7 @@ mod tests {
     let resolver = TestResolver::new(out_dir.to_str().unwrap());
 
     let mut env = BTreeMap::new();
-    env.insert("OUT_DIR".to_string(), "$${out}".to_string());
+    env.insert("OUT_DIR".to_string(), "$${{out}}".to_string());
 
     let (cmd, args) = shell_echo_env("OUT_DIR");
     let action = Action::Exec(ExecOpts {

@@ -4,7 +4,7 @@ local lib = require('syslua.lib')
 ---@class syslua.environment.variables
 local M = {}
 
----@class syslua.environment.variables.Options: table<string, syslua.OptionValue<string>>
+---@alias syslua.environment.variables.Options table<string, syslua.MergeableOption<string>>
 
 -- Platform-specific path separators
 local PATH_SEP = sys.os == 'windows' and ';' or ':'
@@ -13,15 +13,13 @@ local PATH_SEP = sys.os == 'windows' and ';' or ':'
 local DEFAULT_PATH = sys.os == 'windows' and 'C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem'
   or '/usr/local/bin:/usr/bin:/bin'
 
-local default_opts = {
+---@type syslua.environment.variables.Options
+M.opts = {
   PATH = prio.mergeable({
     separator = PATH_SEP,
     default = DEFAULT_PATH,
   }),
 }
-
----@type syslua.environment.variables.Options
-M.opts = default_opts
 
 -- ============================================================================
 -- Helper Functions

@@ -1,0 +1,20 @@
+{
+	"$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+	"runtime": {
+		"version": "Lua 5.4",
+		"path": ["./lua/?.lua", "./lua/?/init.lua"],
+		"pathStrict": true
+	},
+	"diagnostics": {
+		"globals": ["sys"],
+		"unusedLocalExclude": ["_*"]
+	},
+	"workspace": {
+		"maxPreload": 1600,
+		"preloadFileSize": 1000,
+		"checkThirdParty": false
+	},
+	"doc": {
+		"privateName": ["_*"]
+	}
+}
