@@ -2,6 +2,7 @@
 ---@field files syslua.environment.files
 ---@field variables syslua.environment.variables
 ---@field aliases syslua.environment.aliases
+---@field packages syslua.environment.packages
 local M = {}
 
 setmetatable(M, {
