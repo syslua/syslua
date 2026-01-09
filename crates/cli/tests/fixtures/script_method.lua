@@ -62,5 +62,38 @@ echo "${arr[@]}"
         }
       end,
     })
+
+    -- Test 5: PowerShell format (Windows)
+    if sys.os == 'windows' then
+      sys.build({
+        id = 'test-script-powershell',
+        create = function(_inputs, ctx)
+          local result = ctx:script('powershell', [[
+Write-Output "hello from powershell"
+]])
+          return {
+            out = ctx.out,
+            stdout = result.stdout,
+            script_path = result.path,
+          }
+        end,
+      })
+
+      -- Test 6: Cmd format (Windows)
+      sys.build({
+        id = 'test-script-cmd',
+        create = function(_inputs, ctx)
+          local result = ctx:script('cmd', [[
+@echo off
+echo hello from cmd
+]])
+          return {
+            out = ctx.out,
+            stdout = result.stdout,
+            script_path = result.path,
+          }
+        end,
+      })
+    end
   end,
 }
