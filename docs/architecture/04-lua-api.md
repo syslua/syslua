@@ -342,18 +342,56 @@ sys.build({
 
 ### BuildCtx Methods
 
-| Method                       | Description                                                 | Returns                 |
-| ---------------------------- | ----------------------------------------------------------- | ----------------------- |
-| `ctx.out`                    | Property returning the build's output directory placeholder | string                  |
-| `ctx:fetch_url(url, sha256)` | Download file with hash verification                        | opaque path reference   |
-| `ctx:exec(opts)`             | Execute a command                                           | opaque stdout reference |
+| Method                               | Description                                                 | Returns                              |
+| ------------------------------------ | ----------------------------------------------------------- | ------------------------------------ |
+| `ctx.out`                            | Property returning the build's output directory placeholder | string                               |
+| `ctx:fetch_url(url, sha256)`         | Download file with hash verification                        | opaque path reference                |
+| `ctx:exec(opts)`                     | Execute a command                                           | opaque stdout reference              |
+| `ctx:script(format, content, opts?)` | Write and execute a script file                             | `{ stdout: string, path: string }`   |
 
 ### BindCtx Methods
 
-| Method           | Description                                                 | Returns                 |
-| ---------------- | ----------------------------------------------------------- | ----------------------- |
-| `ctx.out`        | Property returning the binds's output directory placeholder | string                  |
-| `ctx:exec(opts)` | Execute a command                                           | opaque stdout reference |
+| Method                               | Description                                                 | Returns                              |
+| ------------------------------------ | ----------------------------------------------------------- | ------------------------------------ |
+| `ctx.out`                            | Property returning the binds's output directory placeholder | string                               |
+| `ctx:exec(opts)`                     | Execute a command                                           | opaque stdout reference              |
+| `ctx:script(format, content, opts?)` | Write and execute a script file                             | `{ stdout: string, path: string }`   |
+
+### Script Method
+
+The `ctx:script()` method writes a script file to `$out/tmp/` and executes it. This provides a cleaner API for multi-line scripts compared to embedding them in `ctx:exec()` calls.
+
+```lua
+ctx:script(format, content, opts?) -> { stdout: string, path: string }
+```
+
+**Formats:**
+- `'shell'` - POSIX shell (`/bin/sh`)
+- `'bash'` - Bash (`/bin/bash`)
+- `'powershell'` - PowerShell (`powershell.exe`)
+- `'cmd'` - Windows cmd.exe (`cmd.exe`)
+
+**Options:**
+- `opts.name` - Custom script filename (default: `script_N`)
+
+**Example:**
+
+```lua
+sys.build({
+  id = 'my-tool',
+  create = function(inputs, ctx)
+    ctx:script('shell', [[
+      ./configure --prefix=$out
+      make -j$(nproc)
+      make install
+    ]], { name = 'build' })
+    
+    return { out = ctx.out }
+  end,
+})
+```
+
+Script files are written to `$out/tmp/` and persist after execution for debugging.
 
 ## See Also
 
