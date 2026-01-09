@@ -132,23 +132,36 @@ Priority conflict in '%s'
   Conflicting packages at same priority level (%s: %d):
 
   Package: %s
-    Provides: %s
+    Binary: %s
+    Source: %s
 
   Package: %s
-    Provides: %s
+    Binary: %s
+    Source: %s
 
   Resolution options:
   1. Use prio.before(pkg) to make one package win
   2. Use prio.after(pkg) to make one package lose
   3. Remove one of the conflicting packages
+
+  Example:
+    use = {
+      prio.before(pkgs.cli.%s),  -- wins for '%s'
+      pkgs.cli.%s,
+    }
 ]],
     binary_name,
     pname,
     entry1.priority,
     entry1.pkg_name,
-    binary_name,
+    entry1.name,
+    entry1.source,
     entry2.pkg_name,
-    binary_name
+    entry2.name,
+    entry2.source,
+    entry1.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_'),
+    binary_name,
+    entry2.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_')
   )
   error(msg, 0)
 end
@@ -893,7 +906,7 @@ fi
                 [[
 config_path="%s"
 if [ -f "$config_path" ]; then
-  sed -i.bak '/%s/,/%s/d' "$config_path" && rm -f "$config_path.bak"
+  sed '/%s/,/%s/d' "$config_path" > "$config_path.tmp" && mv "$config_path.tmp" "$config_path"
 fi
 ]],
                 outputs.config,

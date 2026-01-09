@@ -89,7 +89,16 @@ return {
           args = {
             '-c',
             string.format(
-              'find "%s" -type f -executable | while read f; do patchelf --set-rpath "%s" "$f" 2>/dev/null || true; done',
+              [[
+if ! command -v patchelf >/dev/null 2>&1; then
+  echo "WARNING: patchelf not found. Install patchelf to enable RPATH patching." >&2
+  echo "         Binaries may fail to find their library dependencies at runtime." >&2
+  exit 0
+fi
+find "%s" -type f -executable | while read f; do
+  patchelf --set-rpath "%s" "$f" 2>/dev/null || true
+done
+]],
               ctx.out,
               rpath
             ),
@@ -101,7 +110,16 @@ return {
           args = {
             '-c',
             string.format(
-              'find "%s" -type f -perm +111 | while read f; do %s; done',
+              [[
+find "%s" -type f -perm +111 | while read f; do
+  if codesign -d "$f" 2>/dev/null | grep -q 'runtime'; then
+    echo "WARNING: Skipping hardened runtime binary: $f" >&2
+    echo "         Use ad-hoc signing after modification if needed." >&2
+    continue
+  fi
+  %s
+done
+]],
               ctx.out,
               table.concat(
                 (function()
