@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-01-09
+
+### Features
+
+- Core pkgs and `syslua.environment.packages` module (#22) by @ian-pascoe in [#22](https://github.com/spirit-led-software/syslua/pull/22)
+- Implement standard packages system by @ian-pascoe
+- Env module (#21) by @ian-pascoe in [#21](https://github.com/spirit-led-software/syslua/pull/21)
+- Priority system (#19) by @ian-pascoe in [#19](https://github.com/spirit-led-software/syslua/pull/19)
+
+### Miscellaneous
+
+- Format by @ian-pascoe
+- Claude by @ian-pascoe
+- Claude by @ian-pascoe
+- Add Claude Code GitHub Workflow (#20) by @ian-pascoe in [#20](https://github.com/spirit-led-software/syslua/pull/20)
+- Updates; beads config by @ian-pascoe
+- Update AGENTS.md by @ian-pascoe
+- Updated AGENTS.md by @ian-pascoe
+- Bump reqwest by @ian-pascoe
+
+### Refactoring
+
+- Interpolation and placeholders (#23) by @ian-pascoe in [#23](https://github.com/spirit-led-software/syslua/pull/23)
+
+
+
+**Full Changelog**: https://github.com/spirit-led-software/syslua/compare/v0.6.0...v0.7.0
 ## [0.6.0] - 2026-01-03
 
 ### Features
@@ -13,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous
 
+- Release v0.6.0 (#18) by @syslua-bot[bot] in [#18](https://github.com/spirit-led-software/syslua/pull/18)
 - Remove old docs by @ian-pascoe
 - Doc updates (#16) by @ian-pascoe in [#16](https://github.com/spirit-led-software/syslua/pull/16)
 
