@@ -1,3 +1,5 @@
+local prio = require('syslua.priority')
+
 ---@class syslua.user
 local M = {}
 
@@ -6,13 +8,13 @@ local M = {}
 -- ============================================================================
 
 ---@class syslua.user.Options
----@field description? string User description/comment
----@field homeDir string Home directory path (required)
----@field config string Path to user's syslua config (required)
----@field shell? BuildRef Login shell package
----@field initialPassword? string Initial password (plaintext, set on creation only)
----@field groups? string[] Groups to add user to (must exist)
----@field preserveHomeOnRemove? boolean Keep home directory when user is removed (default: false)
+---@field description? syslua.Option<string> User description/comment
+---@field homeDir syslua.Option<string> Home directory path (required)
+---@field config syslua.Option<string> Path to user's syslua config (required)
+---@field shell? syslua.Option<BuildRef> Login shell package
+---@field initialPassword? syslua.Option<string> Initial password (plaintext, set on creation only)
+---@field groups? syslua.MergeableOption<string[]> Groups to add user to (must exist)
+---@field preserveHomeOnRemove? syslua.Option<boolean> Keep home directory when user is removed (default: false)
 
 ---@alias syslua.user.UserMap table<string, syslua.user.Options>
 
@@ -21,6 +23,21 @@ local M = {}
 -- ============================================================================
 
 local BIND_ID_PREFIX = '__syslua_user_'
+
+-- ============================================================================
+-- Default Options
+-- ============================================================================
+
+---@diagnostic disable-next-line: missing-fields
+M.defaults = {
+  description = '',
+  homeDir = nil,
+  config = nil,
+  shell = nil,
+  initialPassword = nil,
+  groups = prio.mergeable({ default = {} }),
+  preserveHomeOnRemove = false,
+}
 
 -- ============================================================================
 -- Platform-Specific Commands
@@ -336,11 +353,11 @@ local function darwin_user_exists_check(username)
   return string.format('dscl . -read /Users/%s >/dev/null 2>&1', username)
 end
 
----Check if user exists on Windows (PowerShell)
+---Check if user exists on Windows (PowerShell condition expression)
 ---@param username string
 ---@return string
 local function windows_user_exists_check(username)
-  return string.format('if (-not (Get-LocalUser -Name "%s" -ErrorAction SilentlyContinue)) { exit 1 }', username)
+  return string.format('(Get-LocalUser -Name "%s" -ErrorAction SilentlyContinue)', username)
 end
 
 -- ============================================================================
@@ -350,10 +367,13 @@ end
 ---@param name string
 ---@param opts syslua.user.Options
 local function validate_user_options(name, opts)
-  if not opts.homeDir then
+  local home_dir = prio.unwrap(opts.homeDir)
+  local config = prio.unwrap(opts.config)
+
+  if not home_dir then
     error(string.format("user '%s': homeDir is required", name), 0)
   end
-  if not opts.config then
+  if not config then
     error(string.format("user '%s': config is required", name), 0)
   end
   if not sys.is_elevated then
@@ -365,38 +385,90 @@ end
 -- Public API
 -- ============================================================================
 
+---Resolve groups from merged options (handles Mergeable type)
+---@param groups_opt syslua.MergeableOption<string[]>|nil
+---@return string[]
+local function resolve_groups(groups_opt)
+  if not groups_opt then
+    return {}
+  end
+  -- If it's a mergeable, access will resolve it
+  if prio.is_mergeable(groups_opt) then
+    -- Access the merged value through the MergedTable mechanism
+    -- For mergeables without separator, result is an array
+    local result = {}
+    for _, entry in ipairs(groups_opt.__entries or {}) do
+      local val = entry.value
+      if type(val) == 'table' then
+        for _, v in ipairs(val) do
+          table.insert(result, v)
+        end
+      else
+        table.insert(result, val)
+      end
+    end
+    return result
+  end
+  -- Otherwise unwrap and return
+  local unwrapped = prio.unwrap(groups_opt)
+  if type(unwrapped) == 'table' then
+    return unwrapped
+  end
+  return {}
+end
+
 ---Create a bind for a single user
 ---@param name string
 ---@param opts syslua.user.Options
 local function create_user_bind(name, opts)
   local bind_id = BIND_ID_PREFIX .. name
 
+  -- Unwrap all priority values for bind inputs
+  local description = prio.unwrap(opts.description) or ''
+  local home_dir = prio.unwrap(opts.homeDir)
+  local config_path = prio.unwrap(opts.config)
+  local shell = prio.unwrap(opts.shell)
+  local initial_password = prio.unwrap(opts.initialPassword)
+  local groups = resolve_groups(opts.groups)
+  local preserve_home = prio.unwrap(opts.preserveHomeOnRemove) or false
+
   sys.bind({
     id = bind_id,
     replace = true,
     inputs = {
       username = name,
-      description = opts.description or '',
-      home_dir = opts.homeDir,
-      config_path = opts.config,
-      shell = opts.shell,
-      initial_password = opts.initialPassword,
-      groups = opts.groups or {},
-      preserve_home = opts.preserveHomeOnRemove or false,
+      description = description,
+      home_dir = home_dir,
+      config_path = config_path,
+      shell = shell,
+      initial_password = initial_password,
+      groups = groups,
+      preserve_home = preserve_home,
       os = sys.os,
     },
     create = function(inputs, ctx)
-      -- Step 1: Create the user account
+      -- Step 1: Create the user account (skip if already exists for idempotency)
       if inputs.os == 'linux' then
-        local bin, args = linux_create_user_cmd(inputs.username, {
+        local exists_check = linux_user_exists_check(inputs.username)
+        ---@diagnostic disable-next-line: missing-fields
+        local _, create_args = linux_create_user_cmd(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
           shell = inputs.shell,
           groups = inputs.groups,
         })
-        ctx:exec({ bin = bin, args = args })
+        local create_cmd = '/usr/sbin/useradd ' .. table.concat(create_args, ' ')
 
-        -- Set password separately on Linux
+        -- Only create if user doesn't exist
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if ! %s; then %s; fi', exists_check, create_cmd),
+          },
+        })
+
+        -- Set password separately on Linux (only if user was just created or password update needed)
         if inputs.initial_password and inputs.initial_password ~= '' then
           ctx:exec({
             bin = '/bin/sh',
@@ -407,29 +479,48 @@ local function create_user_bind(name, opts)
           })
         end
       elseif inputs.os == 'darwin' then
-        local bin, args = darwin_create_user_cmd(inputs.username, {
+        local exists_check = darwin_user_exists_check(inputs.username)
+        ---@diagnostic disable-next-line: missing-fields
+        local _, create_args = darwin_create_user_cmd(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
           shell = inputs.shell,
           initialPassword = inputs.initial_password,
         })
-        ctx:exec({ bin = bin, args = args })
+        local create_cmd = '/usr/sbin/sysadminctl ' .. table.concat(create_args, ' ')
 
-        -- Add to groups separately on macOS
+        -- Only create if user doesn't exist
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if ! %s; then %s; fi', exists_check, create_cmd),
+          },
+        })
+
+        -- Add to groups separately on macOS (idempotent - dseditgroup handles existing membership)
         for _, group in ipairs(inputs.groups) do
           local grp_bin, grp_args = darwin_add_to_group_cmd(inputs.username, group)
           ctx:exec({ bin = grp_bin, args = grp_args })
         end
       elseif inputs.os == 'windows' then
-        local script = windows_create_user_script(inputs.username, {
+        local exists_check = windows_user_exists_check(inputs.username)
+        ---@diagnostic disable-next-line: missing-fields
+        local create_script = windows_create_user_script(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
           initialPassword = inputs.initial_password,
           groups = inputs.groups,
         })
+
+        -- Only create if user doesn't exist
         ctx:exec({
           bin = 'powershell.exe',
-          args = { '-NoProfile', '-Command', script },
+          args = {
+            '-NoProfile',
+            '-Command',
+            string.format('if (-not %s) { %s }', exists_check, create_script),
+          },
         })
       end
 
@@ -452,30 +543,78 @@ local function create_user_bind(name, opts)
       }
     end,
     destroy = function(outputs, ctx)
-      -- Step 1: Destroy user's syslua config
-      if sys.os == 'windows' then
-        local script = windows_destroy_as_user_script(outputs.username, outputs.home_dir)
-        ctx:exec({
-          bin = 'powershell.exe',
-          args = { '-NoProfile', '-Command', script },
-        })
-      else
-        local bin, args = unix_destroy_as_user_cmd(outputs.username, outputs.home_dir)
-        ctx:exec({ bin = bin, args = args })
-      end
-
-      -- Step 2: Remove user account
+      -- Only proceed if user exists (idempotency)
       if sys.os == 'linux' then
-        local bin, args = linux_delete_user_cmd(outputs.username, outputs.preserve_home)
-        ctx:exec({ bin = bin, args = args })
+        local exists_check = linux_user_exists_check(outputs.username)
+
+        -- Step 1: Destroy user's syslua config (only if user exists)
+        local _, destroy_args = unix_destroy_as_user_cmd(outputs.username, outputs.home_dir)
+        local destroy_cmd = '/bin/su ' .. table.concat(destroy_args, ' ')
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if %s; then %s; fi', exists_check, destroy_cmd),
+          },
+        })
+
+        -- Step 2: Remove user account (only if user exists)
+        local _, delete_args = linux_delete_user_cmd(outputs.username, outputs.preserve_home)
+        local delete_cmd = '/usr/sbin/userdel ' .. table.concat(delete_args, ' ')
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if %s; then %s; fi', exists_check, delete_cmd),
+          },
+        })
       elseif sys.os == 'darwin' then
-        local bin, args = darwin_delete_user_cmd(outputs.username, outputs.preserve_home)
-        ctx:exec({ bin = bin, args = args })
+        local exists_check = darwin_user_exists_check(outputs.username)
+
+        -- Step 1: Destroy user's syslua config (only if user exists)
+        local _, destroy_args = unix_destroy_as_user_cmd(outputs.username, outputs.home_dir)
+        local destroy_cmd = '/bin/su ' .. table.concat(destroy_args, ' ')
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if %s; then %s; fi', exists_check, destroy_cmd),
+          },
+        })
+
+        -- Step 2: Remove user account (only if user exists)
+        local _, delete_args = darwin_delete_user_cmd(outputs.username, outputs.preserve_home)
+        local delete_cmd = '/usr/sbin/sysadminctl ' .. table.concat(delete_args, ' ')
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format('if %s; then %s; fi', exists_check, delete_cmd),
+          },
+        })
       elseif sys.os == 'windows' then
-        local script = windows_delete_user_script(outputs.username, outputs.home_dir, outputs.preserve_home)
+        local exists_check = windows_user_exists_check(outputs.username)
+
+        -- Step 1: Destroy user's syslua config (only if user exists)
+        local destroy_script = windows_destroy_as_user_script(outputs.username, outputs.home_dir)
         ctx:exec({
           bin = 'powershell.exe',
-          args = { '-NoProfile', '-Command', script },
+          args = {
+            '-NoProfile',
+            '-Command',
+            string.format('if (%s) { %s }', exists_check, destroy_script),
+          },
+        })
+
+        -- Step 2: Remove user account (only if user exists)
+        local delete_script = windows_delete_user_script(outputs.username, outputs.home_dir, outputs.preserve_home)
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = {
+            '-NoProfile',
+            '-Command',
+            string.format('if (%s) { %s }', exists_check, delete_script),
+          },
         })
       end
     end,
@@ -490,8 +629,14 @@ function M.setup(users)
   end
 
   for name, opts in pairs(users) do
-    validate_user_options(name, opts)
-    create_user_bind(name, opts)
+    -- Merge user options with defaults
+    local merged = prio.merge(M.defaults, opts)
+    if not merged then
+      error(string.format("user '%s': failed to merge options", name), 2)
+    end
+
+    validate_user_options(name, merged)
+    create_user_bind(name, merged)
   end
 end
 
