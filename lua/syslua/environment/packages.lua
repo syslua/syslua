@@ -12,6 +12,8 @@ local M = {}
 ---@field bin? boolean Link binaries to ~/.syslua/bin/ (default: true)
 ---@field man? boolean Link man pages to ~/.syslua/share/man/ (default: true)
 ---@field completions? boolean|string[] Link completions; true for all shells, or list like {'zsh', 'bash'} (default: true)
+---@field lib? boolean Link libraries to ~/.syslua/lib/ (default: false)
+---@field include? boolean Link headers to ~/.syslua/include/ (default: false)
 
 ---@class syslua.environment.packages.Options
 ---@field use (BuildRef|syslua.priority.PriorityValue<BuildRef>)[] List of packages to include
@@ -41,6 +43,14 @@ local M = {}
 ---@field source string Full path to completion file
 ---@field pkg_name string Package that provides this
 
+---@class syslua.environment.packages.LibEntry
+---@field source string Full path to lib directory
+---@field pkg_name string Package that provides this
+
+---@class syslua.environment.packages.IncludeEntry
+---@field source string Full path to include directory
+---@field pkg_name string Package that provides this
+
 -- ============================================================================
 -- Constants
 -- ============================================================================
@@ -66,6 +76,8 @@ local default_opts = {
     bin = true,
     man = true,
     completions = true,
+    lib = false,
+    include = false,
   },
   shell_integration = true,
 }
@@ -372,17 +384,58 @@ local function collect_completions(packages, shell_filter)
   return result
 end
 
+---@param packages syslua.environment.packages.ResolvedPackage[]
+---@return syslua.environment.packages.LibEntry[]
+local function collect_libs(packages)
+  local result = {}
+
+  for _, resolved in ipairs(packages) do
+    local pkg = resolved.pkg
+    local lib_output = pkg.outputs and pkg.outputs.lib
+
+    if lib_output then
+      table.insert(result, {
+        source = lib_output,
+        pkg_name = resolved.name,
+      })
+    end
+  end
+
+  return result
+end
+
+---@param packages syslua.environment.packages.ResolvedPackage[]
+---@return syslua.environment.packages.IncludeEntry[]
+local function collect_includes(packages)
+  local result = {}
+
+  for _, resolved in ipairs(packages) do
+    local pkg = resolved.pkg
+    local include_output = pkg.outputs and pkg.outputs.include
+
+    if include_output then
+      table.insert(result, {
+        source = include_output,
+        pkg_name = resolved.name,
+      })
+    end
+  end
+
+  return result
+end
+
 -- ============================================================================
 -- Build and Bind Steps
 -- ============================================================================
 
---- Create the symlink forest build
 ---@param binaries syslua.environment.packages.BinaryEntry[]
 ---@param man_pages syslua.environment.packages.ManEntry[]
 ---@param completions syslua.environment.packages.CompletionEntry[]
+---@param libs syslua.environment.packages.LibEntry[]
+---@param includes syslua.environment.packages.IncludeEntry[]
 ---@param link_opts syslua.environment.packages.LinkOptions
 ---@return table BuildRef
-local function create_env_build(binaries, man_pages, completions, link_opts)
+local function create_env_build(binaries, man_pages, completions, libs, includes, link_opts)
   return sys.build({
     id = '__syslua_env_packages',
     replace = true,
@@ -390,6 +443,8 @@ local function create_env_build(binaries, man_pages, completions, link_opts)
       binaries = binaries,
       man_pages = man_pages,
       completions = completions,
+      libs = libs,
+      includes = includes,
       link_opts = link_opts,
       os = sys.os,
     },
@@ -407,22 +462,57 @@ local function create_env_build(binaries, man_pages, completions, link_opts)
         })
       end
 
-      -- Create symlinks for binaries
       if inputs.link_opts.bin then
         for _, bin in ipairs(inputs.binaries) do
           if inputs.os == 'windows' then
-            -- Windows: use hard link for files
             ctx:exec({
               bin = 'cmd.exe',
               args = {
                 '/c',
-                string.format('mklink /H "%s\\bin\\%s" "%s" 2>nul || copy "%s" "%s\\bin\\%s"', ctx.out, bin.name, bin.source, bin.source, ctx.out, bin.name),
+                string.format(
+                  [[
+if exist "%s\*" (
+  for %%%%f in ("%s\*") do mklink /H "%s\bin\%%%%~nxf" "%%%%f" 2>nul || copy "%%%%f" "%s\bin\%%%%~nxf"
+) else (
+  mklink /H "%s\bin\%s" "%s" 2>nul || copy "%s" "%s\bin\%s"
+)
+]],
+                  bin.source,
+                  bin.source,
+                  ctx.out,
+                  ctx.out,
+                  ctx.out,
+                  bin.name,
+                  bin.source,
+                  bin.source,
+                  ctx.out,
+                  bin.name
+                ),
               },
             })
           else
             ctx:exec({
-              bin = '/bin/ln',
-              args = { '-sf', bin.source, ctx.out .. '/bin/' .. bin.name },
+              bin = '/bin/sh',
+              args = {
+                '-c',
+                string.format(
+                  [[
+if [ -d "%s" ]; then
+  for f in "%s"/*; do
+    [ -f "$f" ] && [ -x "$f" ] && ln -sf "$f" "%s/bin/$(basename "$f")"
+  done
+else
+  ln -sf "%s" "%s/bin/%s"
+fi
+]],
+                  bin.source,
+                  bin.source,
+                  ctx.out,
+                  bin.source,
+                  ctx.out,
+                  bin.name
+                ),
+              },
             })
           end
         end
@@ -446,16 +536,68 @@ local function create_env_build(binaries, man_pages, completions, link_opts)
         end
       end
 
+      if inputs.link_opts.lib and #inputs.libs > 0 then
+        if inputs.os ~= 'windows' then
+          ctx:exec({
+            bin = '/bin/sh',
+            args = { '-c', string.format('mkdir -p "%s/lib"', ctx.out) },
+          })
+          for _, lib_entry in ipairs(inputs.libs) do
+            ctx:exec({
+              bin = '/bin/sh',
+              args = {
+                '-c',
+                string.format(
+                  'if [ -d "%s" ]; then for f in "%s"/*; do ln -sf "$f" "%s/lib/"; done; else ln -sf "%s" "%s/lib/"; fi',
+                  lib_entry.source,
+                  lib_entry.source,
+                  ctx.out,
+                  lib_entry.source,
+                  ctx.out
+                ),
+              },
+            })
+          end
+        end
+      end
+
+      if inputs.link_opts.include and #inputs.includes > 0 then
+        if inputs.os ~= 'windows' then
+          ctx:exec({
+            bin = '/bin/sh',
+            args = { '-c', string.format('mkdir -p "%s/include"', ctx.out) },
+          })
+          for _, inc_entry in ipairs(inputs.includes) do
+            ctx:exec({
+              bin = '/bin/sh',
+              args = {
+                '-c',
+                string.format(
+                  'if [ -d "%s" ]; then for f in "%s"/*; do ln -sf "$f" "%s/include/"; done; else ln -sf "%s" "%s/include/"; fi',
+                  inc_entry.source,
+                  inc_entry.source,
+                  ctx.out,
+                  inc_entry.source,
+                  ctx.out
+                ),
+              },
+            })
+          end
+        end
+      end
+
       return {
         bin = ctx.out .. '/bin',
         man = ctx.out .. '/share/man',
+        lib = ctx.out .. '/lib',
+        include = ctx.out .. '/include',
         out = ctx.out,
       }
     end,
   })
 end
 
---- Create the bind that sets up ~/.syslua directory with atomic swap
+---@param env_build table BuildRef from create_env_build
 ---@param env_build table BuildRef from create_env_build
 local function create_env_bind(env_build)
   local home = lib.get_home()
@@ -472,9 +614,10 @@ local function create_env_bind(env_build)
     create = function(inputs, ctx)
       local bin_target = inputs.syslua_dir .. '/bin'
       local man_target = inputs.syslua_dir .. '/share/man'
+      local lib_target = inputs.syslua_dir .. '/lib'
+      local include_target = inputs.syslua_dir .. '/include'
 
       if inputs.os == 'windows' then
-        -- Windows: use junction for directories
         ctx:exec({
           bin = 'cmd.exe',
           args = {
@@ -497,24 +640,38 @@ mklink /J "%s" "%s"
           },
         })
       else
-        -- Unix: atomic swap using ln -sfn
         ctx:exec({
           bin = '/bin/sh',
           args = {
             '-c',
             string.format(
               [[
-mkdir -p "%s"
-mkdir -p "%s/share"
-ln -sfn "%s" "%s"
-ln -sfn "%s" "%s"
+mkdir -p "%s" "%s/share"
+ln -s "%s" "%s.tmp.$$" && mv -f "%s.tmp.$$" "%s"
+ln -s "%s" "%s.tmp.$$" && mv -f "%s.tmp.$$" "%s"
+[ -d "%s" ] && { ln -s "%s" "%s.tmp.$$" && mv -f "%s.tmp.$$" "%s"; } || true
+[ -d "%s" ] && { ln -s "%s" "%s.tmp.$$" && mv -f "%s.tmp.$$" "%s"; } || true
 ]],
               inputs.syslua_dir,
               inputs.syslua_dir,
               inputs.env_build.outputs.bin,
               bin_target,
+              bin_target,
+              bin_target,
               inputs.env_build.outputs.man,
-              man_target
+              man_target,
+              man_target,
+              man_target,
+              inputs.env_build.outputs.lib,
+              inputs.env_build.outputs.lib,
+              lib_target,
+              lib_target,
+              lib_target,
+              inputs.env_build.outputs.include,
+              inputs.env_build.outputs.include,
+              include_target,
+              include_target,
+              include_target
             ),
           },
         })
@@ -523,6 +680,8 @@ ln -sfn "%s" "%s"
       return {
         bin_link = bin_target,
         man_link = man_target,
+        lib_link = lib_target,
+        include_link = include_target,
       }
     end,
     destroy = function(outputs, ctx)
@@ -534,7 +693,7 @@ ln -sfn "%s" "%s"
       else
         ctx:exec({
           bin = '/bin/sh',
-          args = { '-c', string.format('rm -f "%s" "%s"', outputs.bin_link, outputs.man_link) },
+          args = { '-c', string.format('rm -f "%s" "%s" "%s" "%s"', outputs.bin_link, outputs.man_link, outputs.lib_link, outputs.include_link) },
         })
       end
     end,
@@ -673,7 +832,7 @@ fi
                   [[
 config_path="%s"
 if [ -f "$config_path" ]; then
-  sed -i.bak '/%s/,/%s/d' "$config_path" && rm -f "$config_path.bak"
+  sed '/%s/,/%s/d' "$config_path" > "$config_path.tmp" && mv "$config_path.tmp" "$config_path"
 fi
 ]],
                   outputs.config,
@@ -775,6 +934,8 @@ local function create_completion_binds(completions, link_opts)
         inputs = {
           source = comp.source,
           target = target_dir .. target_name,
+          target_dir = target_dir,
+          shell = comp.shell,
           os = sys.os,
         },
         create = function(inputs, ctx)
@@ -783,7 +944,7 @@ local function create_completion_binds(completions, link_opts)
               bin = 'cmd.exe',
               args = {
                 '/c',
-                string.format('mkdir "%s" 2>nul & copy "%s" "%s"', target_dir, inputs.source, inputs.target),
+                string.format('mkdir "%s" 2>nul & copy "%s" "%s"', inputs.target_dir, inputs.source, inputs.target),
               },
             })
           else
@@ -791,7 +952,38 @@ local function create_completion_binds(completions, link_opts)
               bin = '/bin/sh',
               args = {
                 '-c',
-                string.format('mkdir -p "$(dirname "%s")" && ln -sf "%s" "%s"', inputs.target, inputs.source, inputs.target),
+                string.format(
+                  [[
+mkdir -p "%s"
+if [ -d "%s" ]; then
+  for f in "%s"/*; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f")
+    case "$name" in
+      *.bash) [ "%s" = "bash" ] && ln -sf "$f" "%s/$name" ;;
+      *.zsh|_*) [ "%s" = "zsh" ] && ln -sf "$f" "%s/$name" ;;
+      *.fish) [ "%s" = "fish" ] && ln -sf "$f" "%s/$name" ;;
+      *.ps1) [ "%s" = "powershell" ] && ln -sf "$f" "%s/$name" ;;
+    esac
+  done
+else
+  ln -sf "%s" "%s"
+fi
+]],
+                  inputs.target_dir,
+                  inputs.source,
+                  inputs.source,
+                  inputs.shell,
+                  inputs.target_dir,
+                  inputs.shell,
+                  inputs.target_dir,
+                  inputs.shell,
+                  inputs.target_dir,
+                  inputs.shell,
+                  inputs.target_dir,
+                  inputs.source,
+                  inputs.target
+                ),
               },
             })
           end
@@ -846,7 +1038,17 @@ function M.setup(provided_opts)
     completions = collect_completions(resolved_packages, shell_filter)
   end
 
-  local env_build = create_env_build(binaries, man_pages, completions, M.opts.link)
+  local libs = {}
+  if M.opts.link.lib then
+    libs = collect_libs(resolved_packages)
+  end
+
+  local includes = {}
+  if M.opts.link.include then
+    includes = collect_includes(resolved_packages)
+  end
+
+  local env_build = create_env_build(binaries, man_pages, completions, libs, includes, M.opts.link)
   create_env_bind(env_build)
   create_shell_integration_binds(M.opts.shell_integration)
   create_completion_binds(completions, M.opts.link)

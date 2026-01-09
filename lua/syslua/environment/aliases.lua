@@ -319,7 +319,7 @@ fi
                   [[
 config_path="%s"
 if [ -f "$config_path" ]; then
-  sed -i.bak '/%s/,/%s/d' "$config_path" && rm -f "$config_path.bak"
+  sed '/%s/,/%s/d' "$config_path" > "$config_path.tmp" && mv "$config_path.tmp" "$config_path"
 fi
 ]],
                   outputs.config,
@@ -379,7 +379,7 @@ fi
                 [[
 config_path="%s"
 if [ -f "$config_path" ]; then
-  sed -i.bak '/%s/,/%s/d' "$config_path" && rm -f "$config_path.bak"
+  sed '/%s/,/%s/d' "$config_path" > "$config_path.tmp" && mv "$config_path.tmp" "$config_path"
 fi
 ]],
                 outputs.config,

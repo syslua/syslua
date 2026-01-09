@@ -130,7 +130,7 @@ return {
           '-c',
           string.format(
             [[find "%s" -type f | while read f; do
-  head -c2 "$f" 2>/dev/null | grep -q '#!' && sed -i.bak '1s|^#!.*|#!%s|' "$f" && rm -f "$f.bak"
+  head -c2 "$f" 2>/dev/null | grep -q '#!' && { sed '1s|^#!.*|#!%s|' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 done]],
             ctx.out,
             interpreter
