@@ -138,6 +138,48 @@ local function windows_create_user_script(name, opts)
   return table.concat(lines, '; ')
 end
 
+---Build Linux user deletion command
+---@param name string
+---@param preserve_home boolean
+---@return string bin, string[] args
+local function linux_delete_user_cmd(name, preserve_home)
+  local args = {}
+  if not preserve_home then
+    table.insert(args, '-r')
+  end
+  table.insert(args, name)
+  return '/usr/sbin/userdel', args
+end
+
+---Build macOS user deletion command
+---@param name string
+---@param preserve_home boolean
+---@return string bin, string[] args
+local function darwin_delete_user_cmd(name, preserve_home)
+  local args = { '-deleteUser', name }
+  if preserve_home then
+    table.insert(args, '-keepHome')
+  else
+    table.insert(args, '-secure')
+  end
+  return '/usr/sbin/sysadminctl', args
+end
+
+---Build Windows user deletion PowerShell script
+---@param name string
+---@param home_dir string
+---@param preserve_home boolean
+---@return string
+local function windows_delete_user_script(name, home_dir, preserve_home)
+  local lines = {
+    string.format('Remove-LocalUser -Name "%s"', name),
+  }
+  if not preserve_home then
+    table.insert(lines, string.format('Remove-Item -Recurse -Force "%s" -ErrorAction SilentlyContinue', home_dir))
+  end
+  return table.concat(lines, '; ')
+end
+
 -- ============================================================================
 -- Validation
 -- ============================================================================
