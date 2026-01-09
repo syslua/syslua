@@ -531,7 +531,11 @@ mod tests {
       let url = format!("file://{}", source_repo.display());
       let result = fetch_git("test-input", &url, Some("nonexistent-tag"), &cache_dir);
 
-      assert!(matches!(result, Err(FetchError::RevisionNotFound { .. })));
+      assert!(
+        matches!(result, Err(FetchError::RevisionNotFound { .. })),
+        "Expected RevisionNotFound error, got: {:?}",
+        result
+      );
     }
 
     #[test]

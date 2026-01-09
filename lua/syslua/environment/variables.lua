@@ -4,9 +4,7 @@ local lib = require('syslua.lib')
 ---@class syslua.environment.variables
 local M = {}
 
----@class syslua.environment.variables.Options
----@field PATH? string | syslua.priority.PriorityValue<string> | syslua.priority.Mergeable<string>
----@field [string] string | syslua.priority.PriorityValue<string> Any environment variable
+---@class syslua.environment.variables.Options: table<string, syslua.OptionValue<string>>
 
 -- Platform-specific path separators
 local PATH_SEP = sys.os == 'windows' and ';' or ':'

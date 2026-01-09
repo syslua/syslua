@@ -480,6 +480,8 @@ function M.merge(base, override, _path)
       local unwrapped_base = unwrap_merged_table(base_v)
       if is_plain_table(unwrapped_base) or (base_v ~= unwrapped_base) then
         nested[k] = { base = unwrapped_base, override = v }
+      else
+        nested[k] = { base = nil, override = v }
       end
     else
       all_values[k] = all_values[k] or {}

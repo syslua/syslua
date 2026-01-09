@@ -4,8 +4,7 @@ local lib = require('syslua.lib')
 ---@class syslua.environment.aliases
 local M = {}
 
----@class syslua.environment.aliases.Options
----@field [string] string | syslua.priority.PriorityValue<string>
+---@class syslua.environment.aliases.Options: table<string, string | syslua.priority.PriorityValue<string>>
 
 local default_opts = {}
 

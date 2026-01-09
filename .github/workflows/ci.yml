@@ -40,7 +40,7 @@ jobs:
       - name: Install selene
         run: cargo install selene
       - name: Run selene
-        run: selene ./lua/syslua/
+        run: selene ./init.lua ./lua
 
   rust-lint-and-test:
     name: Rust Lint & Test (${{ matrix.os }})

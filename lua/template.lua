@@ -13,7 +13,7 @@ M.inputs = {
 }
 
 --- Configuration setup
----@param inputs table<string, {path:string}> Resolved inputs with path and rev fields
+---@param inputs table<string, {path:string,rev:string}> Resolved inputs with path and rev fields
 function M.setup(inputs)
   local syslua = require('syslua')
 
@@ -21,13 +21,14 @@ function M.setup(inputs)
   syslua.pkgs.cli.ripgrep.setup()
 
   -- Example: Link a dotfile
-  syslua.modules.file.setup({
-    target = '~/.gitconfig',
-    source = sys.path.join(inputs.dotfiles.path, '.gitconfig'),
+  syslua.environment.files.setup({
+    ['~/.gitconfig'] = {
+      source = sys.path.join(inputs.dotfiles.path, '.gitconfig'),
+    },
   })
 
   -- Example: Set environment variables
-  syslua.modules.setup({
+  syslua.enviroment.variables.setup({
     EDITOR = 'nvim',
   })
 end

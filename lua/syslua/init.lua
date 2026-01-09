@@ -21,11 +21,13 @@ setmetatable(M, {
   end,
 })
 
+---@alias syslua.OptionValue<T> T | syslua.priority.PriorityValue<T> | syslua.priority.Mergeable<T>
+
 ---@class BuildCtx
+---@field script fun(self: BuildCtx, format: "shell"|"bash"|"cmd"|"powershell", content: string, opts?: {name?: string}): {stdout: string, path: string}
 ---@field wrap_binary fun(self: BuildCtx, opts: {binary: string, env?: table<string,string>}): nil
 ---@field patch_rpath fun(self: BuildCtx, opts: {deps: BuildRef[], patchelf?: BuildRef}|BuildRef[]): nil
 ---@field patch_shebang fun(self: BuildCtx, interpreter: string): nil
----@field script fun(self: BuildCtx, format: string, content: string, opts?: {name?: string}): {stdout: string, path: string}
 
 M.setup = function()
   local unix_path = '/bin:/usr/bin'
