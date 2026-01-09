@@ -27,6 +27,7 @@ syslua/
 | Change Lua API    | `crates/lib/src/lua/`              | `globals.rs` for sys.\*, `helpers/` for types            |
 | Add input source  | `crates/lib/src/inputs/`           | `source.rs` for types, `fetch.rs` for retrieval          |
 | Platform behavior | `crates/lib/src/platform/`         | `os.rs`, `arch.rs`, `paths.rs`, `immutable.rs`           |
+| User management   | `lua/syslua/user.lua`              | Cross-platform user creation/deletion with config apply  |
 | Build/bind types  | `crates/lib/src/build/` or `bind/` | `types.rs` for structs, `lua.rs` for conversion          |
 | Snapshot/rollback | `crates/lib/src/snapshot/`         | `diff.rs` for state comparison, `history.rs` for journal |
 
@@ -43,6 +44,8 @@ syslua/
 | `Action`               | enum   | `action/mod.rs`    | Serializable command or fetch operation       |
 | `ExecutionDag`         | struct | `execute/dag.rs`   | Dependency graph for builds and binds         |
 | `ApplyError`           | enum   | `execute/types.rs` | Top-level execution errors                    |
+| `link_dir`             | fn     | `platform/link.rs` | Cross-platform directory symlink/junction creation |
+| `parent_store_dir`     | fn     | `platform/paths.rs`| Optional parent store for layered store lookup     |
 
 ## CONVENTIONS
 
