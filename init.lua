@@ -149,5 +149,91 @@ done]],
         },
       })
     end)
+
+    -- Script method implementation (shared by build and bind contexts)
+    local function script_impl(ctx, format, content, opts)
+      opts = opts or {}
+
+      -- Track script count for default naming (store on ctx table)
+      ctx._script_count = (ctx._script_count or 0) + 1
+      local name = opts.name or ('script_' .. (ctx._script_count - 1))
+
+      -- Determine extension and interpreter based on format
+      local ext, bin, args_prefix
+      if format == 'shell' then
+        ext = '.sh'
+        bin = '/bin/sh'
+        args_prefix = {}
+      elseif format == 'bash' then
+        ext = '.bash'
+        bin = '/bin/bash'
+        args_prefix = {}
+      elseif format == 'powershell' then
+        ext = '.ps1'
+        bin = 'powershell.exe'
+        args_prefix = { '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File' }
+      elseif format == 'cmd' then
+        ext = '.cmd'
+        bin = 'cmd.exe'
+        args_prefix = { '/c' }
+      else
+        error("script() format must be 'shell', 'bash', 'powershell', or 'cmd', got: " .. tostring(format))
+      end
+
+      local script_path = sys.path.join(ctx.out, 'tmp', name .. ext)
+
+      -- Write script file (platform-specific)
+      if format == 'shell' or format == 'bash' then
+        -- Unix: use sh to mkdir, write file, chmod +x
+        ctx:exec({
+          bin = '/bin/sh',
+          args = {
+            '-c',
+            string.format(
+              'mkdir -p "%s" && cat > "%s" << \'SYSLUA_SCRIPT_EOF\'\n%s\nSYSLUA_SCRIPT_EOF\nchmod +x "%s"',
+              sys.path.join(ctx.out, 'tmp'),
+              script_path,
+              content,
+              script_path
+            ),
+          },
+        })
+      else
+        -- Windows: use powershell to create directory and write file
+        -- Escape single quotes in content by doubling them for PowerShell here-string
+        local escaped_content = content:gsub("'@", "' @"):gsub("@'", "@ '")
+        ctx:exec({
+          bin = 'powershell.exe',
+          args = {
+            '-NoProfile',
+            '-Command',
+            string.format(
+              "New-Item -ItemType Directory -Force -Path '%s' | Out-Null; @'\n%s\n'@ | Set-Content -Path '%s' -Encoding UTF8",
+              sys.path.join(ctx.out, 'tmp'),
+              escaped_content,
+              script_path
+            ),
+          },
+        })
+      end
+
+      -- Build execution args
+      local exec_args = {}
+      for _, v in ipairs(args_prefix) do
+        table.insert(exec_args, v)
+      end
+      table.insert(exec_args, script_path)
+
+      -- Execute script and capture stdout
+      local stdout = ctx:exec({ bin = bin, args = exec_args })
+
+      return {
+        stdout = stdout,
+        path = script_path,
+      }
+    end
+
+    sys.register_build_ctx_method('script', script_impl)
+    sys.register_bind_ctx_method('script', script_impl)
   end,
 }
