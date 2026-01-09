@@ -111,6 +111,12 @@ pub fn store_dir() -> PathBuf {
     .unwrap_or_else(|_| root_dir().join("store"))
 }
 
+/// Returns the parent/fallback store directory for read-only lookups.
+/// Used for store layering where user stores fall back to system store.
+pub fn parent_store_dir() -> Option<PathBuf> {
+  std::env::var("SYSLUA_PARENT_STORE").map(PathBuf::from).ok()
+}
+
 pub fn snapshots_dir() -> PathBuf {
   std::env::var("SYSLUA_SNAPSHOTS")
     .map(PathBuf::from)
@@ -160,5 +166,21 @@ mod tests {
         assert_eq!(cache_dir(), PathBuf::from("/home/user/.cache").join(APP_NAME));
       },
     );
+  }
+
+  #[test]
+  #[serial]
+  fn parent_store_dir_returns_none_when_unset() {
+    temp_env::with_vars([("SYSLUA_PARENT_STORE", None::<&str>)], || {
+      assert!(parent_store_dir().is_none());
+    });
+  }
+
+  #[test]
+  #[serial]
+  fn parent_store_dir_returns_path_when_set() {
+    temp_env::with_vars([("SYSLUA_PARENT_STORE", Some("/parent/store"))], || {
+      assert_eq!(parent_store_dir(), Some(PathBuf::from("/parent/store")));
+    });
   }
 }
