@@ -37,7 +37,7 @@ pub async fn apply_bind(
 ) -> Result<BindResult, ExecuteError> {
   debug!(hash = %hash.0, "applying bind");
 
-  // Create a temporary working directory for the bind's $${out}
+  // Create a temporary working directory for the bind's $${{out}}
   let temp_dir = TempDir::new()?;
   let out_dir = temp_dir.path();
 
@@ -126,7 +126,7 @@ pub async fn update_bind(
   let _ = old_bind_result; // TODO: May be used in future for referencing old outputs
   debug!(old_hash = %old_hash.0, new_hash = %new_hash.0, "updating bind");
 
-  // Create a temporary working directory for the bind's $${out}
+  // Create a temporary working directory for the bind's $${{out}}
   let temp_dir = TempDir::new()?;
   let out_dir = temp_dir.path();
 
@@ -337,7 +337,11 @@ mod tests {
     let bind_def = BindDef {
       id: None,
       inputs: None,
-      outputs: Some([("link".to_string(), "$${action:0}".to_string())].into_iter().collect()),
+      outputs: Some(
+        [("link".to_string(), "$${{action:0}}".to_string())]
+          .into_iter()
+          .collect(),
+      ),
       create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
@@ -360,11 +364,11 @@ mod tests {
 
   #[tokio::test]
   async fn apply_bind_with_out_placeholder() {
-    let (cmd, args) = echo_msg("$${out}");
+    let (cmd, args) = echo_msg("$${{out}}");
     let bind_def = BindDef {
       id: None,
       inputs: None,
-      outputs: Some([("dir".to_string(), "$${out}".to_string())].into_iter().collect()),
+      outputs: Some([("dir".to_string(), "$${{out}}".to_string())].into_iter().collect()),
       create_actions: vec![Action::Exec(ExecOpts {
         bin: cmd.to_string(),
         args: Some(args),
@@ -397,7 +401,7 @@ mod tests {
   async fn apply_bind_with_build_dependency() {
     use std::path::PathBuf;
 
-    let (cmd, args) = echo_msg("$${build:abc123:bin}");
+    let (cmd, args) = echo_msg("$${{build:abc123:bin}}");
     let bind_def = BindDef {
       id: None,
       inputs: None,
@@ -522,12 +526,12 @@ mod tests {
   async fn apply_bind_multiple_actions() {
     let (cmd1, args1) = echo_msg("step1");
     let (cmd2, args2) = echo_msg("step2");
-    let (cmd3, args3) = echo_msg("$${action:0} $${action:1}");
+    let (cmd3, args3) = echo_msg("$${{action:0}} $${{action:1}}");
     let bind_def = BindDef {
       id: None,
       inputs: None,
       outputs: Some(
-        [("combined".to_string(), "$${action:2}".to_string())]
+        [("combined".to_string(), "$${{action:2}}".to_string())]
           .into_iter()
           .collect(),
       ),
@@ -577,7 +581,7 @@ mod tests {
       id: Some("test-bind".to_string()),
       inputs: None,
       outputs: Some(
-        [("status".to_string(), "$${action:0}".to_string())]
+        [("status".to_string(), "$${{action:0}}".to_string())]
           .into_iter()
           .collect(),
       ),
@@ -625,7 +629,11 @@ mod tests {
     let bind_def = BindDef {
       id: Some("path-bind".to_string()),
       inputs: None,
-      outputs: Some([("path".to_string(), "$${action:0}".to_string())].into_iter().collect()),
+      outputs: Some(
+        [("path".to_string(), "$${{action:0}}".to_string())]
+          .into_iter()
+          .collect(),
+      ),
       create_actions: vec![Action::Exec(ExecOpts {
         bin: create_cmd.to_string(),
         args: Some(create_args),
@@ -697,12 +705,12 @@ mod tests {
   async fn update_bind_with_multiple_actions() {
     let (cmd1, args1) = echo_msg("step1");
     let (cmd2, args2) = echo_msg("step2");
-    let (cmd3, args3) = echo_msg("$${action:0}-$${action:1}");
+    let (cmd3, args3) = echo_msg("$${{action:0}}-$${{action:1}}");
     let bind_def = BindDef {
       id: Some("multi-step-update".to_string()),
       inputs: None,
       outputs: Some(
-        [("result".to_string(), "$${action:2}".to_string())]
+        [("result".to_string(), "$${{action:2}}".to_string())]
           .into_iter()
           .collect(),
       ),
@@ -793,7 +801,7 @@ mod tests {
         cwd: None,
       })]),
       check_outputs: Some(BindCheckOutputs {
-        drifted: "$${action:0}".to_string(),
+        drifted: "$${{action:0}}".to_string(),
         message: Some("file missing".to_string()),
       }),
     };
@@ -833,7 +841,7 @@ mod tests {
         cwd: None,
       })]),
       check_outputs: Some(BindCheckOutputs {
-        drifted: "$${action:0}".to_string(),
+        drifted: "$${{action:0}}".to_string(),
         message: None,
       }),
     };
@@ -859,7 +867,7 @@ mod tests {
 
     // Create a bind that executes multiple check actions and uses placeholders
     let (cmd1, args1) = echo_msg("check1");
-    let (cmd2, args2) = echo_msg("$${action:0}-check2");
+    let (cmd2, args2) = echo_msg("$${{action:0}}-check2");
     let bind_def = BindDef {
       id: Some("multi-check".to_string()),
       inputs: None,
@@ -883,7 +891,7 @@ mod tests {
       ]),
       check_outputs: Some(BindCheckOutputs {
         drifted: "true".to_string(),
-        message: Some("$${action:1}".to_string()),
+        message: Some("$${{action:1}}".to_string()),
       }),
     };
     let hash = bind_def.compute_hash().unwrap();

@@ -366,12 +366,14 @@ ctx:script(format, content, opts?) -> { stdout: string, path: string }
 ```
 
 **Formats:**
+
 - `'shell'` - POSIX shell (`/bin/sh`)
 - `'bash'` - Bash (`/bin/bash`)
 - `'powershell'` - PowerShell (`powershell.exe`)
 - `'cmd'` - Windows cmd.exe (`cmd.exe`)
 
 **Options:**
+
 - `opts.name` - Custom script filename (default: `script_N`)
 
 **Example:**

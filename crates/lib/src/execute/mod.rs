@@ -958,7 +958,7 @@ mod tests {
 
   #[test]
   fn manifest_bind_placeholder_resolution() {
-    // Bind uses $${build:hash:out} placeholder that should resolve to build output
+    // Bind uses ${{build:hash:out}} placeholder that should resolve to build output
     with_temp_store(|| async {
       // Build that produces an output
       let (echo_cmd, echo_args) = shell_cmd("echo built");
@@ -971,13 +971,13 @@ mod tests {
           env: None,
           cwd: None,
         })],
-        outputs: Some([("bin".to_string(), "$${out}/bin".to_string())].into_iter().collect()),
+        outputs: Some([("bin".to_string(), "$${{out}}/bin".to_string())].into_iter().collect()),
       };
       let build_hash = build.compute_hash().unwrap();
 
       // Bind that references the build output via placeholder
       // Using the full hash in the command to test placeholder resolution
-      let (bind_cmd, bind_args) = shell_cmd(&format!("echo using $$${{build:{}:bin}}", build_hash.0));
+      let (bind_cmd, bind_args) = shell_cmd(&format!("echo using $${{{{build:{}:bin}}}}", build_hash.0));
       let bind = BindDef {
         id: None,
         inputs: Some(BindInputsDef::Build(build_hash.clone())),

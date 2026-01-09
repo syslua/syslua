@@ -188,7 +188,7 @@ pub fn bind_hash_to_lua(lua: &Lua, hash: &ObjectHash, manifest: &Manifest) -> Lu
     let outputs = lua.create_table()?;
     let hash = &hash.0;
     for key in def_outputs.keys() {
-      let placeholder = format!("$${{bind:{}:{}}}", hash, key);
+      let placeholder = format!("$${{{{bind:{}:{}}}}}", hash, key);
       outputs.set(key.as_str(), placeholder.as_str())?;
     }
     table.set("outputs", outputs)?;
@@ -344,7 +344,7 @@ mod tests {
       let link: String = outputs.get("link")?;
       // Output should be a placeholder with the hash
       let hash: String = result.get("hash")?;
-      assert_eq!(link, format!("$${{bind:{}:link}}", hash));
+      assert_eq!(link, format!("$${{{{bind:{}:link}}}}", hash));
 
       // Check manifest
       let manifest = manifest.borrow();
@@ -715,10 +715,10 @@ mod tests {
       let out: String = outputs.get("out")?;
 
       // The output value should contain the bind placeholder (resolved from ctx.out)
-      // Since ctx.out returns "$${out}" and that's returned as the output value,
-      // the final placeholder wraps it as $${bind:HASH:out}
+      // Since ctx.out returns "$${{out}}" and that's returned as the output value,
+      // the final placeholder wraps it as $${{bind:HASH:out}}
       let hash: String = result.get("hash")?;
-      assert_eq!(out, format!("$${{bind:{}:out}}", hash));
+      assert_eq!(out, format!("$${{{{bind:{}:out}}}}", hash));
 
       Ok(())
     }
@@ -747,17 +747,17 @@ mod tests {
       let manifest = manifest.borrow();
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
 
-      // Check that the commands contain the $${out} placeholder
+      // Check that the commands contain the $${{out}} placeholder
       assert_eq!(bind_def.create_actions.len(), 2);
 
       match &bind_def.create_actions[0] {
         Action::Exec(opts) => {
           assert!(
-            opts.bin.contains("$${out}"),
-            "cmd should contain ${{out}} placeholder: {}",
+            opts.bin.contains("$${{out}}"),
+            "cmd should contain $${{{{out}}}} placeholder: {}",
             opts.bin
           );
-          assert_eq!(opts.bin, "mkdir -p $${out}");
+          assert_eq!(opts.bin, "mkdir -p $${{out}}");
         }
         _ => {
           panic!("expected Cmd action");
@@ -767,11 +767,11 @@ mod tests {
       match &bind_def.create_actions[1] {
         Action::Exec(opts) => {
           assert!(
-            opts.bin.contains("$${out}"),
-            "cmd should contain ${{out}} placeholder: {}",
+            opts.bin.contains("$${{out}}"),
+            "cmd should contain $${{{{out}}}} placeholder: {}",
             opts.bin
           );
-          assert_eq!(opts.bin, "ln -sf /src $${out}/link");
+          assert_eq!(opts.bin, "ln -sf /src $${{out}}/link");
         }
         _ => {
           panic!("expected Cmd action");
@@ -804,17 +804,17 @@ mod tests {
       let manifest = manifest.borrow();
       let (_, bind_def) = manifest.bindings.iter().next().unwrap();
 
-      // Check that destroy commands also contain the $${out} placeholder
+      // Check that destroy commands also contain the $${{out}} placeholder
       assert_eq!(bind_def.destroy_actions.len(), 1);
 
       match &bind_def.destroy_actions[0] {
         Action::Exec(opts) => {
           assert!(
-            opts.bin.contains("$${out}"),
-            "destroy cmd should contain ${{out}} placeholder: {}",
+            opts.bin.contains("$${{out}}"),
+            "destroy cmd should contain $${{{{out}}}} placeholder: {}",
             opts.bin
           );
-          assert_eq!(opts.bin, "rm -rf $${out}");
+          assert_eq!(opts.bin, "rm -rf $${{out}}");
         }
         _ => {
           panic!("expected Cmd action");

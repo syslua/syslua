@@ -1,5 +1,6 @@
 local prio = require('syslua.priority')
 local lib = require('syslua.lib')
+local f = require('syslua.interpolation')
 
 ---@class syslua.environment.packages
 local M = {}
@@ -9,16 +10,16 @@ local M = {}
 -- ============================================================================
 
 ---@class syslua.environment.packages.LinkOptions
----@field bin? boolean Link binaries to ~/.syslua/bin/ (default: true)
----@field man? boolean Link man pages to ~/.syslua/share/man/ (default: true)
----@field completions? boolean|string[] Link completions; true for all shells, or list like {'zsh', 'bash'} (default: true)
----@field lib? boolean Link libraries to ~/.syslua/lib/ (default: false)
----@field include? boolean Link headers to ~/.syslua/include/ (default: false)
+---@field bin? syslua.Option<boolean> Link binaries to ~/.syslua/bin/ (default: true)
+---@field man? syslua.Option<boolean> Link man pages to ~/.syslua/share/man/ (default: true)
+---@field completions? syslua.Option<boolean|string[]> Link completions; true for all shells, or list like {'zsh', 'bash'} (default: true)
+---@field lib? syslua.Option<boolean> Link libraries to ~/.syslua/lib/ (default: false)
+---@field include? syslua.Option<boolean> Link headers to ~/.syslua/include/ (default: false)
 
 ---@class syslua.environment.packages.Options
----@field use (BuildRef|syslua.priority.PriorityValue<BuildRef>)[] List of packages to include
+---@field use (syslua.Option<BuildRef>)[] List of packages to include
 ---@field link? syslua.environment.packages.LinkOptions What to link
----@field shell_integration? boolean Auto-add PATH to shell configs (default: true)
+---@field shell_integration? syslua.Option<boolean> Auto-add PATH to shell configs (default: true)
 
 ---@class syslua.environment.packages.ResolvedPackage
 ---@field pkg BuildRef The package BuildRef
@@ -69,8 +70,8 @@ local COMPLETION_EXTENSIONS = {
   ['.ps1'] = 'powershell',
 }
 
--- Default options
-local default_opts = {
+---@type syslua.environment.packages.Options
+M.opts = {
   use = {},
   link = {
     bin = true,
@@ -81,9 +82,6 @@ local default_opts = {
   },
   shell_integration = true,
 }
-
----@type syslua.environment.packages.Options
-M.opts = default_opts
 
 -- ============================================================================
 -- Helper Functions
@@ -125,19 +123,22 @@ end
 ---@param entry2 syslua.environment.packages.BinaryEntry
 local function raise_collision_error(binary_name, entry1, entry2)
   local pname = priority_name(entry1.priority)
-  local msg = string.format(
+  local pkg1_short = entry1.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_')
+  local pkg2_short = entry2.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_')
+
+  local msg = f(
     [[
-Priority conflict in '%s'
+Priority conflict in '{{binary_name}}'
 
-  Conflicting packages at same priority level (%s: %d):
+  Conflicting packages at same priority level ({{pname}}: {{priority}}):
 
-  Package: %s
-    Binary: %s
-    Source: %s
+  Package: {{pkg1_name}}
+    Binary: {{pkg1_bin}}
+    Source: {{pkg1_source}}
 
-  Package: %s
-    Binary: %s
-    Source: %s
+  Package: {{pkg2_name}}
+    Binary: {{pkg2_bin}}
+    Source: {{pkg2_source}}
 
   Resolution options:
   1. Use prio.before(pkg) to make one package win
@@ -146,22 +147,23 @@ Priority conflict in '%s'
 
   Example:
     use = {
-      prio.before(pkgs.cli.%s),  -- wins for '%s'
-      pkgs.cli.%s,
+      prio.before(pkgs.cli.{{pkg1_short}}),  -- wins for '{{binary_name}}'
+      pkgs.cli.{{pkg2_short}},
     }
 ]],
-    binary_name,
-    pname,
-    entry1.priority,
-    entry1.pkg_name,
-    entry1.name,
-    entry1.source,
-    entry2.pkg_name,
-    entry2.name,
-    entry2.source,
-    entry1.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_'),
-    binary_name,
-    entry2.pkg_name:gsub('^__syslua_', ''):gsub('[^%w]', '_')
+    {
+      binary_name = binary_name,
+      pname = pname,
+      priority = entry1.priority,
+      pkg1_name = entry1.pkg_name,
+      pkg1_bin = entry1.name,
+      pkg1_source = entry1.source,
+      pkg2_name = entry2.pkg_name,
+      pkg2_bin = entry2.name,
+      pkg2_source = entry2.source,
+      pkg1_short = pkg1_short,
+      pkg2_short = pkg2_short,
+    }
   )
   error(msg, 0)
 end
@@ -1034,19 +1036,16 @@ end
 --- Set up environment packages according to the provided options
 ---@param provided_opts syslua.environment.packages.Options
 function M.setup(provided_opts)
-  provided_opts = provided_opts or {}
+  local opts = prio.merge(M.opts, provided_opts or {})
+  if not opts then
+    error('Failed to merge environment.packages options')
+  end
 
-  if not provided_opts.use or #provided_opts.use == 0 then
+  if not opts.use or #opts.use == 0 then
     error('environment.packages.setup: "use" field is required and must contain at least one package', 2)
   end
 
-  local new_opts = prio.merge(default_opts, provided_opts)
-  if not new_opts then
-    error('Failed to merge environment.packages options')
-  end
-  M.opts = new_opts
-
-  local resolved_packages = resolve_packages(M.opts.use)
+  local resolved_packages = resolve_packages(opts.use)
   local binaries = collect_binaries(resolved_packages)
 
   local man_pages = {}
@@ -1055,29 +1054,29 @@ function M.setup(provided_opts)
   end
 
   local completions = {}
-  if M.opts.link.completions then
+  if opts.link.completions then
     ---@type string[]|nil
     local shell_filter = nil
-    if type(M.opts.link.completions) == 'table' then
-      shell_filter = M.opts.link.completions --[[@as string[] ]]
+    if type(opts.link.completions) == 'table' then
+      shell_filter = opts.link.completions --[[@as string[] ]]
     end
     completions = collect_completions(resolved_packages, shell_filter)
   end
 
   local libs = {}
-  if M.opts.link.lib then
+  if opts.link.lib then
     libs = collect_libs(resolved_packages)
   end
 
   local includes = {}
-  if M.opts.link.include then
+  if opts.link.include then
     includes = collect_includes(resolved_packages)
   end
 
-  local env_build = create_env_build(binaries, man_pages, completions, libs, includes, M.opts.link)
+  local env_build = create_env_build(binaries, man_pages, completions, libs, includes, opts.link)
   create_env_bind(env_build)
-  create_shell_integration_binds(M.opts.shell_integration)
-  create_completion_binds(completions, M.opts.link)
+  create_shell_integration_binds(opts.shell_integration --[[@as boolean]])
+  create_completion_binds(completions, opts.link)
 end
 
 return M

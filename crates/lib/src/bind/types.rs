@@ -231,9 +231,9 @@ pub struct BindCheckOutputs {
 /// # Placeholders
 ///
 /// String fields may contain placeholders that resolve at execution time:
-/// - `$${action:N}`: Output of action at index N
-/// - `$${build:hash:output}`: Output from a build
-/// - `$${bind:hash:output}`: Output from another binding
+/// - `$${{action:N}}`: Output of action at index N
+/// - `$${{build:hash:output}}`: Output from a build
+/// - `$${{bind:hash:output}}`: Output from another binding
 ///
 /// Shell variables like `$HOME` pass through unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,7 +242,7 @@ pub struct BindDef {
   pub id: Option<String>,
   /// Resolved inputs (with BuildRef/BindRef converted to hashes).
   pub inputs: Option<BindInputsDef>,
-  /// Named outputs from the binding (e.g., `{"path": "$${action:0}"}`).
+  /// Named outputs from the binding (e.g., `{"path": "$${{action:0}}"}`).
   pub outputs: Option<BTreeMap<String, String>>,
   /// The sequence of actions to execute during `create`.
   pub create_actions: Vec<Action>,
@@ -325,7 +325,7 @@ impl BindDef {
     let create_actions = create_ctx.into_actions();
 
     // Create outputs argument for destroy function
-    // The outputs contain $${out} placeholders that will be resolved at runtime
+    // The outputs contain $${{out}} placeholders that will be resolved at runtime
     let outputs_arg: LuaValue = match &outputs {
       Some(outs) => {
         let outputs_table = outputs_to_lua_table(lua, outs)?;
@@ -520,7 +520,7 @@ impl IntoLua for BindRef {
   ///
   /// Creates a table with:
   /// - `hash`: The bind's content-addressed hash
-  /// - `outputs`: Table of output keys mapped to `$${bind:hash:key}` placeholders
+  /// - `outputs`: Table of output keys mapped to `$${{bind:hash:key}}` placeholders
   /// - Metatable with `__type = "BindRef"`
   fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
     let ref_table = lua.create_table()?;
@@ -529,7 +529,7 @@ impl IntoLua for BindRef {
     if let Some(outs) = &self.outputs {
       let outputs_table = lua.create_table()?;
       for k in outs.keys() {
-        let placeholder = format!("$${{bind:{}:{}}}", self.hash.0, k);
+        let placeholder = format!("$${{{{bind:{}:{}}}}}", self.hash.0, k);
         outputs_table.set(k.as_str(), placeholder.as_str())?;
       }
       ref_table.set("outputs", outputs_table)?;
@@ -679,7 +679,7 @@ mod tests {
       let def = BindDef {
         id: Some("test-bind".to_string()),
         inputs: Some(BindInputsDef::String("test".to_string())),
-        outputs: Some(BTreeMap::from([("link".to_string(), "$${action:0}".to_string())])),
+        outputs: Some(BTreeMap::from([("link".to_string(), "$${{action:0}}".to_string())])),
         create_actions: vec![Action::Exec(ExecOpts {
           bin: "ln -s /src /dest".to_string(),
           args: None,
@@ -705,7 +705,7 @@ mod tests {
           cwd: None,
         })]),
         check_outputs: Some(BindCheckOutputs {
-          drifted: "$${action:0}".to_string(),
+          drifted: "$${{action:0}}".to_string(),
           message: Some("link check".to_string()),
         }),
       };
@@ -728,7 +728,7 @@ mod tests {
         cwd: None,
       })]);
       def2.check_outputs = Some(BindCheckOutputs {
-        drifted: "$${action:0}".to_string(),
+        drifted: "$${{action:0}}".to_string(),
         message: Some("file missing".to_string()),
       });
 

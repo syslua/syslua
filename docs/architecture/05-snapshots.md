@@ -154,9 +154,9 @@ Everything is captured through builds and binds:
 Rollback is straightforward with the builds + binds model:
 
 ```bash
-$ sys rollback                    # Rollback to previous snapshot
-$ sys rollback <snapshot_id>      # Rollback to specific snapshot
-$ sys rollback --dry-run          # Preview what would change
+sys rollback                    # Rollback to previous snapshot
+sys rollback <snapshot_id>      # Rollback to specific snapshot
+sys rollback --dry-run          # Preview what would change
 ```
 
 **Key insight**: Builds don't need to be "rolled back" - they're immutable in the store. Only binds change, and each bind has `destroy_actions` that reverse its effect.
@@ -310,13 +310,13 @@ GC_COLLECT():
 Snapshots protect their referenced objects from GC:
 
 ```bash
-$ sys apply init.lua           # Installs ripgrep@15.1.0 (creates snapshot 1)
-$ # Edit SysLua to remove ripgrep
-$ sys apply init.lua           # Removes ripgrep symlink (creates snapshot 2)
-$ sys gc                       # Does NOT delete ripgrep object (snapshot 1 references it)
-$ sys rollback <snapshot 1>    # Can still rollback (object exists)
-$ sys gc --delete-old-snapshots --keep 5  # Delete old snapshots
-$ sys gc                       # NOW ripgrep object can be deleted
+sys apply init.lua           # Installs ripgrep@15.1.0 (creates snapshot 1)
+# Edit SysLua to remove ripgrep
+sys apply init.lua           # Removes ripgrep symlink (creates snapshot 2)
+sys gc                       # Does NOT delete ripgrep object (snapshot 1 references it)
+sys rollback <snapshot 1>    # Can still rollback (object exists)
+sys gc --delete-old-snapshots --keep 5  # Delete old snapshots
+sys gc                       # NOW ripgrep object can be deleted
 ```
 
 ## Comparing Snapshots

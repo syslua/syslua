@@ -21,7 +21,7 @@ pub const BIND_CTX_METHODS_REGISTRY_KEY: &str = "__syslua_bind_ctx_methods";
 /// # Placeholder Resolution
 ///
 /// When actions are executed, their outputs are captured and can be referenced
-/// by subsequent actions via placeholders (e.g., `$${action:0}`).
+/// by subsequent actions via placeholders (e.g., `$${{action:0}}`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
   /// Fetch a URL with SHA-256 integrity verification.
@@ -56,7 +56,7 @@ pub enum Action {
 ///
 /// # Placeholder Format
 ///
-/// Methods return opaque placeholder strings like `$${action:0}`, `$${action:1}`, etc.
+/// Methods return opaque placeholder strings like `$${{action:0}}`, `$${{action:1}}`, etc.
 /// Users should not construct these manually - they're implementation details.
 ///
 /// # Example (Lua)
@@ -91,7 +91,7 @@ impl ActionCtx {
   ///
   /// # Returns
   ///
-  /// The string `"$${out}"` which is substituted at execution time.
+  /// The string `"$${{out}}"` which is substituted at execution time.
   ///
   /// # Example (Lua)
   ///
@@ -106,7 +106,7 @@ impl ActionCtx {
   /// }
   /// ```
   pub fn out(&self) -> &'static str {
-    "$${out}"
+    "$${{out}}"
   }
 
   /// Record a URL fetch action and return a placeholder for its output.
@@ -121,7 +121,7 @@ impl ActionCtx {
   ///
   /// # Returns
   ///
-  /// An opaque placeholder string (e.g., `$${action:0}`) that resolves to
+  /// An opaque placeholder string (e.g., `$${{action:0}}`) that resolves to
   /// the downloaded file path at execution time.
   pub fn fetch_url(&mut self, url: &str, sha256: &str) -> String {
     self.record_action(Action::FetchUrl {
@@ -140,7 +140,7 @@ impl ActionCtx {
   ///
   /// # Returns
   ///
-  /// An opaque placeholder string (e.g., `$${action:1}`) that resolves to
+  /// An opaque placeholder string (e.g., `$${{action:1}}`) that resolves to
   /// the command's output at execution time.
   pub fn exec(&mut self, opts: impl Into<ExecOpts>) -> String {
     let opts = opts.into();
@@ -151,7 +151,7 @@ impl ActionCtx {
   fn record_action(&mut self, action: Action) -> String {
     let index = self.actions.len();
     self.actions.push(action);
-    format!("$${{action:{}}}", index)
+    format!("$${{{{action:{}}}}}", index)
   }
 
   /// Returns the number of actions recorded so far.

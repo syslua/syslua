@@ -16,12 +16,12 @@ use super::types::{BindResult, BuildResult};
 /// Resolver for placeholders during build execution.
 ///
 /// Builds can only reference other builds, not binds. This resolver supports:
-/// - `${action:N}` - stdout of action at index N
-/// - `${build:HASH:OUTPUT}` - output from a completed build
-/// - `${out}` - the current build's output directory
-/// - `${env:NAME}` - environment variable
+/// - `$${{action:N}}` - stdout of action at index N
+/// - `$${{build:HASH:OUTPUT}}` - output from a completed build
+/// - `$${{out}}` - the current build's output directory
+/// - `$${{env:NAME}}` - environment variable
 ///
-/// Note: `${bind:...}` placeholders will always error since builds cannot
+/// Note: `$${{bind:...}}` placeholders will always error since builds cannot
 /// depend on binds.
 pub struct BuildCtxResolver<'a> {
   action_results: Vec<String>,
@@ -82,11 +82,11 @@ impl Resolver for BuildCtxResolver<'_> {
 /// Resolver for placeholders during bind execution.
 ///
 /// Binds can reference both builds and other binds. This resolver supports:
-/// - `${action:N}` - stdout of action at index N
-/// - `${build:HASH:OUTPUT}` - output from a completed build
-/// - `${bind:HASH:OUTPUT}` - output from a completed bind
-/// - `${out}` - the current bind's output directory
-/// - `${env:NAME}` - environment variable
+/// - `$${{action:N}}` - stdout of action at index N
+/// - `$${{build:HASH:OUTPUT}}` - output from a completed build
+/// - `$${{bind:HASH:OUTPUT}}` - output from a completed bind
+/// - `$${{out}}` - the current bind's output directory
+/// - `$${{env:NAME}}` - environment variable
 ///
 /// Use `with_out_dir()` to create child resolvers for bind actions that need
 /// a different output directory (e.g., a temporary working directory).

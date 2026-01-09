@@ -28,7 +28,7 @@ If you know Lua, you know how to use SysLua.
 **Apply it:**
 
 ```bash
-$ sys apply
+sys apply
 ```
 
 Your system now matches your declaration.
