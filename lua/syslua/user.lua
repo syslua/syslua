@@ -19,6 +19,32 @@ local M = {}
 
 ---@alias syslua.user.UserMap table<string, syslua.user.Options>
 
+-- Command builder input types (subset of Options for type safety)
+
+---@class syslua.user.CreateCmdOpts
+---@field description? string User description/comment
+---@field homeDir string Home directory path (required)
+---@field shell? BuildRef Login shell package
+---@field groups? string[] Groups to add user to
+---@field initialPassword? string Initial password (plaintext)
+
+---@class syslua.user.UpdateCmdOpts
+---@field description? string User description/comment
+---@field shell? BuildRef Login shell package
+---@field groups? string[] Groups to add user to
+
+---@class syslua.user.DescriptionOnlyOpts
+---@field description? string User description/comment
+
+---@class syslua.user.Defaults
+---@field description string
+---@field homeDir nil
+---@field config nil
+---@field shell nil
+---@field initialPassword nil
+---@field groups syslua.MergeableOption<string[]>
+---@field preserveHomeOnRemove boolean
+
 -- ============================================================================
 -- Constants
 -- ============================================================================
@@ -29,7 +55,7 @@ local BIND_ID_PREFIX = '__syslua_user_'
 -- Default Options
 -- ============================================================================
 
----@diagnostic disable-next-line: missing-fields
+---@type syslua.user.Defaults
 M.defaults = {
   description = '',
   homeDir = nil,
@@ -68,7 +94,7 @@ end
 
 ---Build Linux user creation command
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.CreateCmdOpts
 ---@return string bin, string[] args
 local function linux_create_user_cmd(name, opts)
   local args = { '-m', '-d', opts.homeDir }
@@ -94,7 +120,7 @@ end
 
 ---Build macOS user creation command
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.CreateCmdOpts
 ---@return string bin, string[] args
 local function darwin_create_user_cmd(name, opts)
   local args = { '-addUser', name }
@@ -129,7 +155,7 @@ end
 
 ---Build Linux user update command (for existing users)
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.UpdateCmdOpts
 ---@return string bin, string[] args
 local function linux_update_user_cmd(name, opts)
   local args = {}
@@ -155,7 +181,7 @@ end
 
 ---Build macOS user update commands (returns shell script)
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.UpdateCmdOpts
 ---@return string
 local function darwin_update_user_script(name, opts)
   local cmds = {}
@@ -181,7 +207,7 @@ end
 
 ---Build Windows user update PowerShell script (for existing users)
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.DescriptionOnlyOpts
 ---@return string
 local function windows_update_user_script(name, opts)
   local description = opts.description or ''
@@ -193,7 +219,7 @@ end
 
 ---Build Windows user creation PowerShell script
 ---@param name string
----@param opts syslua.user.Options
+---@param opts syslua.user.CreateCmdOpts
 ---@return string
 local function windows_create_user_script(name, opts)
   local lines = {}
@@ -475,7 +501,7 @@ end
 local function linux_get_all_groups()
   local handle = io.popen('getent group | cut -d: -f1')
   if not handle then
-    return {}
+    error('Failed to execute getent: io.popen returned nil')
   end
   local existing = {}
   for line in handle:lines() do
@@ -490,7 +516,7 @@ end
 local function darwin_get_all_groups()
   local handle = io.popen('dscl . -list /Groups')
   if not handle then
-    return {}
+    error('Failed to execute dscl: io.popen returned nil')
   end
   local existing = {}
   for line in handle:lines() do
@@ -505,7 +531,7 @@ end
 local function windows_get_all_groups()
   local handle = io.popen('powershell -NoProfile -Command "Get-LocalGroup | ForEach-Object { $_.Name }"')
   if not handle then
-    return {}
+    error('Failed to execute PowerShell: io.popen returned nil')
   end
   local existing = {}
   for line in handle:lines() do
@@ -696,7 +722,6 @@ local function create_user_bind(name, opts, groups)
       -- Step 1: Create or update the user account
       if inputs.os == 'linux' then
         local exists_check = linux_user_exists_check(inputs.username)
-        ---@diagnostic disable-next-line: missing-fields
         local _, create_args = linux_create_user_cmd(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
@@ -705,7 +730,6 @@ local function create_user_bind(name, opts, groups)
         })
         local create_cmd = '/usr/sbin/useradd ' .. table.concat(create_args, ' ')
 
-        ---@diagnostic disable-next-line: missing-fields
         local _, update_args = linux_update_user_cmd(inputs.username, {
           description = inputs.description,
           shell = inputs.shell,
@@ -740,7 +764,6 @@ local function create_user_bind(name, opts, groups)
         end
       elseif inputs.os == 'darwin' then
         local exists_check = darwin_user_exists_check(inputs.username)
-        ---@diagnostic disable-next-line: missing-fields
         local _, create_args = darwin_create_user_cmd(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
@@ -749,7 +772,6 @@ local function create_user_bind(name, opts, groups)
         })
         local create_cmd = '/usr/sbin/sysadminctl ' .. table.concat(create_args, ' ')
 
-        ---@diagnostic disable-next-line: missing-fields
         local update_script = darwin_update_user_script(inputs.username, {
           description = inputs.description,
           shell = inputs.shell,
@@ -774,7 +796,6 @@ local function create_user_bind(name, opts, groups)
         end
       elseif inputs.os == 'windows' then
         local exists_check = windows_user_exists_check(inputs.username)
-        ---@diagnostic disable-next-line: missing-fields
         local create_script = windows_create_user_script(inputs.username, {
           description = inputs.description,
           homeDir = inputs.home_dir,
@@ -782,7 +803,6 @@ local function create_user_bind(name, opts, groups)
           groups = inputs.groups,
         })
 
-        ---@diagnostic disable-next-line: missing-fields
         local update_script = windows_update_user_script(inputs.username, {
           description = inputs.description,
         })
