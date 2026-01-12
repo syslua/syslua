@@ -1,21 +1,21 @@
 local prio = require('syslua.priority')
 local interpolate = require('syslua.interpolation')
 
----@class syslua.group
+---@class syslua.groups
 local M = {}
 
 -- ============================================================================
 -- Type Definitions
 -- ============================================================================
 
----@class syslua.group.Options
+---@class syslua.groups.Options
 ---@field description? syslua.Option<string> Group description/comment
 ---@field gid? syslua.Option<number> Specific GID (optional, auto-assigned if nil)
 ---@field system? syslua.Option<boolean> Create as system group (low GID range)
 
----@alias syslua.group.GroupMap table<string, syslua.group.Options>
+---@alias syslua.groups.GroupMap table<string, syslua.groups.Options>
 
----@class syslua.group.Defaults
+---@class syslua.groups.Defaults
 ---@field description string
 ---@field gid nil
 ---@field system boolean
@@ -30,7 +30,7 @@ local BIND_ID_PREFIX = '__syslua_group_'
 -- Default Options
 -- ============================================================================
 
----@type syslua.group.Defaults
+---@type syslua.groups.Defaults
 M.defaults = {
   description = '',
   gid = nil,
@@ -76,13 +76,13 @@ local function darwin_create_group_script(name, opts)
       interpolate('dscl . -create /Groups/{{name}} PrimaryGroupID {{gid}}', { name = name, gid = opts.gid })
     )
   else
-    -- Auto-assign GID: find max existing + 1
+    -- Auto-assign GID: find max existing + 1, fallback to start_gid if no groups exist
     local start_gid = opts.system and 100 or 1000
     table.insert(
       cmds,
       interpolate(
-        'gid=$(dscl . -list /Groups PrimaryGroupID | awk "\\$2 >= {{start}} {print \\$2}" | sort -n | tail -1); dscl . -create /Groups/{{name}} PrimaryGroupID $((gid + 1))',
-        { name = name, start = start_gid }
+        'gid=$(dscl . -list /Groups PrimaryGroupID | awk "\\$2 >= {{start}} {print \\$2}" | sort -n | tail -1); gid=${gid:-{{fallback}}}; dscl . -create /Groups/{{name}} PrimaryGroupID $((gid + 1))',
+        { name = name, start = start_gid, fallback = start_gid - 1 }
       )
     )
   end
@@ -165,10 +165,13 @@ end
 ---@param opts {description?: string}
 ---@return string
 local function darwin_update_group_script(name, opts)
-  if opts.description and opts.description ~= '' then
-    return interpolate('dscl . -create /Groups/{{name}} RealName "{{desc}}"', { name = name, desc = opts.description })
+  if opts.description ~= nil then
+    return interpolate(
+      'dscl . -create /Groups/{{name}} RealName "{{desc}}"',
+      { name = name, desc = opts.description }
+    )
   end
-  return 'true' -- no-op
+  return 'true'
 end
 
 ---Build Windows group update PowerShell script
@@ -256,13 +259,14 @@ end
 
 ---Get group members (cross-platform)
 ---@param name string
+---@param os string
 ---@return string[]
-local function get_group_members(name)
-  if sys.os == 'linux' then
+local function get_group_members(name, os)
+  if os == 'linux' then
     return linux_get_group_members(name)
-  elseif sys.os == 'darwin' then
+  elseif os == 'darwin' then
     return darwin_get_group_members(name)
-  elseif sys.os == 'windows' then
+  elseif os == 'windows' then
     return windows_get_group_members(name)
   end
   return {}
@@ -292,10 +296,10 @@ end
 
 ---Validate group options
 ---@param name string
----@param opts syslua.group.Options
+---@param opts syslua.groups.Options
 local function validate_group_options(name, opts)
   if not sys.is_elevated then
-    error('syslua.group requires elevated privileges (root/Administrator)', 0)
+    error('syslua.groups requires elevated privileges (root/Administrator)', 0)
   end
 
   local gid = prio.unwrap(opts.gid)
@@ -312,7 +316,7 @@ end
 
 ---Create a bind for a single group
 ---@param name string
----@param opts syslua.group.Options
+---@param opts syslua.groups.Options
 local function create_group_bind(name, opts)
   local bind_id = BIND_ID_PREFIX .. name
 
@@ -388,7 +392,7 @@ local function create_group_bind(name, opts)
         })
       end
 
-      return { groupname = inputs.groupname }
+      return { groupname = inputs.groupname, os = inputs.os }
     end,
 
     update = function(_outputs, inputs, ctx)
@@ -417,11 +421,11 @@ local function create_group_bind(name, opts)
         })
       end
 
-      return { groupname = inputs.groupname }
+      return { groupname = inputs.groupname, os = inputs.os }
     end,
 
     destroy = function(outputs, ctx)
-      local members = get_group_members(outputs.groupname)
+      local members = get_group_members(outputs.groupname, outputs.os)
       if #members > 0 then
         print(
           string.format(
@@ -433,7 +437,7 @@ local function create_group_bind(name, opts)
         )
       end
 
-      if sys.os == 'linux' then
+      if outputs.os == 'linux' then
         local exists_check = linux_group_exists_check(outputs.groupname)
         local bin, args = linux_delete_group_cmd(outputs.groupname)
         local delete_cmd = bin .. ' ' .. table.concat(args, ' ')
@@ -448,7 +452,7 @@ local function create_group_bind(name, opts)
             ),
           },
         })
-      elseif sys.os == 'darwin' then
+      elseif outputs.os == 'darwin' then
         local exists_check = darwin_group_exists_check(outputs.groupname)
         local bin, args = darwin_delete_group_cmd(outputs.groupname)
         local delete_cmd = bin .. ' ' .. table.concat(args, ' ')
@@ -463,7 +467,7 @@ local function create_group_bind(name, opts)
             ),
           },
         })
-      elseif sys.os == 'windows' then
+      elseif outputs.os == 'windows' then
         local exists_check = windows_group_exists_check(outputs.groupname)
         local delete_script = windows_delete_group_script(outputs.groupname)
 
@@ -488,10 +492,10 @@ end
 -- ============================================================================
 
 ---Set up groups according to the provided definitions
----@param groups syslua.group.GroupMap
+---@param groups syslua.groups.GroupMap
 function M.setup(groups)
   if not groups or next(groups) == nil then
-    error('syslua.group.setup: at least one group definition is required', 2)
+    error('syslua.groups.setup: at least one group definition is required', 2)
   end
 
   for name, opts in pairs(groups) do
