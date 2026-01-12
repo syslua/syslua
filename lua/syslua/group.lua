@@ -454,4 +454,26 @@ local function create_group_bind(name, opts)
   })
 end
 
+-- ============================================================================
+-- Public API
+-- ============================================================================
+
+---Set up groups according to the provided definitions
+---@param groups syslua.group.GroupMap
+function M.setup(groups)
+  if not groups or next(groups) == nil then
+    error('syslua.group.setup: at least one group definition is required', 2)
+  end
+
+  for name, opts in pairs(groups) do
+    local merged = prio.merge(M.defaults, opts)
+    if not merged then
+      error(interpolate("group '{{name}}': failed to merge options", { name = name }), 2)
+    end
+
+    validate_group_options(name, merged)
+    create_group_bind(name, merged)
+  end
+end
+
 return M
