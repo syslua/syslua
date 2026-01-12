@@ -71,24 +71,27 @@ local function darwin_create_group_script(name, opts)
   }
 
   if opts.gid then
-    table.insert(cmds, interpolate(
-      'dscl . -create /Groups/{{name}} PrimaryGroupID {{gid}}',
-      { name = name, gid = opts.gid }
-    ))
+    table.insert(
+      cmds,
+      interpolate('dscl . -create /Groups/{{name}} PrimaryGroupID {{gid}}', { name = name, gid = opts.gid })
+    )
   else
     -- Auto-assign GID: find max existing + 1
     local start_gid = opts.system and 100 or 1000
-    table.insert(cmds, interpolate(
-      'gid=$(dscl . -list /Groups PrimaryGroupID | awk "\\$2 >= {{start}} {print \\$2}" | sort -n | tail -1); dscl . -create /Groups/{{name}} PrimaryGroupID $((gid + 1))',
-      { name = name, start = start_gid }
-    ))
+    table.insert(
+      cmds,
+      interpolate(
+        'gid=$(dscl . -list /Groups PrimaryGroupID | awk "\\$2 >= {{start}} {print \\$2}" | sort -n | tail -1); dscl . -create /Groups/{{name}} PrimaryGroupID $((gid + 1))',
+        { name = name, start = start_gid }
+      )
+    )
   end
 
   if opts.description and opts.description ~= '' then
-    table.insert(cmds, interpolate(
-      'dscl . -create /Groups/{{name}} RealName "{{desc}}"',
-      { name = name, desc = opts.description }
-    ))
+    table.insert(
+      cmds,
+      interpolate('dscl . -create /Groups/{{name}} RealName "{{desc}}"', { name = name, desc = opts.description })
+    )
   end
 
   return table.concat(cmds, ' && ')
@@ -100,10 +103,7 @@ end
 ---@return string
 local function windows_create_group_script(name, opts)
   local desc = opts.description or ''
-  return interpolate(
-    'New-LocalGroup -Name "{{name}}" -Description "{{desc}}"',
-    { name = name, desc = desc }
-  )
+  return interpolate('New-LocalGroup -Name "{{name}}" -Description "{{desc}}"', { name = name, desc = desc })
 end
 
 -- ============================================================================
@@ -128,10 +128,7 @@ end
 ---@param name string
 ---@return string
 local function windows_group_exists_check(name)
-  return interpolate(
-    '(Get-LocalGroup -Name "{{name}}" -ErrorAction SilentlyContinue)',
-    { name = name }
-  )
+  return interpolate('(Get-LocalGroup -Name "{{name}}" -ErrorAction SilentlyContinue)', { name = name })
 end
 
 -- ============================================================================
@@ -169,10 +166,7 @@ end
 ---@return string
 local function darwin_update_group_script(name, opts)
   if opts.description and opts.description ~= '' then
-    return interpolate(
-      'dscl . -create /Groups/{{name}} RealName "{{desc}}"',
-      { name = name, desc = opts.description }
-    )
+    return interpolate('dscl . -create /Groups/{{name}} RealName "{{desc}}"', { name = name, desc = opts.description })
   end
   return 'true' -- no-op
 end
@@ -196,14 +190,15 @@ end
 ---@param name string
 ---@return string[]
 local function linux_get_group_members(name)
-  local handle = io.popen(interpolate(
-    'getent group "{{name}}" 2>/dev/null | cut -d: -f4',
-    { name = name }
-  ))
-  if not handle then return {} end
+  local handle = io.popen(interpolate('getent group "{{name}}" 2>/dev/null | cut -d: -f4', { name = name }))
+  if not handle then
+    return {}
+  end
   local members_str = handle:read('*a'):gsub('%s+$', '')
   handle:close()
-  if members_str == '' then return {} end
+  if members_str == '' then
+    return {}
+  end
   local members = {}
   for member in members_str:gmatch('[^,]+') do
     table.insert(members, member)
@@ -215,11 +210,15 @@ end
 ---@param name string
 ---@return string[]
 local function darwin_get_group_members(name)
-  local handle = io.popen(interpolate(
-    'dscl . -read /Groups/{{name}} GroupMembership 2>/dev/null | sed "s/GroupMembership://" | tr " " "\\n" | grep -v "^$"',
-    { name = name }
-  ))
-  if not handle then return {} end
+  local handle = io.popen(
+    interpolate(
+      'dscl . -read /Groups/{{name}} GroupMembership 2>/dev/null | sed "s/GroupMembership://" | tr " " "\\n" | grep -v "^$"',
+      { name = name }
+    )
+  )
+  if not handle then
+    return {}
+  end
   local members = {}
   for line in handle:lines() do
     local member = line:gsub('%s+', '')
@@ -235,11 +234,15 @@ end
 ---@param name string
 ---@return string[]
 local function windows_get_group_members(name)
-  local handle = io.popen(interpolate(
-    'powershell -NoProfile -Command "Get-LocalGroupMember -Group \\"{{name}}\\" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }"',
-    { name = name }
-  ))
-  if not handle then return {} end
+  local handle = io.popen(
+    interpolate(
+      'powershell -NoProfile -Command "Get-LocalGroupMember -Group \\"{{name}}\\" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }"',
+      { name = name }
+    )
+  )
+  if not handle then
+    return {}
+  end
   local members = {}
   for line in handle:lines() do
     local member = line:gsub('%s+$', '')
@@ -270,14 +273,20 @@ end
 ---@param gid number?
 ---@param is_system boolean
 local function validate_gid(name, gid, is_system)
-  if not gid then return end
+  if not gid then
+    return
+  end
 
   local system_max = 999
   if gid <= system_max and not is_system then
-    io.stderr:write(string.format(
-      "Warning: group '%s' has GID %d which is in system range (<%d). Consider using system=true or a higher GID.\n",
-      name, gid, system_max + 1
-    ))
+    print(
+      string.format(
+        "Warning: group '%s' has GID %d which is in system range (<%d). Consider using system=true or a higher GID.\n",
+        name,
+        gid,
+        system_max + 1
+      )
+    )
   end
 end
 
@@ -334,12 +343,14 @@ local function create_group_bind(name, opts)
 
         ctx:exec({
           bin = '/bin/sh',
-          args = { '-c', interpolate(
-            'if ! {{exists_check}}; then {{create_cmd}}; fi',
-            { exists_check = exists_check, create_cmd = create_cmd }
-          )},
+          args = {
+            '-c',
+            interpolate(
+              'if ! {{exists_check}}; then {{create_cmd}}; fi',
+              { exists_check = exists_check, create_cmd = create_cmd }
+            ),
+          },
         })
-
       elseif inputs.os == 'darwin' then
         local exists_check = darwin_group_exists_check(inputs.groupname)
         local create_script = darwin_create_group_script(inputs.groupname, {
@@ -350,12 +361,14 @@ local function create_group_bind(name, opts)
 
         ctx:exec({
           bin = '/bin/sh',
-          args = { '-c', interpolate(
-            'if ! {{exists_check}}; then {{create_script}}; fi',
-            { exists_check = exists_check, create_script = create_script }
-          )},
+          args = {
+            '-c',
+            interpolate(
+              'if ! {{exists_check}}; then {{create_script}}; fi',
+              { exists_check = exists_check, create_script = create_script }
+            ),
+          },
         })
-
       elseif inputs.os == 'windows' then
         local exists_check = windows_group_exists_check(inputs.groupname)
         local create_script = windows_create_group_script(inputs.groupname, {
@@ -364,22 +377,28 @@ local function create_group_bind(name, opts)
 
         ctx:exec({
           bin = 'powershell.exe',
-          args = { '-NoProfile', '-Command', interpolate(
-            'if (-not {{exists_check}}) { {{create_script}} }',
-            { exists_check = exists_check, create_script = create_script }
-          )},
+          args = {
+            '-NoProfile',
+            '-Command',
+            interpolate(
+              'if (-not {{exists_check}}) { {{create_script}} }',
+              { exists_check = exists_check, create_script = create_script }
+            ),
+          },
         })
       end
 
       return { groupname = inputs.groupname }
     end,
 
-    update = function(outputs, inputs, ctx)
+    update = function(_outputs, inputs, ctx)
       if inputs.os == 'linux' then
-        io.stderr:write(string.format(
-          "Warning: group '%s' description cannot be updated on Linux (groupmod limitation). Recreate group to change.\n",
-          inputs.groupname
-        ))
+        print(
+          string.format(
+            "Warning: group '%s' description cannot be updated on Linux (groupmod limitation). Recreate group to change.\n",
+            inputs.groupname
+          )
+        )
       elseif inputs.os == 'darwin' then
         local update_script = darwin_update_group_script(inputs.groupname, {
           description = inputs.description,
@@ -404,12 +423,14 @@ local function create_group_bind(name, opts)
     destroy = function(outputs, ctx)
       local members = get_group_members(outputs.groupname)
       if #members > 0 then
-        io.stderr:write(string.format(
-          "Warning: deleting group '%s' which has %d member(s): %s\n",
-          outputs.groupname,
-          #members,
-          table.concat(members, ', ')
-        ))
+        print(
+          string.format(
+            "Warning: deleting group '%s' which has %d member(s): %s\n",
+            outputs.groupname,
+            #members,
+            table.concat(members, ', ')
+          )
+        )
       end
 
       if sys.os == 'linux' then
@@ -419,12 +440,14 @@ local function create_group_bind(name, opts)
 
         ctx:exec({
           bin = '/bin/sh',
-          args = { '-c', interpolate(
-            'if {{exists_check}}; then {{delete_cmd}}; fi',
-            { exists_check = exists_check, delete_cmd = delete_cmd }
-          )},
+          args = {
+            '-c',
+            interpolate(
+              'if {{exists_check}}; then {{delete_cmd}}; fi',
+              { exists_check = exists_check, delete_cmd = delete_cmd }
+            ),
+          },
         })
-
       elseif sys.os == 'darwin' then
         local exists_check = darwin_group_exists_check(outputs.groupname)
         local bin, args = darwin_delete_group_cmd(outputs.groupname)
@@ -432,22 +455,28 @@ local function create_group_bind(name, opts)
 
         ctx:exec({
           bin = '/bin/sh',
-          args = { '-c', interpolate(
-            'if {{exists_check}}; then {{delete_cmd}}; fi',
-            { exists_check = exists_check, delete_cmd = delete_cmd }
-          )},
+          args = {
+            '-c',
+            interpolate(
+              'if {{exists_check}}; then {{delete_cmd}}; fi',
+              { exists_check = exists_check, delete_cmd = delete_cmd }
+            ),
+          },
         })
-
       elseif sys.os == 'windows' then
         local exists_check = windows_group_exists_check(outputs.groupname)
         local delete_script = windows_delete_group_script(outputs.groupname)
 
         ctx:exec({
           bin = 'powershell.exe',
-          args = { '-NoProfile', '-Command', interpolate(
-            'if ({{exists_check}}) { {{delete_script}} }',
-            { exists_check = exists_check, delete_script = delete_script }
-          )},
+          args = {
+            '-NoProfile',
+            '-Command',
+            interpolate(
+              'if ({{exists_check}}) { {{delete_script}} }',
+              { exists_check = exists_check, delete_script = delete_script }
+            ),
+          },
         })
       end
     end,
