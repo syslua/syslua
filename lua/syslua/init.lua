@@ -2,7 +2,7 @@
 ---@field pkgs syslua.pkgs
 ---@field environment syslua.environment
 ---@field programs syslua.programs
----@field user syslua.user
+---@field users syslua.users
 ---@field lib syslua.lib
 ---@field f fun(str: string, values?: table): string String interpolation (f-string style)
 ---@field interpolate fun(str: string, values?: table): string String interpolation

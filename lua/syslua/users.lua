@@ -58,7 +58,6 @@ local BIND_ID_PREFIX = '__syslua_user_'
 ---@type syslua.users.UserOptionsDefaults
 M.defaults = {
   description = '',
-  initialPassword = nil,
   groups = prio.mergeable({ default = {} }),
   preserveHomeOnRemove = false,
 }
