@@ -106,4 +106,57 @@ local function windows_create_group_script(name, opts)
   )
 end
 
+-- ============================================================================
+-- Platform-Specific Commands: Existence Checks
+-- ============================================================================
+
+---Check if group exists on Linux
+---@param name string
+---@return string
+local function linux_group_exists_check(name)
+  return interpolate('getent group "{{name}}" >/dev/null 2>&1', { name = name })
+end
+
+---Check if group exists on macOS
+---@param name string
+---@return string
+local function darwin_group_exists_check(name)
+  return interpolate('dscl . -read /Groups/{{name}} >/dev/null 2>&1', { name = name })
+end
+
+---Check if group exists on Windows (PowerShell condition)
+---@param name string
+---@return string
+local function windows_group_exists_check(name)
+  return interpolate(
+    '(Get-LocalGroup -Name "{{name}}" -ErrorAction SilentlyContinue)',
+    { name = name }
+  )
+end
+
+-- ============================================================================
+-- Platform-Specific Commands: Deletion
+-- ============================================================================
+
+---Build Linux group deletion command
+---@param name string
+---@return string bin, string[] args
+local function linux_delete_group_cmd(name)
+  return '/usr/sbin/groupdel', { name }
+end
+
+---Build macOS group deletion command
+---@param name string
+---@return string bin, string[] args
+local function darwin_delete_group_cmd(name)
+  return '/usr/bin/dscl', { '.', '-delete', '/Groups/' .. name }
+end
+
+---Build Windows group deletion PowerShell script
+---@param name string
+---@return string
+local function windows_delete_group_script(name)
+  return interpolate('Remove-LocalGroup -Name "{{name}}"', { name = name })
+end
+
 return M
