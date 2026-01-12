@@ -159,4 +159,33 @@ local function windows_delete_group_script(name)
   return interpolate('Remove-LocalGroup -Name "{{name}}"', { name = name })
 end
 
+-- ============================================================================
+-- Platform-Specific Commands: Update
+-- ============================================================================
+
+---Build macOS group update script (description only)
+---@param name string
+---@param opts {description?: string}
+---@return string
+local function darwin_update_group_script(name, opts)
+  if opts.description and opts.description ~= '' then
+    return interpolate(
+      'dscl . -create /Groups/{{name}} RealName "{{desc}}"',
+      { name = name, desc = opts.description }
+    )
+  end
+  return 'true' -- no-op
+end
+
+---Build Windows group update PowerShell script
+---@param name string
+---@param opts {description?: string}
+---@return string
+local function windows_update_group_script(name, opts)
+  return interpolate(
+    'Set-LocalGroup -Name "{{name}}" -Description "{{desc}}"',
+    { name = name, desc = opts.description or '' }
+  )
+end
+
 return M
